@@ -1,0 +1,70 @@
+# Kyma deployment values for Slate
+# Docker Hub public registry
+
+global:
+  imageRegistry: "docker.io"
+
+secrets:
+  # Database encryption key
+  encryptionKey: "plTB3fKknRTUB-XBPs-KQ0avAdaI9hMImhnIfzMiEAU"
+
+  # Optional: Add your AI provider API keys here
+  # openaiApiKey: "sk-..."
+  # anthropicApiKey: "sk-ant-..."
+
+backend:
+  replicaCount: 1  # Keep at 1 for SQLite
+
+  image:
+    repository: gokulraj18/slate-backend
+    tag: "1.0.14"
+    pullPolicy: Always
+
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu: "250m"
+    limits:
+      memory: "2Gi"
+      cpu: "1000m"
+
+  persistence:
+    enabled: true
+    storageClass: ""  # Use default
+    size: 5Gi
+
+  env:
+    logLevel: "INFO"
+
+frontend:
+  replicaCount: 2
+
+  image:
+    repository: gokulraj18/slate-frontend
+    tag: "1.0.2"
+    pullPolicy: Always
+
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "100m"
+    limits:
+      memory: "1Gi"
+      cpu: "500m"
+
+approuter:
+  enabled: false
+  replicaCount: 2
+
+  sessionAffinity:
+    enabled: true
+    cookieName: SLATE_SESSION_ID
+
+xsuaa:
+  enabled: false
+  xsappname: slate
+  tenantMode: dedicated
+
+apiRule:
+  enabled: true
+  host: slate

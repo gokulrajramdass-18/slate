@@ -1,0 +1,109 @@
+{
+  "name": "Open Notebook Development",
+  "dockerComposeFile": "docker-compose.dev.yml",
+  "service": "backend",
+  "workspaceFolder": "/app",
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        // Python
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "ms-python.black-formatter",
+        "ms-python.isort",
+
+        // TypeScript/React
+        "dbaeumer.vscode-eslint",
+        "esbenp.prettier-vscode",
+        "bradlc.vscode-tailwindcss",
+
+        // Docker
+        "ms-azuretools.vscode-docker",
+
+        // Git
+        "eamodio.gitlens",
+
+        // Database
+        "cweijan.vscode-database-client2",
+
+        // API Testing
+        "humao.rest-client",
+
+        // General
+        "editorconfig.editorconfig",
+        "streetsidesoftware.code-spell-checker"
+      ],
+
+      "settings": {
+        // Python settings
+        "python.defaultInterpreterPath": "/app/venv/bin/python",
+        "python.linting.enabled": true,
+        "python.linting.pylintEnabled": true,
+        "python.formatting.provider": "black",
+        "python.testing.pytestEnabled": true,
+        "python.testing.unittestEnabled": false,
+        "python.testing.pytestArgs": ["tests"],
+
+        // Editor settings
+        "editor.formatOnSave": true,
+        "editor.codeActionsOnSave": {
+          "source.organizeImports": true
+        },
+        "editor.rulers": [88, 120],
+
+        // Files
+        "files.exclude": {
+          "**/__pycache__": true,
+          "**/*.pyc": true,
+          "**/.pytest_cache": true,
+          "**/node_modules": true,
+          "**/.next": true
+        },
+
+        // Terminal
+        "terminal.integrated.defaultProfile.linux": "bash",
+
+        // Prettier
+        "prettier.semi": false,
+        "prettier.singleQuote": true,
+        "prettier.trailingComma": "es5",
+
+        // Tailwind
+        "tailwindCSS.experimental.classRegex": [
+          ["cva\\(([^)]*)\\)", "[\"'`]([^\"'`]*).*?[\"'`]"]
+        ]
+      }
+    }
+  },
+
+  "forwardPorts": [5055, 3000],
+  "portsAttributes": {
+    "5055": {
+      "label": "Backend API",
+      "onAutoForward": "notify"
+    },
+    "3000": {
+      "label": "Frontend",
+      "onAutoForward": "openBrowser"
+    }
+  },
+
+  "postCreateCommand": "pip install -e . && cd frontend && npm install",
+
+  "postStartCommand": "python -m open_notebook.database.async_migrate migrate",
+
+  "remoteEnv": {
+    "DATABASE_TYPE": "sqlite",
+    "SQLITE_DB_PATH": "/app/data/database.db",
+    "API_HOST": "0.0.0.0",
+    "API_PORT": "5055"
+  },
+
+  "mounts": [
+    "source=${localEnv:HOME}/.ssh,target=/root/.ssh,readonly,type=bind",
+    "source=${localWorkspaceFolder}/.env,target=/app/.env,type=bind"
+  ],
+
+  "remoteUser": "root"
+}

@@ -1,0 +1,95 @@
+# Langfuse Self-Hosted Observability Stack
+# This file adds Langfuse services to the existing docker-compose setup
+# Usage: docker-compose -f docker-compose.yml -f docker-compose.langfuse.yml up -d
+
+version: '3.8'
+
+services:
+  # PostgreSQL database for Langfuse
+  langfuse-db:
+    image: postgres:15-alpine
+    container_name: open-notebook-langfuse-db
+    environment:
+      POSTGRES_USER: ${LANGFUSE_DB_USER:-langfuse}
+      POSTGRES_PASSWORD: ${LANGFUSE_DB_PASSWORD:-langfuse_password}
+      POSTGRES_DB: ${LANGFUSE_DB_NAME:-langfuse}
+    volumes:
+      - langfuse-db-data:/var/lib/postgresql/data
+    networks:
+      - open-notebook-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${LANGFUSE_DB_USER:-langfuse}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # Langfuse web application
+  langfuse:
+    image: langfuse/langfuse:2
+    container_name: open-notebook-langfuse
+    ports:
+      - "${LANGFUSE_PORT:-3001}:3000"
+    environment:
+      # Database connection
+      - DATABASE_URL=postgresql://${LANGFUSE_DB_USER:-langfuse}:${LANGFUSE_DB_PASSWORD:-langfuse_password}@langfuse-db:5432/${LANGFUSE_DB_NAME:-langfuse}
+
+      # NextAuth configuration (required)
+      - NEXTAUTH_URL=http://localhost:${LANGFUSE_PORT:-3001}
+      - NEXTAUTH_SECRET=${LANGFUSE_NEXTAUTH_SECRET:-change-this-to-a-random-secret-min-32-characters}
+
+      # Langfuse configuration
+      - SALT=${LANGFUSE_SALT:-change-this-to-a-random-salt-min-32-characters}
+      - TELEMETRY_ENABLED=${LANGFUSE_TELEMETRY_ENABLED:-false}
+      - LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES=${LANGFUSE_EXPERIMENTAL:-false}
+
+      # Optional: S3 integration for trace storage (using MinIO)
+      - S3_ENDPOINT=${S3_ENDPOINT:-http://minio:9000}
+      - S3_ACCESS_KEY_ID=${S3_ACCESS_KEY:-minioadmin}
+      - S3_SECRET_ACCESS_KEY=${S3_SECRET_KEY:-minioadmin}
+      - S3_BUCKET_NAME=${LANGFUSE_S3_BUCKET:-langfuse-traces}
+      - S3_REGION=${S3_REGION:-us-east-1}
+
+      # Optional: Email configuration (for user invites)
+      - EMAIL_FROM=${LANGFUSE_EMAIL_FROM:-}
+      - SMTP_HOST=${LANGFUSE_SMTP_HOST:-}
+      - SMTP_PORT=${LANGFUSE_SMTP_PORT:-}
+      - SMTP_USER=${LANGFUSE_SMTP_USER:-}
+      - SMTP_PASSWORD=${LANGFUSE_SMTP_PASSWORD:-}
+    depends_on:
+      langfuse-db:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - open-notebook-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # Update backend service to use Langfuse
+  backend:
+    environment:
+      # Langfuse configuration
+      - LANGFUSE_ENABLED=true
+      - LANGFUSE_HOST=http://langfuse:3000
+      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY:-}
+      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY:-}
+      - LANGFUSE_VERBOSE=${LANGFUSE_VERBOSE:-false}
+      - LANGFUSE_FLUSH_INTERVAL=${LANGFUSE_FLUSH_INTERVAL:-1000}
+    depends_on:
+      langfuse:
+        condition: service_healthy
+
+volumes:
+  langfuse-db-data:
+    driver: local
+
+networks:
+  open-notebook-network:
+    external: true

@@ -1,0 +1,50 @@
+{{- if .Values.xsuaa.enabled }}
+apiVersion: services.cloud.sap.com/v1
+kind: ServiceInstance
+metadata:
+  name: {{ include "slate.fullname" . }}-xsuaa
+  labels:
+    {{- include "slate.labels" . | nindent 4 }}
+spec:
+  serviceOfferingName: {{ .Values.xsuaa.serviceOfferingName }}
+  servicePlanName: {{ .Values.xsuaa.servicePlanName }}
+  parameters:
+    xsappname: {{ .Values.xsuaa.xsappname }}
+    tenant-mode: {{ .Values.xsuaa.tenantMode }}
+    scopes:
+    {{- range .Values.xsuaa.scopes }}
+      - name: {{ .name | quote }}
+        description: {{ .description | quote }}
+    {{- end }}
+    role-templates:
+    {{- range .Values.xsuaa.roleTemplates }}
+      - name: {{ .name }}
+        description: {{ .description | quote }}
+        scope-references:
+        {{- range .scopeReferences }}
+          - {{ . | quote }}
+        {{- end }}
+    {{- end }}
+    role-collections:
+    {{- range .Values.xsuaa.roleCollections }}
+      - name: {{ .name | quote }}
+        description: {{ .description | quote }}
+        role-template-references:
+        {{- range .roleTemplateReferences }}
+          - {{ . | quote }}
+        {{- end }}
+    {{- end }}
+    oauth2-configuration:
+      redirect-uris:
+        - "https://{{ .Values.apiRule.host }}.*.kyma.ondemand.com/**"
+        - "http://localhost:5000/**"
+---
+apiVersion: services.cloud.sap.com/v1
+kind: ServiceBinding
+metadata:
+  name: {{ include "slate.fullname" . }}-xsuaa-binding
+  labels:
+    {{- include "slate.labels" . | nindent 4 }}
+spec:
+  serviceInstanceName: {{ include "slate.fullname" . }}-xsuaa
+{{- end }}

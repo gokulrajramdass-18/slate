@@ -1,0 +1,62 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: slate-config
+  labels:
+    app: slate
+data:
+  # Backend environment variables
+  API_HOST: "0.0.0.0"
+  API_PORT: "5055"
+  DATABASE_TYPE: "sqlite"
+  SQLITE_DB_PATH: "/app/data/database.db"
+  LOG_LEVEL: "INFO"
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: slate-destinations
+  labels:
+    app: slate
+data:
+  destinations: >-
+    [
+        {
+          "name": "slate-backend",
+          "url": "http://slate-backend:5055",
+          "forwardAuthToken": true
+        },
+        {
+          "name": "slate-frontend",
+          "url": "http://slate-frontend:3000",
+          "forwardAuthToken": false
+        }
+    ]
+---
+apiVersion: v1
+data:
+  xs-app.json: |-
+    {
+        "authenticationMethod": "route",
+        "sessionTimeout": 30,
+        "routes": [
+            {
+                "source": "^/api/(.*)$",
+                "destination": "slate-backend",
+                "target": "/api/$1",
+                "authenticationType": "xsuaa"
+            },
+            {
+                "source": "^/(.*)$",
+                "destination": "slate-frontend",
+                "target": "/$1",
+                "authenticationType": "xsuaa"
+            }
+        ]
+    }
+kind: ConfigMap
+metadata:
+  name: slate-xs-app
+  labels:
+    app: slate

@@ -1,0 +1,44 @@
+# Development Dockerfile for Backend with Hot Reload
+
+FROM python:3.11-slim
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    libpq-dev \
+    curl \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy requirements
+COPY requirements.txt requirements-api.txt ./
+
+# Install Python dependencies
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt -r requirements-api.txt
+
+# Install development tools
+RUN pip install --no-cache-dir \
+    ipython \
+    ipdb \
+    watchdog
+
+# Copy application code
+COPY . .
+
+# Install in editable mode for hot reload
+RUN pip install -e .
+
+# Create data directory
+RUN mkdir -p /app/data/uploads
+
+EXPOSE 5055
+
+ENV PYTHONUNBUFFERED=1
+
+# Run migrations then start with hot reload
+CMD python -m open_notebook.database.async_migrate migrate && \
+    uvicorn api.main:app --host 0.0.0.0 --port 5055 --reload

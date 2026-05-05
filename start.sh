@@ -1,0 +1,544 @@
+#!/bin/bash
+
+# Open Notebook - Complete Startup Script
+# This script starts both backend (FastAPI) and frontend (Next.js) servers
+
+set -e  # Exit on error
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# Project root directory
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$PROJECT_ROOT"
+
+echo -e "${BLUE}========================================${NC}"
+echo -e "${BLUE}   Open Notebook - Starting Services   ${NC}"
+echo -e "${BLUE}========================================${NC}"
+echo ""
+
+# Function to check if port is in use
+check_port() {
+    local port=$1
+    if lsof -Pi :$port -sTCP:LISTEN -t >/dev/null 2>&1 ; then
+        return 0  # Port is in use
+    else
+        return 1  # Port is free
+    fi
+}
+
+# Function to kill process on port
+kill_port() {
+    local port=$1
+    local pid=$(lsof -ti:$port)
+    if [ ! -z "$pid" ]; then
+        echo -e "${YELLOW}Killing process on port $port (PID: $pid)${NC}"
+        kill -9 $pid 2>/dev/null || true
+        sleep 2
+    fi
+}
+
+# Check for .env file
+if [ ! -f ".env" ]; then
+    echo -e "${YELLOW}No .env file found. Creating from .env.example...${NC}"
+    if [ -f ".env.example" ]; then
+        cp .env.example .env
+        echo -e "${GREEN}Created .env file. Please configure it with your settings.${NC}"
+    else
+        echo -e "${RED}Error: .env.example not found!${NC}"
+        exit 1
+    fi
+fi
+
+# Load environment variables (using Python to handle complex values)
+if command -v python3 &> /dev/null; then
+    eval $(python3 -c "
+import sys
+import re
+try:
+    with open('.env', 'r') as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith('#'):
+                # Match KEY=VALUE (handling quoted values)
+                match = re.match(r'^([A-Za-z_][A-Za-z0-9_]*)=(.*)$', line)
+                if match:
+                    key, value = match.groups()
+                    # Remove quotes if present
+                    value = value.strip()
+                    if (value.startswith('\"') and value.endswith('\"')) or \
+                       (value.startswith(\"'\") and value.endswith(\"'\")):
+                        value = value[1:-1]
+                    # Escape special characters for bash
+                    value = value.replace('\"', '\\\"')
+                    print(f'export {key}=\"{value}\"')
+except FileNotFoundError:
+    pass
+" 2>/dev/null)
+else
+    # Fallback: try simple sourcing (may fail with complex values)
+    set -a
+    source .env 2>/dev/null || true
+    set +a
+fi
+
+# Set defaults if not set
+export DATABASE_TYPE=${DATABASE_TYPE:-sqlite}
+export API_HOST=${API_HOST:-127.0.0.1}
+export API_PORT=${API_PORT:-5055}
+export FRONTEND_PORT=${FRONTEND_PORT:-3000}
+export DEPLOYMENT_ENV=${DEPLOYMENT_ENV:-development}
+export HOSTING_PORT=${HOSTING_PORT:-5056}
+export HOSTING_HOST=${HOSTING_HOST:-127.0.0.1}
+export MINIO_PORT=${MINIO_PORT:-9000}
+export MINIO_CONSOLE_PORT=${MINIO_CONSOLE_PORT:-9001}
+export S3_ACCESS_KEY=${S3_ACCESS_KEY:-minioadmin}
+export S3_SECRET_KEY=${S3_SECRET_KEY:-minioadmin}
+export S3_BUCKET_NAME=${S3_BUCKET_NAME:-open-notebook-files}
+export LANGFUSE_PORT=${LANGFUSE_PORT:-3001}
+export LANGFUSE_ENABLED=${LANGFUSE_ENABLED:-false}
+
+# Setup HAI_PROXY_KEY for frontend
+echo ""
+echo -e "${BLUE}Setting up HAI_PROXY_KEY for frontend...${NC}"
+if [ -n "$HAI_PROXY_KEY" ]; then
+    echo "NEXT_PUBLIC_HAI_PROXY_KEY=$HAI_PROXY_KEY" > frontend/.env.local
+    echo -e "${GREEN}✓ Frontend .env.local configured with HAI_PROXY_KEY${NC}"
+else
+    echo -e "${YELLOW}⚠ HAI_PROXY_KEY not found in .env - LiteLLM models will use fallback list${NC}"
+    echo -e "${YELLOW}  Add HAI_PROXY_KEY=your-key to .env to enable full model list${NC}"
+fi
+
+echo ""
+echo -e "${BLUE}Configuration:${NC}"
+echo -e "  Database:  ${GREEN}${DATABASE_TYPE}${NC}"
+echo -e "  Deployment: ${GREEN}${DEPLOYMENT_ENV}${NC}"
+echo -e "  Backend:   ${GREEN}http://${API_HOST}:${API_PORT}${NC}"
+echo -e "  Frontend:  ${GREEN}http://localhost:${FRONTEND_PORT}${NC}"
+echo -e "  MinIO (S3): ${GREEN}http://localhost:${MINIO_PORT}${NC}"
+echo -e "  MinIO Console: ${GREEN}http://localhost:${MINIO_CONSOLE_PORT}${NC}"
+if [ "$LANGFUSE_ENABLED" = "true" ]; then
+    echo -e "  Langfuse:  ${GREEN}http://localhost:${LANGFUSE_PORT}${NC} ${YELLOW}(Observability)${NC}"
+fi
+if [ "$DEPLOYMENT_ENV" = "production" ]; then
+    echo -e "  Hosting:   ${GREEN}http://${HOSTING_HOST}:${HOSTING_PORT}${NC}"
+fi
+echo ""
+
+# Check if ports are available and kill processes automatically
+if check_port $MINIO_PORT; then
+    echo -e "${YELLOW}Port $MINIO_PORT is already in use. Killing existing process...${NC}"
+    kill_port $MINIO_PORT
+fi
+
+if check_port $API_PORT; then
+    echo -e "${YELLOW}Port $API_PORT is already in use. Killing existing process...${NC}"
+    kill_port $API_PORT
+fi
+
+if check_port $FRONTEND_PORT; then
+    echo -e "${YELLOW}Port $FRONTEND_PORT is already in use. Killing existing process...${NC}"
+    kill_port $FRONTEND_PORT
+fi
+
+# Check hosting port if in production mode
+if [ "$DEPLOYMENT_ENV" = "production" ]; then
+    if check_port $HOSTING_PORT; then
+        echo -e "${YELLOW}Port $HOSTING_PORT is already in use. Killing existing process...${NC}"
+        kill_port $HOSTING_PORT
+    fi
+fi
+
+# Create data directory if it doesn't exist
+mkdir -p data/uploads
+mkdir -p data/minio
+echo -e "${GREEN}✓ Data directory ready${NC}"
+
+# Start MinIO (S3-compatible storage) using Docker
+echo -e "${BLUE}Checking MinIO (S3 Storage)...${NC}"
+
+# Check if MinIO container is already running
+if docker ps -q -f name=open-notebook-minio > /dev/null 2>&1 && [ -n "$(docker ps -q -f name=open-notebook-minio)" ]; then
+    echo -e "${GREEN}✓ MinIO container already running${NC}"
+
+    # Verify it's healthy
+    if curl -s http://localhost:${MINIO_PORT}/minio/health/live > /dev/null 2>&1; then
+        echo -e "${GREEN}✓ MinIO is healthy and ready${NC}"
+        echo -e "${GREEN}  Console: http://localhost:${MINIO_CONSOLE_PORT} (${S3_ACCESS_KEY}/${S3_SECRET_KEY})${NC}"
+        MINIO_RUNNING=true
+    else
+        echo -e "${YELLOW}⚠ MinIO container exists but not responding. Restarting...${NC}"
+        docker restart open-notebook-minio > /dev/null 2>&1 || true
+        sleep 3
+        MINIO_RUNNING=false
+    fi
+else
+    echo -e "${BLUE}Starting MinIO...${NC}"
+    MINIO_RUNNING=false
+fi
+
+# Check if Docker is installed and running (only if MinIO not already running)
+if [ "$MINIO_RUNNING" != "true" ]; then
+    if ! command -v docker &> /dev/null; then
+        echo -e "${YELLOW}⚠ Docker not found. Skipping MinIO setup.${NC}"
+        echo -e "${YELLOW}  To use file uploads, either:${NC}"
+        echo -e "${YELLOW}  1. Install Docker Desktop from https://docs.docker.com/get-docker/${NC}"
+        echo -e "${YELLOW}  2. Or configure AWS S3 in .env file${NC}"
+        echo ""
+        echo -e "${YELLOW}Continuing without S3 storage...${NC}"
+        echo ""
+    elif ! docker info > /dev/null 2>&1; then
+        echo -e "${YELLOW}⚠ Docker daemon is not running.${NC}"
+
+        # Try to start Docker Desktop on macOS
+        if [[ "$OSTYPE" == "darwin"* ]]; then
+            echo -e "${BLUE}Attempting to start Docker Desktop...${NC}"
+
+            # Check if Docker.app exists
+            if [ -e "/Applications/Docker.app" ]; then
+                open -a Docker
+                echo -e "${YELLOW}Waiting for Docker Desktop to start (this may take 30-60 seconds)...${NC}"
+
+                # Wait up to 60 seconds for Docker to start
+                for i in {1..60}; do
+                    if docker info > /dev/null 2>&1; then
+                        echo -e "${GREEN}✓ Docker Desktop started successfully!${NC}"
+                        sleep 2  # Give it a moment to stabilize
+                        break
+                    fi
+                    if [ $i -eq 60 ]; then
+                        echo -e "${RED}✗ Docker Desktop failed to start within 60 seconds.${NC}"
+                        echo -e "${YELLOW}  Please start Docker Desktop manually and run this script again.${NC}"
+                        echo -e "${YELLOW}  Or configure AWS S3 in .env file for cloud storage.${NC}"
+                        echo ""
+                        echo -e "${YELLOW}Continuing without S3 storage...${NC}"
+                        echo ""
+                        # Continue without Docker
+                        DOCKER_STARTED=false
+                        break
+                    fi
+                    sleep 1
+                    if [ $((i % 10)) -eq 0 ]; then
+                        echo -n "."
+                    fi
+                done
+
+                # If Docker started, continue to MinIO setup
+                if docker info > /dev/null 2>&1; then
+                    DOCKER_STARTED=true
+                fi
+            else
+                echo -e "${YELLOW}  Docker Desktop not found at /Applications/Docker.app${NC}"
+                echo -e "${YELLOW}  Please install Docker Desktop from https://docs.docker.com/get-docker/${NC}"
+                echo -e "${YELLOW}  Or configure AWS S3 in .env file for cloud storage.${NC}"
+                echo ""
+                echo -e "${YELLOW}Continuing without S3 storage...${NC}"
+                echo ""
+                DOCKER_STARTED=false
+            fi
+        else
+            # Non-macOS systems
+            echo -e "${YELLOW}  Please start Docker and try again.${NC}"
+            echo -e "${YELLOW}  Or configure AWS S3 in .env file for cloud storage.${NC}"
+            echo ""
+            echo -e "${YELLOW}Continuing without S3 storage...${NC}"
+            echo ""
+            DOCKER_STARTED=false
+        fi
+    else
+        DOCKER_STARTED=true
+    fi
+fi
+
+# Only proceed with MinIO if Docker is running and MinIO not already running
+if [ "${DOCKER_STARTED}" = "true" ] || [ "$MINIO_RUNNING" = "true" ]; then
+    # Skip if MinIO is already running
+    if [ "$MINIO_RUNNING" = "true" ]; then
+        echo ""
+    else
+        # Docker is available and running, need to start MinIO
+        # Check if MinIO container already exists (but not running)
+        if [ "$(docker ps -a -q -f name=open-notebook-minio)" ]; then
+            echo -e "${YELLOW}MinIO container exists but stopped. Starting...${NC}"
+            docker start open-notebook-minio > /dev/null 2>&1 || {
+                echo -e "${YELLOW}Failed to start existing container. Removing and recreating...${NC}"
+                docker rm -f open-notebook-minio > /dev/null 2>&1 || true
+            }
+        fi
+
+        # Start MinIO container if not already running
+        if ! docker ps -q -f name=open-notebook-minio > /dev/null 2>&1 || [ -z "$(docker ps -q -f name=open-notebook-minio)" ]; then
+            echo -e "${BLUE}Starting new MinIO container...${NC}"
+            if docker run -d \
+                --name open-notebook-minio \
+                -p ${MINIO_PORT}:9000 \
+                -p ${MINIO_CONSOLE_PORT}:9001 \
+                -e "MINIO_ROOT_USER=${S3_ACCESS_KEY}" \
+                -e "MINIO_ROOT_PASSWORD=${S3_SECRET_KEY}" \
+                -v "${PROJECT_ROOT}/data/minio:/data" \
+                minio/minio server /data --console-address ":9001" > /dev/null 2>&1; then
+
+                echo -e "${GREEN}✓ MinIO container started${NC}"
+            else
+                echo -e "${YELLOW}⚠ Failed to start MinIO container. File uploads will not work.${NC}"
+                echo -e "${YELLOW}  Check Docker logs or use AWS S3 instead.${NC}"
+            fi
+        fi
+
+        # Wait for MinIO to be ready
+        if docker ps -q -f name=open-notebook-minio > /dev/null 2>&1 && [ -n "$(docker ps -q -f name=open-notebook-minio)" ]; then
+            echo -e "${YELLOW}Waiting for MinIO to be ready...${NC}"
+            for i in {1..30}; do
+                if curl -s http://localhost:${MINIO_PORT}/minio/health/live > /dev/null 2>&1; then
+                    echo -e "${GREEN}✓ MinIO is ready!${NC}"
+                    break
+                fi
+                if [ $i -eq 30 ]; then
+                    echo -e "${YELLOW}⚠ MinIO taking longer than expected. Continuing anyway...${NC}"
+                    break
+                fi
+                sleep 1
+                if [ $((i % 5)) -eq 0 ]; then
+                    echo -n "."
+                fi
+            done
+            echo ""
+
+            # Create bucket if it doesn't exist (using mc client inside container)
+            echo -e "${BLUE}Setting up S3 bucket: ${S3_BUCKET_NAME}${NC}"
+            if docker run --rm --network host \
+                --entrypoint /bin/sh \
+                minio/mc -c "
+                mc alias set myminio http://localhost:${MINIO_PORT} ${S3_ACCESS_KEY} ${S3_SECRET_KEY} > /dev/null 2>&1 &&
+                mc mb --ignore-existing myminio/${S3_BUCKET_NAME} > /dev/null 2>&1 &&
+                mc anonymous set download myminio/${S3_BUCKET_NAME} > /dev/null 2>&1
+            " > /dev/null 2>&1; then
+                echo -e "${GREEN}✓ S3 bucket configured${NC}"
+            else
+                echo -e "${YELLOW}⚠ Bucket setup skipped (will be created on first upload)${NC}"
+            fi
+
+            echo -e "${GREEN}✓ MinIO ready at http://localhost:${MINIO_PORT}${NC}"
+            echo -e "${GREEN}  Console: http://localhost:${MINIO_CONSOLE_PORT} (${S3_ACCESS_KEY}/${S3_SECRET_KEY})${NC}"
+        fi
+    fi
+    echo ""
+
+    # Start Langfuse if enabled
+    if [ "$LANGFUSE_ENABLED" = "true" ]; then
+        echo -e "${BLUE}Starting Langfuse (Observability)...${NC}"
+
+        # Check if Langfuse containers are running
+        if docker ps -q -f name=open-notebook-langfuse > /dev/null 2>&1; then
+            echo -e "${GREEN}✓ Langfuse already running${NC}"
+        else
+            # Check if docker-compose.langfuse.yml exists
+            if [ -f "docker-compose.langfuse.yml" ]; then
+                # Start Langfuse services
+                if docker-compose -f docker-compose.langfuse.yml up -d > /dev/null 2>&1; then
+                    echo -e "${GREEN}✓ Langfuse containers started${NC}"
+
+                    # Wait for Langfuse to be ready
+                    echo -e "${YELLOW}Waiting for Langfuse to be ready...${NC}"
+                    for i in {1..30}; do
+                        if curl -s http://localhost:${LANGFUSE_PORT}/api/health > /dev/null 2>&1; then
+                            echo -e "${GREEN}✓ Langfuse is ready!${NC}"
+                            echo -e "${GREEN}  Dashboard: http://localhost:${LANGFUSE_PORT}${NC}"
+                            break
+                        fi
+                        if [ $i -eq 30 ]; then
+                            echo -e "${YELLOW}⚠ Langfuse taking longer than expected. Check logs:${NC}"
+                            echo -e "${YELLOW}  docker-compose -f docker-compose.langfuse.yml logs${NC}"
+                            break
+                        fi
+                        sleep 2
+                        if [ $((i % 5)) -eq 0 ]; then
+                            echo -n "."
+                        fi
+                    done
+                    echo ""
+                else
+                    echo -e "${YELLOW}⚠ Failed to start Langfuse. Observability will be disabled.${NC}"
+                    echo -e "${YELLOW}  Run: ./setup-langfuse.sh to set up Langfuse${NC}"
+                fi
+            else
+                echo -e "${YELLOW}⚠ Langfuse configuration not found.${NC}"
+                echo -e "${YELLOW}  Run: ./setup-langfuse.sh to set up Langfuse${NC}"
+            fi
+        fi
+        echo ""
+    fi
+fi
+
+# Check Python virtual environment
+if [ ! -d "backend/venv" ]; then
+    echo -e "${YELLOW}Creating Python virtual environment...${NC}"
+    python3 -m venv backend/venv
+fi
+
+# Activate virtual environment
+source backend/venv/bin/activate
+echo -e "${GREEN}✓ Virtual environment activated${NC}"
+
+# Install/upgrade backend dependencies
+echo -e "${BLUE}Installing backend dependencies...${NC}"
+cd backend
+pip install -q --upgrade pip
+pip install -q -e . 2>&1 | grep -v "already satisfied" || true
+echo -e "${GREEN}✓ Backend dependencies installed${NC}"
+cd ..
+
+# Run database migrations
+echo -e "${BLUE}Running database migrations...${NC}"
+cd backend
+python -m open_notebook.database.async_migrate migrate
+cd ..
+echo -e "${GREEN}✓ Database migrations complete${NC}"
+
+# Start backend server in background
+echo -e "${BLUE}Starting backend server...${NC}"
+# Set database path to absolute path in root data folder
+export SQLITE_DB_PATH="${PROJECT_ROOT}/backend/data/database.db"
+cd backend
+nohup uvicorn api.main:app --host $API_HOST --port $API_PORT --reload > ../backend.log 2>&1 &
+BACKEND_PID=$!
+echo $BACKEND_PID > ../.backend.pid
+cd ..
+echo -e "${GREEN}✓ Backend started (PID: $BACKEND_PID)${NC}"
+
+# Wait for backend to be ready
+echo -e "${YELLOW}Waiting for backend to start...${NC}"
+for i in {1..30}; do
+    if curl -s http://$API_HOST:$API_PORT/api/health > /dev/null 2>&1; then
+        echo -e "${GREEN}✓ Backend is ready!${NC}"
+        break
+    fi
+    if [ $i -eq 30 ]; then
+        echo -e "${RED}Backend failed to start. Check backend.log for errors.${NC}"
+        tail -20 backend.log
+        exit 1
+    fi
+    sleep 1
+    echo -n "."
+done
+echo ""
+
+# Check if frontend exists
+if [ ! -d "frontend" ]; then
+    echo -e "${YELLOW}Frontend directory not found. Skipping frontend startup.${NC}"
+    echo -e "${GREEN}Backend is running at: http://${API_HOST}:${API_PORT}${NC}"
+    echo -e "${GREEN}API docs available at: http://${API_HOST}:${API_PORT}/api/docs${NC}"
+    exit 0
+fi
+
+# Install frontend dependencies
+if [ ! -d "frontend/node_modules" ]; then
+    echo -e "${BLUE}Installing frontend dependencies...${NC}"
+    cd frontend
+    npm install
+    cd ..
+    echo -e "${GREEN}✓ Frontend dependencies installed${NC}"
+fi
+
+# Start frontend server in background
+echo -e "${BLUE}Starting frontend server...${NC}"
+cd frontend
+nohup npm run dev -- -p $FRONTEND_PORT > ../frontend.log 2>&1 &
+FRONTEND_PID=$!
+echo $FRONTEND_PID > ../.frontend.pid
+cd ..
+echo -e "${GREEN}✓ Frontend started (PID: $FRONTEND_PID)${NC}"
+
+# Wait for frontend to be ready
+echo -e "${YELLOW}Waiting for frontend to start...${NC}"
+for i in {1..60}; do
+    if curl -s http://localhost:$FRONTEND_PORT > /dev/null 2>&1; then
+        echo -e "${GREEN}✓ Frontend is ready!${NC}"
+        break
+    fi
+    if [ $i -eq 60 ]; then
+        echo -e "${YELLOW}Frontend is taking longer than expected. Check frontend.log for details.${NC}"
+        break
+    fi
+    sleep 1
+    if [ $((i % 5)) -eq 0 ]; then
+        echo -n "."
+    fi
+done
+echo ""
+
+# Start hosting server if in production mode
+if [ "$DEPLOYMENT_ENV" = "production" ]; then
+    echo -e "${BLUE}Starting hosting server (production mode)...${NC}"
+    nohup uvicorn api.hosting_server:app --host $HOSTING_HOST --port $HOSTING_PORT --workers 4 > hosting.log 2>&1 &
+    HOSTING_PID=$!
+    echo $HOSTING_PID > .hosting.pid
+    echo -e "${GREEN}✓ Hosting server started (PID: $HOSTING_PID)${NC}"
+
+    # Wait for hosting server to be ready
+    echo -e "${YELLOW}Waiting for hosting server to start...${NC}"
+    for i in {1..30}; do
+        if curl -s http://$HOSTING_HOST:$HOSTING_PORT/health > /dev/null 2>&1; then
+            echo -e "${GREEN}✓ Hosting server is ready!${NC}"
+            break
+        fi
+        if [ $i -eq 30 ]; then
+            echo -e "${YELLOW}Hosting server is taking longer than expected. Check hosting.log for details.${NC}"
+            break
+        fi
+        sleep 1
+        echo -n "."
+    done
+    echo ""
+fi
+
+# Summary
+echo ""
+echo -e "${GREEN}========================================${NC}"
+echo -e "${GREEN}   All Services Started Successfully!  ${NC}"
+echo -e "${GREEN}========================================${NC}"
+echo ""
+echo -e "${BLUE}Backend:${NC}"
+echo -e "  API:  ${GREEN}http://${API_HOST}:${API_PORT}${NC}"
+echo -e "  Docs: ${GREEN}http://${API_HOST}:${API_PORT}/api/docs${NC}"
+echo -e "  Logs: ${YELLOW}backend.log${NC}"
+echo ""
+if [ -f ".frontend.pid" ]; then
+    echo -e "${BLUE}Frontend:${NC}"
+    echo -e "  App:  ${GREEN}http://localhost:${FRONTEND_PORT}${NC}"
+    echo -e "  Logs: ${YELLOW}frontend.log${NC}"
+    echo ""
+fi
+if [ "$DEPLOYMENT_ENV" = "production" ] && [ -f ".hosting.pid" ]; then
+    echo -e "${BLUE}Hosting (Production):${NC}"
+    echo -e "  Public: ${GREEN}http://${HOSTING_HOST}:${HOSTING_PORT}${NC}"
+    echo -e "  Logs: ${YELLOW}hosting.log${NC}"
+    echo ""
+fi
+echo -e "${BLUE}Commands:${NC}"
+echo -e "  Stop all: ${YELLOW}./stop.sh${NC}"
+echo -e "  View backend logs: ${YELLOW}tail -f backend.log${NC}"
+if [ -f ".frontend.pid" ]; then
+    echo -e "  View frontend logs: ${YELLOW}tail -f frontend.log${NC}"
+fi
+if [ "$DEPLOYMENT_ENV" = "production" ] && [ -f ".hosting.pid" ]; then
+    echo -e "  View hosting logs: ${YELLOW}tail -f hosting.log${NC}"
+fi
+if [ "$LANGFUSE_ENABLED" = "true" ]; then
+    echo -e "  View Langfuse logs: ${YELLOW}docker-compose -f docker-compose.langfuse.yml logs -f${NC}"
+    echo -e "  Langfuse dashboard: ${YELLOW}http://localhost:${LANGFUSE_PORT}${NC}"
+fi
+echo ""
+echo -e "${YELLOW}Press Ctrl+C to view logs, or run './stop.sh' to stop all services${NC}"
+echo ""
+
+# Follow logs
+if [ "$DEPLOYMENT_ENV" = "production" ] && [ -f ".hosting.pid" ]; then
+    tail -f backend.log frontend.log hosting.log 2>/dev/null || tail -f backend.log
+else
+    tail -f backend.log frontend.log 2>/dev/null || tail -f backend.log
+fi

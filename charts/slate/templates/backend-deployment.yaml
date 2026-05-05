@@ -1,0 +1,122 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "slate.fullname" . }}-backend
+  labels:
+    {{- include "slate.backend.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.backend.replicaCount }}
+  selector:
+    matchLabels:
+      app: slate
+      component: backend
+  template:
+    metadata:
+      labels:
+        app: slate
+        component: backend
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+      - name: backend
+        image: {{ include "slate.backend.image" . }}
+        imagePullPolicy: {{ .Values.backend.image.pullPolicy }}
+        ports:
+        - containerPort: {{ .Values.backend.service.port }}
+          name: http
+        env:
+        - name: API_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "slate.fullname" . }}-config
+              key: API_HOST
+        - name: API_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "slate.fullname" . }}-config
+              key: API_PORT
+        - name: DATABASE_TYPE
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "slate.fullname" . }}-config
+              key: DATABASE_TYPE
+        - name: SQLITE_DB_PATH
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "slate.fullname" . }}-config
+              key: SQLITE_DB_PATH
+        - name: LOG_LEVEL
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "slate.fullname" . }}-config
+              key: LOG_LEVEL
+        - name: OPENAI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "slate.fullname" . }}-secrets
+              key: openai-api-key
+              optional: true
+        - name: ANTHROPIC_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "slate.fullname" . }}-secrets
+              key: anthropic-api-key
+              optional: true
+        - name: OPEN_NOTEBOOK_ENCRYPTION_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "slate.fullname" . }}-secrets
+              key: encryption-key
+        {{- if .Values.backend.persistence.enabled }}
+        volumeMounts:
+        - name: data
+          mountPath: /app/data
+        {{- end }}
+        resources:
+          {{- toYaml .Values.backend.resources | nindent 10 }}
+        {{- if .Values.backend.livenessProbe.enabled }}
+        livenessProbe:
+          httpGet:
+            path: /api/health
+            port: {{ .Values.backend.service.port }}
+          initialDelaySeconds: {{ .Values.backend.livenessProbe.initialDelaySeconds }}
+          periodSeconds: {{ .Values.backend.livenessProbe.periodSeconds }}
+          timeoutSeconds: {{ .Values.backend.livenessProbe.timeoutSeconds }}
+          failureThreshold: {{ .Values.backend.livenessProbe.failureThreshold }}
+        {{- end }}
+        {{- if .Values.backend.readinessProbe.enabled }}
+        readinessProbe:
+          httpGet:
+            path: /api/health
+            port: {{ .Values.backend.service.port }}
+          initialDelaySeconds: {{ .Values.backend.readinessProbe.initialDelaySeconds }}
+          periodSeconds: {{ .Values.backend.readinessProbe.periodSeconds }}
+          timeoutSeconds: {{ .Values.backend.readinessProbe.timeoutSeconds }}
+          failureThreshold: {{ .Values.backend.readinessProbe.failureThreshold }}
+        {{- end }}
+      {{- if .Values.backend.persistence.enabled }}
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: {{ include "slate.fullname" . }}-backend-data
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "slate.fullname" . }}-backend
+  labels:
+    {{- include "slate.backend.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.backend.service.type }}
+  ports:
+  - port: {{ .Values.backend.service.port }}
+    targetPort: {{ .Values.backend.service.port }}
+    protocol: TCP
+    name: http
+  selector:
+    app: slate
+    component: backend

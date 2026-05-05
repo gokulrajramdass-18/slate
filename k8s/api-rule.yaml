@@ -1,0 +1,17 @@
+apiVersion: gateway.kyma-project.io/v2
+kind: APIRule
+metadata:
+  name: slate
+  labels:
+    app: slate
+spec:
+  gateway: kyma-system/kyma-gateway
+  hosts:
+  - slate
+  rules:
+    - path: /*
+      methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"]
+      service:
+        name: slate-approuter
+        port: 5000
+      noAuth: false

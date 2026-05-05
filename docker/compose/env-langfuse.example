@@ -1,0 +1,55 @@
+# .env.example additions for Langfuse
+# Add these to your existing .env.example file
+
+# ============================================
+# Langfuse Self-Hosted Observability
+# ============================================
+
+# Langfuse Database Configuration
+LANGFUSE_DB_USER=langfuse
+LANGFUSE_DB_PASSWORD=langfuse_secure_password_change_in_production
+LANGFUSE_DB_NAME=langfuse
+
+# Langfuse Application Settings
+LANGFUSE_PORT=3001
+
+# Security Secrets (REQUIRED - Generate with: python -c "import secrets; print(secrets.token_urlsafe(32))")
+LANGFUSE_NEXTAUTH_SECRET=change-this-to-a-random-secret-min-32-characters
+LANGFUSE_SALT=change-this-to-a-random-salt-min-32-characters
+
+# Feature Flags
+LANGFUSE_TELEMETRY_ENABLED=false
+LANGFUSE_EXPERIMENTAL=false
+
+# S3 Storage (uses existing MinIO)
+LANGFUSE_S3_BUCKET=langfuse-traces
+
+# Backend Integration (Fill PUBLIC_KEY and SECRET_KEY after Langfuse setup)
+LANGFUSE_ENABLED=true
+LANGFUSE_HOST=http://langfuse:3000  # For Docker (use http://localhost:3001 for local dev)
+LANGFUSE_PUBLIC_KEY=pk-lf-your-public-key-here
+LANGFUSE_SECRET_KEY=sk-lf-your-secret-key-here
+LANGFUSE_VERBOSE=false
+LANGFUSE_FLUSH_INTERVAL=1000
+
+# Optional: Email Configuration (for user invites and notifications)
+LANGFUSE_EMAIL_FROM=
+LANGFUSE_SMTP_HOST=
+LANGFUSE_SMTP_PORT=
+LANGFUSE_SMTP_USER=
+LANGFUSE_SMTP_PASSWORD=
+
+# ============================================
+# Setup Instructions:
+# ============================================
+# 1. Run: ./setup-langfuse.sh
+# 2. Open: http://localhost:3001
+# 3. Create user and project
+# 4. Generate API keys in Settings → API Keys
+# 5. Update LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY above
+# 6. Restart: ./stop.sh && ./start.sh
+# 7. Test: Send a chat message and check Traces in Langfuse UI
+#
+# For detailed instructions, see: LANGFUSE_DOCKER_SETUP.md
+# For quick start, see: LANGFUSE_QUICK_START.md
+# ============================================

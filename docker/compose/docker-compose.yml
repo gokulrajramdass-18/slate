@@ -1,0 +1,163 @@
+version: '3.8'
+
+services:
+  # Backend API service
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: open-notebook-backend
+    ports:
+      - "${API_PORT:-5055}:5055"
+    environment:
+      # Database configuration
+      - DATABASE_TYPE=${DATABASE_TYPE:-sqlite}
+      - SQLITE_DB_PATH=/app/data/database.db
+      - SQLITE_POOL_SIZE=${SQLITE_POOL_SIZE:-5}
+
+      # HANA Cloud configuration (if using HANA)
+      - HANA_HOST=${HANA_HOST:-}
+      - HANA_PORT=${HANA_PORT:-443}
+      - HANA_USER=${HANA_USER:-}
+      - HANA_PASSWORD=${HANA_PASSWORD:-}
+      - HANA_DATABASE=${HANA_DATABASE:-}
+      - HANA_ENCRYPT=${HANA_ENCRYPT:-true}
+
+      # API configuration
+      - API_HOST=0.0.0.0
+      - API_PORT=5055
+      - OPEN_NOTEBOOK_ENCRYPTION_KEY=${OPEN_NOTEBOOK_ENCRYPTION_KEY:-}
+
+      # AI Provider Keys
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+
+      # Search configuration
+      - DEFAULT_SEARCH_STRATEGY=${DEFAULT_SEARCH_STRATEGY:-hybrid}
+      - VECTOR_SIMILARITY_THRESHOLD=${VECTOR_SIMILARITY_THRESHOLD:-0.7}
+
+      # S3/MinIO configuration for file uploads
+      - S3_ENDPOINT=${S3_ENDPOINT:-http://minio:9000}
+      - S3_ACCESS_KEY=${S3_ACCESS_KEY:-minioadmin}
+      - S3_SECRET_KEY=${S3_SECRET_KEY:-minioadmin}
+      - S3_BUCKET_NAME=${S3_BUCKET_NAME:-open-notebook-files}
+      - S3_REGION=${S3_REGION:-us-east-1}
+      - S3_USE_SSL=${S3_USE_SSL:-false}
+
+      # Langfuse Observability (self-hosted)
+      - LANGFUSE_ENABLED=${LANGFUSE_ENABLED:-false}
+      - LANGFUSE_HOST=${LANGFUSE_HOST:-http://langfuse:3000}
+      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY:-}
+      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY:-}
+      - LANGFUSE_VERBOSE=${LANGFUSE_VERBOSE:-false}
+      - LANGFUSE_FLUSH_INTERVAL=${LANGFUSE_FLUSH_INTERVAL:-1000}
+    volumes:
+      - ./data:/app/data
+      - ./backend.log:/app/backend.log
+    depends_on:
+      minio:
+        condition: service_healthy
+    networks:
+      - open-notebook-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5055/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Frontend service
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: open-notebook-frontend
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://backend:5055
+      - NODE_ENV=production
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - open-notebook-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000', (res) => process.exit(res.statusCode === 200 ? 0 : 1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # MinIO (S3-compatible storage for file uploads)
+  minio:
+    image: minio/minio:latest
+    container_name: open-notebook-minio
+    ports:
+      - "${MINIO_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-minioadmin}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-minioadmin}
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio-data:/data
+    networks:
+      - open-notebook-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Microsite Hosting service (production only)
+  hosting:
+    build:
+      context: .
+      dockerfile: Dockerfile.hosting
+    container_name: open-notebook-hosting
+    ports:
+      - "${HOSTING_PORT:-5056}:5056"
+    environment:
+      - DEPLOYMENT_ENV=production
+      - HOSTING_PORT=5056
+      - DATABASE_TYPE=${DATABASE_TYPE:-sqlite}
+      - SQLITE_DB_PATH=/app/data/database.db
+      - SQLITE_POOL_SIZE=${SQLITE_POOL_SIZE:-3}
+      - HANA_HOST=${HANA_HOST:-}
+      - HANA_PORT=${HANA_PORT:-443}
+      - HANA_USER=${HANA_USER:-}
+      - HANA_PASSWORD=${HANA_PASSWORD:-}
+      - HANA_DATABASE=${HANA_DATABASE:-}
+      - HANA_ENCRYPT=${HANA_ENCRYPT:-true}
+      - OPEN_NOTEBOOK_ENCRYPTION_KEY=${OPEN_NOTEBOOK_ENCRYPTION_KEY:-}
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - open-notebook-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5056/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+networks:
+  open-notebook-network:
+    driver: bridge
+
+volumes:
+  data:
+    driver: local
+  minio-data:
+    driver: local

@@ -1,0 +1,30 @@
+# FastAPI and Web Framework
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+python-multipart==0.0.6
+
+# Pydantic for validation
+pydantic==2.5.0
+pydantic-settings==2.1.0
+
+# HTTP client for API sources
+httpx==0.25.2
+
+# Database drivers
+aiosqlite==0.19.0
+sqlalchemy[asyncio]==2.0.23
+
+# HANA database driver (optional, for Phase 8)
+# hdbcli==2.19.21
+
+# Environment management
+python-dotenv==1.0.0
+
+# JSON handling
+orjson==3.9.10
+
+# Utilities
+python-dateutil==2.8.2
+
+# Agent frameworks - LangGraph only
+langgraph>=0.0.40

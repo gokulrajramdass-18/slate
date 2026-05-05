@@ -1,0 +1,46 @@
+apiVersion: services.cloud.sap.com/v1
+kind: ServiceInstance
+metadata:
+  name: slate-xsuaa
+  labels:
+    app: slate
+spec:
+  serviceOfferingName: xsuaa
+  servicePlanName: application
+  parameters:
+    xsappname: slate
+    tenant-mode: dedicated
+    scopes:
+      - name: "$XSAPPNAME.User"
+        description: "Slate user"
+      - name: "$XSAPPNAME.Admin"
+        description: "Slate administrator"
+    role-templates:
+      - name: User
+        description: "Slate User"
+        scope-references:
+          - "$XSAPPNAME.User"
+      - name: Admin
+        description: "Slate Administrator"
+        scope-references:
+          - "$XSAPPNAME.User"
+          - "$XSAPPNAME.Admin"
+    role-collections:
+      - name: "Slate User"
+        description: "Slate User Role Collection"
+        role-template-references:
+          - "$XSAPPNAME.User"
+      - name: "Slate Admin"
+        description: "Slate Admin Role Collection"
+        role-template-references:
+          - "$XSAPPNAME.Admin"
+---
+apiVersion: services.cloud.sap.com/v1
+kind: ServiceBinding
+metadata:
+  name: slate-xsuaa-binding
+  labels:
+    app: slate
+spec:
+  serviceInstanceName: slate-xsuaa
+  secretName: slate-xsuaa-binding

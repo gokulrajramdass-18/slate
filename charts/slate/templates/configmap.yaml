@@ -1,0 +1,47 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "slate.fullname" . }}-config
+  labels:
+    {{- include "slate.labels" . | nindent 4 }}
+data:
+  API_HOST: {{ .Values.backend.env.apiHost | quote }}
+  API_PORT: {{ .Values.backend.env.apiPort | quote }}
+  DATABASE_TYPE: {{ .Values.backend.database.type | quote }}
+  SQLITE_DB_PATH: {{ .Values.backend.database.path | quote }}
+  LOG_LEVEL: {{ .Values.backend.env.logLevel | quote }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "slate.fullname" . }}-destinations
+  labels:
+    {{- include "slate.labels" . | nindent 4 }}
+data:
+  destinations: |
+    [
+      {
+        "name": "{{ .Values.destinations.backend.name }}",
+        "url": "{{ .Values.destinations.backend.url }}",
+        "forwardAuthToken": {{ .Values.destinations.backend.forwardAuthToken }}
+      },
+      {
+        "name": "{{ .Values.destinations.frontend.name }}",
+        "url": "{{ .Values.destinations.frontend.url }}",
+        "forwardAuthToken": {{ .Values.destinations.frontend.forwardAuthToken }}
+      }
+    ]
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "slate.fullname" . }}-xs-app
+  labels:
+    {{- include "slate.labels" . | nindent 4 }}
+data:
+  xs-app.json: |
+    {
+      "authenticationMethod": "{{ .Values.xsApp.authenticationMethod }}",
+      "welcomeFile": "{{ .Values.xsApp.welcomeFile }}",
+      "routes": {{ .Values.xsApp.routes | toJson }}
+    }

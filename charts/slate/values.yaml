@@ -1,0 +1,209 @@
+# Default values for Slate
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+# Global settings
+global:
+  # Docker registry for images
+  imageRegistry: ""
+  # Image pull secrets for private registries
+  imagePullSecrets: []
+
+# Backend configuration
+backend:
+  replicaCount: 1  # Keep at 1 for SQLite
+
+  image:
+    repository: slate-backend
+    tag: latest
+    pullPolicy: Always
+
+  service:
+    type: ClusterIP
+    port: 5055
+
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu: "250m"
+    limits:
+      memory: "2Gi"
+      cpu: "1000m"
+
+  # Health check configuration
+  livenessProbe:
+    enabled: true
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+  readinessProbe:
+    enabled: true
+    initialDelaySeconds: 10
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+  # Database configuration
+  database:
+    type: sqlite
+    path: /app/data/database.db
+
+  # Persistent storage
+  persistence:
+    enabled: true
+    storageClass: ""  # Use default storage class
+    accessMode: ReadWriteOnce
+    size: 5Gi
+
+  # Environment variables
+  env:
+    apiHost: "0.0.0.0"
+    apiPort: "5055"
+    logLevel: "INFO"
+
+# Frontend configuration
+frontend:
+  replicaCount: 2
+
+  image:
+    repository: slate-frontend
+    tag: latest
+    pullPolicy: Always
+
+  service:
+    type: ClusterIP
+    port: 3000
+
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "100m"
+    limits:
+      memory: "1Gi"
+      cpu: "500m"
+
+  # Environment variables
+  env:
+    nodeEnv: production
+    nextTelemetryDisabled: "1"
+
+# AppRouter configuration (SAP BTP Authentication)
+approuter:
+  enabled: true
+  replicaCount: 2
+
+  image:
+    repository: sapse/approuter
+    tag: latest
+    pullPolicy: Always
+
+  service:
+    type: ClusterIP
+    port: 5000
+
+  resources:
+    requests:
+      memory: "128Mi"
+      cpu: "50m"
+    limits:
+      memory: "512Mi"
+      cpu: "250m"
+
+  # Session affinity configuration
+  sessionAffinity:
+    enabled: true
+    cookieName: SLATE_SESSION_ID
+
+# XSUAA Service configuration
+xsuaa:
+  enabled: true
+  serviceOfferingName: xsuaa
+  servicePlanName: application
+
+  # Application configuration
+  xsappname: slate
+  tenantMode: dedicated
+
+  # Scopes
+  scopes:
+    - name: "$XSAPPNAME.User"
+      description: "Slate user"
+    - name: "$XSAPPNAME.Admin"
+      description: "Slate administrator"
+
+  # Role templates
+  roleTemplates:
+    - name: User
+      description: "Slate User"
+      scopeReferences:
+        - "$XSAPPNAME.User"
+    - name: Admin
+      description: "Slate Administrator"
+      scopeReferences:
+        - "$XSAPPNAME.User"
+        - "$XSAPPNAME.Admin"
+
+  # Role collections
+  roleCollections:
+    - name: "Slate User"
+      description: "Slate User Role Collection"
+      roleTemplateReferences:
+        - "$XSAPPNAME.User"
+    - name: "Slate Admin"
+      description: "Slate Admin Role Collection"
+      roleTemplateReferences:
+        - "$XSAPPNAME.Admin"
+
+# API Rule configuration (Kyma Ingress)
+apiRule:
+  enabled: true
+  gateway: kyma-system/kyma-gateway
+  host: slate  # Will be: slate.<cluster-domain>
+
+  # Custom domain (optional)
+  # customDomain: slate.example.com
+
+  # TLS configuration
+  tls:
+    enabled: false
+    secretName: ""
+
+# Secrets configuration
+secrets:
+  # Encryption key for database (required)
+  # Generate with: python -c "import secrets; print(secrets.token_urlsafe(32))"
+  encryptionKey: ""
+
+  # AI Provider API Keys (optional, at least one recommended)
+  openaiApiKey: ""
+  anthropicApiKey: ""
+
+# ConfigMap for destinations and routing
+destinations:
+  backend:
+    name: slate-backend
+    url: http://slate-backend:5055
+    forwardAuthToken: true
+
+  frontend:
+    name: slate-frontend
+    url: http://slate-frontend:3000
+    forwardAuthToken: true
+
+# xs-app.json configuration
+xsApp:
+  authenticationMethod: route
+  welcomeFile: /
+  routes:
+    - source: "^/api/(.*)$"
+      target: "/api/$1"
+      destination: slate-backend
+      authenticationType: xsuaa
+      csrfProtection: false
+
+    - source: "^/(.*)$"
+      target: "/$1"
+      destination: slate-frontend
+      authenticationType: xsuaa

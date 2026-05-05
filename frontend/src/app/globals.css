@@ -1,0 +1,473 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 222.2 84% 4.9%;
+    --card: 0 0% 100%;
+    --card-foreground: 222.2 84% 4.9%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222.2 84% 4.9%;
+    --primary: 221.2 83.2% 53.3%;
+    --primary-foreground: 210 40% 98%;
+    --secondary: 210 40% 96.1%;
+    --secondary-foreground: 222.2 47.4% 11.2%;
+    --muted: 210 40% 96.1%;
+    --muted-foreground: 215.4 16.3% 46.9%;
+    --accent: 210 40% 96.1%;
+    --accent-foreground: 222.2 47.4% 11.2%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 214.3 31.8% 91.4%;
+    --input: 214.3 31.8% 91.4%;
+    --ring: 221.2 83.2% 53.3%;
+    --radius: 0.5rem;
+  }
+
+  .dark {
+    --background: 222.2 84% 4.9%;
+    --foreground: 210 40% 98%;
+    --card: 222.2 84% 4.9%;
+    --card-foreground: 210 40% 98%;
+    --popover: 222.2 84% 4.9%;
+    --popover-foreground: 210 40% 98%;
+    --primary: 217.2 91.2% 59.8%;
+    --primary-foreground: 222.2 47.4% 11.2%;
+    --secondary: 217.2 32.6% 17.5%;
+    --secondary-foreground: 210 40% 98%;
+    --muted: 217.2 32.6% 17.5%;
+    --muted-foreground: 215 20.2% 65.1%;
+    --accent: 217.2 32.6% 17.5%;
+    --accent-foreground: 210 40% 98%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 217.2 32.6% 17.5%;
+    --input: 217.2 32.6% 17.5%;
+    --ring: 224.3 76.3% 48%;
+  }
+
+  * {
+    border-color: hsl(var(--border));
+  }
+
+  body {
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+    font-feature-settings: "rlig" 1, "calt" 1;
+  }
+
+  /* Custom scrollbar */
+  ::-webkit-scrollbar {
+    width: 0.5rem;
+    height: 0.5rem;
+  }
+
+  ::-webkit-scrollbar-track {
+    background-color: hsl(var(--secondary));
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background-color: hsl(var(--muted-foreground) / 0.3);
+    border-radius: 9999px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: hsl(var(--muted-foreground) / 0.5);
+  }
+
+  ::-webkit-scrollbar-corner {
+    background-color: hsl(var(--secondary));
+  }
+
+  /* Tiptap Editor */
+  .ProseMirror {
+    outline: none;
+  }
+
+  .ProseMirror p.is-editor-empty:first-child::before {
+    color: hsl(var(--muted-foreground));
+    content: attr(data-placeholder);
+    float: left;
+    height: 0;
+    pointer-events: none;
+  }
+
+  .ProseMirror h1 {
+    font-size: 1.875rem;
+    font-weight: 700;
+    line-height: 2.25rem;
+    margin-top: 1rem;
+    margin-bottom: 0.5rem;
+  }
+
+  .ProseMirror h2 {
+    font-size: 1.5rem;
+    font-weight: 600;
+    line-height: 2rem;
+    margin-top: 0.75rem;
+    margin-bottom: 0.5rem;
+  }
+
+  .ProseMirror ul,
+  .ProseMirror ol {
+    padding-left: 1.5rem;
+    margin: 0.5rem 0;
+  }
+
+  .ProseMirror ul {
+    list-style-type: disc;
+  }
+
+  .ProseMirror ol {
+    list-style-type: decimal;
+  }
+
+  .ProseMirror blockquote {
+    border-left: 3px solid hsl(var(--primary));
+    padding-left: 1rem;
+    margin: 0.5rem 0;
+    color: hsl(var(--muted-foreground));
+  }
+
+  .ProseMirror a {
+    color: hsl(var(--primary));
+    text-decoration: underline;
+    cursor: pointer;
+  }
+
+  .ProseMirror code {
+    background-color: hsl(var(--secondary));
+    padding: 0.125rem 0.25rem;
+    border-radius: 0.25rem;
+    font-family: monospace;
+    font-size: 0.875em;
+  }
+
+  .ProseMirror pre {
+    background-color: hsl(var(--secondary));
+    padding: 0.75rem;
+    border-radius: 0.5rem;
+    overflow-x: auto;
+  }
+
+  .ProseMirror pre code {
+    background: none;
+    padding: 0;
+  }
+
+  /* TipTap Table Styles */
+  .ProseMirror table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1rem 0;
+    font-size: 14px;
+  }
+
+  .ProseMirror table td,
+  .ProseMirror table th {
+    padding: 8px 10px;
+    border: 1px solid hsl(var(--border));
+    text-align: left;
+    vertical-align: top;
+  }
+
+  .ProseMirror table th {
+    background: hsl(var(--primary));
+    color: hsl(var(--primary-foreground));
+    font-weight: 600;
+    padding: 10px;
+  }
+
+  .ProseMirror table tr:nth-child(even) {
+    background: hsl(var(--muted) / 0.3);
+  }
+
+  .ProseMirror table tr:hover {
+    background: hsl(var(--accent) / 0.5);
+  }
+
+  /* Dark mode table adjustments */
+  .dark .ProseMirror table th {
+    background: hsl(var(--primary) / 0.8);
+  }
+
+  .dark .ProseMirror table td,
+  .dark .ProseMirror table th {
+    border-color: hsl(var(--border));
+  }
+
+  /* Chat Markdown Styles */
+  .prose.chat-message {
+    max-width: none;
+  }
+
+  .prose.chat-message code {
+    font-size: 0.875em;
+  }
+
+  .prose.chat-message pre {
+    margin: 0.75rem 0;
+    border-radius: 0.5rem;
+    overflow-x: auto;
+  }
+
+  .prose.chat-message pre code {
+    display: block;
+    padding: 1rem;
+    line-height: 1.5;
+  }
+
+  .prose.chat-message strong {
+    font-weight: 600;
+  }
+
+  .prose.chat-message ul {
+    margin: 0.5rem 0;
+  }
+
+  .prose.chat-message ol {
+    margin: 0.5rem 0;
+  }
+
+  .prose.chat-message li {
+    margin: 0.25rem 0;
+  }
+
+  .prose.chat-message h1,
+  .prose.chat-message h2,
+  .prose.chat-message h3 {
+    margin-top: 1rem;
+    margin-bottom: 0.5rem;
+  }
+
+  .prose.chat-message h1 {
+    font-size: 1.5rem;
+    font-weight: 700;
+  }
+
+  .prose.chat-message h2 {
+    font-size: 1.25rem;
+    font-weight: 600;
+  }
+
+  .prose.chat-message h3 {
+    font-size: 1.125rem;
+    font-weight: 600;
+  }
+
+  .prose.chat-message blockquote {
+    border-left: 3px solid hsl(var(--primary));
+    padding-left: 1rem;
+    margin: 0.75rem 0;
+    font-style: italic;
+  }
+
+  /* Code syntax highlighting - override highlight.js dark theme colors for better contrast */
+  .hljs {
+    background: #1e1e1e !important;
+    color: #d4d4d4 !important;
+  }
+
+  .dark .hljs {
+    background: #0d1117 !important;
+  }
+}
+
+  /* React Flow Custom Styles */
+  .react-flow__handle {
+    width: 14px !important;
+    height: 14px !important;
+    border: 3px solid white !important;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15) !important;
+    transition: all 0.2s ease !important;
+  }
+
+  .react-flow__handle:hover {
+    width: 18px !important;
+    height: 18px !important;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25) !important;
+  }
+
+  .react-flow__handle-connecting {
+    width: 18px !important;
+    height: 18px !important;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3) !important;
+  }
+
+  .react-flow__edge-path {
+    stroke-width: 3 !important;
+    transition: stroke 0.2s ease !important;
+  }
+
+  .react-flow__edge.selected .react-flow__edge-path {
+    stroke: hsl(var(--primary)) !important;
+    stroke-width: 4 !important;
+  }
+
+  .react-flow__edge:hover .react-flow__edge-path {
+    stroke: hsl(var(--primary)) !important;
+  }
+
+  .react-flow__connection-path {
+    stroke-width: 3 !important;
+    stroke-dasharray: 5, 5 !important;
+    animation: dash 0.5s linear infinite !important;
+  }
+
+  @keyframes dash {
+    to {
+      stroke-dashoffset: -10;
+    }
+  }
+
+
+  .react-flow__node {
+    cursor: pointer !important;
+    background: transparent !important;
+    padding: 0 !important;
+    border: none !important;
+  }
+
+  .react-flow__node.selected {
+    z-index: 1000 !important;
+  }
+
+  /* Landing page animations */
+  @keyframes fade-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
+  @keyframes fade-in-up {
+    from {
+      opacity: 0;
+      transform: translateY(20px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  @keyframes gradient-shift {
+    0%, 100% {
+      background-position: 0% 50%;
+    }
+    50% {
+      background-position: 100% 50%;
+    }
+  }
+
+  @keyframes pulse-slow {
+    0%, 100% {
+      opacity: 0.5;
+      transform: scale(1);
+    }
+    50% {
+      opacity: 0.8;
+      transform: scale(1.05);
+    }
+  }
+
+  .animate-fade-in {
+    animation: fade-in 0.8s ease-out forwards;
+  }
+
+  .animate-fade-in-up {
+    animation: fade-in-up 0.8s ease-out forwards;
+  }
+
+  .animate-gradient-shift {
+    background-size: 200% 200%;
+    animation: gradient-shift 8s ease infinite;
+  }
+
+  .animate-pulse-slow {
+    animation: pulse-slow 4s ease-in-out infinite;
+  }
+
+  .animation-delay-200 {
+    animation-delay: 0.2s;
+    opacity: 0;
+  }
+
+  .animation-delay-400 {
+    animation-delay: 0.4s;
+    opacity: 0;
+  }
+
+  .animation-delay-600 {
+    animation-delay: 0.6s;
+    opacity: 0;
+  }
+
+  .animation-delay-800 {
+    animation-delay: 0.8s;
+    opacity: 0;
+  }
+
+  .animation-delay-1000 {
+    animation-delay: 1s;
+    opacity: 0;
+  }
+
+  .animation-delay-1200 {
+    animation-delay: 1.2s;
+    opacity: 0;
+  }
+
+  .animation-delay-2000 {
+    animation-delay: 2s;
+  }
+
+  /* Graph node animations */
+  @keyframes node-appear {
+    from {
+      opacity: 0;
+      transform: scale(0.8) translateY(10px);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1) translateY(0);
+    }
+  }
+
+  @keyframes edge-draw {
+    from {
+      stroke-dashoffset: 1000;
+    }
+    to {
+      stroke-dashoffset: 0;
+    }
+  }
+
+  @keyframes pulse-ring {
+    0%, 100% {
+      transform: scale(1);
+      opacity: 0.6;
+    }
+    50% {
+      transform: scale(1.15);
+      opacity: 0.3;
+    }
+  }
+
+  .animate-node-appear {
+    animation: node-appear 0.6s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+  }
+
+  .animate-edge-draw {
+    stroke-dasharray: 1000;
+    stroke-dashoffset: 1000;
+    animation: edge-draw 1.2s ease-out forwards;
+  }
+
+  .animate-pulse-ring {
+    animation: pulse-ring 2s ease-in-out infinite;
+  }

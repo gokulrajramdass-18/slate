@@ -1,0 +1,95 @@
+# Production environment values
+# Usage: helm install slate ./charts/slate -f charts/slate/values-prod.yaml
+
+global:
+  imageRegistry: "your-registry.io/your-project"
+  imagePullSecrets:
+    - name: registry-secret
+
+secrets:
+  encryptionKey: "REPLACE_WITH_YOUR_PROD_ENCRYPTION_KEY"
+  openaiApiKey: "sk-..."
+  anthropicApiKey: "sk-ant-..."
+
+backend:
+  replicaCount: 1  # Keep at 1 for SQLite
+
+  image:
+    repository: slate-backend
+    tag: "1.0.0"  # Use specific version tag
+    pullPolicy: IfNotPresent
+
+  resources:
+    requests:
+      memory: "1Gi"
+      cpu: "500m"
+    limits:
+      memory: "4Gi"
+      cpu: "2000m"
+
+  persistence:
+    enabled: true
+    storageClass: "premium-rwo"  # Use premium storage
+    size: 20Gi
+
+  env:
+    logLevel: "INFO"
+
+  livenessProbe:
+    enabled: true
+    initialDelaySeconds: 60
+    periodSeconds: 15
+    timeoutSeconds: 10
+    failureThreshold: 5
+
+  readinessProbe:
+    enabled: true
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 5
+
+frontend:
+  replicaCount: 3  # High availability
+
+  image:
+    repository: slate-frontend
+    tag: "1.0.0"  # Use specific version tag
+    pullPolicy: IfNotPresent
+
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu: "200m"
+    limits:
+      memory: "2Gi"
+      cpu: "1000m"
+
+approuter:
+  enabled: true
+  replicaCount: 3  # High availability
+
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "100m"
+    limits:
+      memory: "1Gi"
+      cpu: "500m"
+
+  sessionAffinity:
+    enabled: true
+    cookieName: SLATE_SESSION_ID
+
+xsuaa:
+  enabled: true
+  xsappname: slate-prod
+  tenantMode: dedicated
+
+apiRule:
+  enabled: true
+  host: slate
+  customDomain: "slate.mycompany.com"
+  tls:
+    enabled: true
+    secretName: "slate-tls-cert"

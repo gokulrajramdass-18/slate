@@ -1,0 +1,117 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: slate-backend
+  labels:
+    app: slate
+    component: backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: slate
+      component: backend
+  template:
+    metadata:
+      labels:
+        app: slate
+        component: backend
+    spec:
+      containers:
+      - name: backend
+        image: <YOUR_DOCKER_REGISTRY>/slate-backend:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 5055
+          name: http
+        env:
+        - name: API_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: slate-config
+              key: API_HOST
+        - name: API_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: slate-config
+              key: API_PORT
+        - name: DATABASE_TYPE
+          valueFrom:
+            configMapKeyRef:
+              name: slate-config
+              key: DATABASE_TYPE
+        - name: SQLITE_DB_PATH
+          valueFrom:
+            configMapKeyRef:
+              name: slate-config
+              key: SQLITE_DB_PATH
+        - name: LOG_LEVEL
+          valueFrom:
+            configMapKeyRef:
+              name: slate-config
+              key: LOG_LEVEL
+        - name: OPENAI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: slate-secrets
+              key: openai-api-key
+              optional: true
+        - name: ANTHROPIC_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: slate-secrets
+              key: anthropic-api-key
+              optional: true
+        - name: OPEN_NOTEBOOK_ENCRYPTION_KEY
+          valueFrom:
+            secretKeyRef:
+              name: slate-secrets
+              key: encryption-key
+        volumeMounts:
+        - name: data
+          mountPath: /app/data
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        livenessProbe:
+          httpGet:
+            path: /api/health
+            port: 5055
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /api/health
+            port: 5055
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: slate-backend-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: slate-backend
+  labels:
+    app: slate
+    component: backend
+spec:
+  type: ClusterIP
+  ports:
+  - port: 5055
+    targetPort: 5055
+    protocol: TCP
+    name: http
+  selector:
+    app: slate
+    component: backend

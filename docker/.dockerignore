@@ -1,0 +1,85 @@
+# Ignore Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environment
+venv/
+backend/venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+backend.log
+frontend.log
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Data directory (but keep structure)
+data/
+!data/.gitkeep
+
+# Build outputs
+build/
+dist/
+*.egg-info/
+backend/*.egg-info/
+backend/build/
+backend/dist/
+
+# Node modules
+node_modules/
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+
+# Environment
+.env
+.env.local
+
+# Test coverage
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Documentation builds
+docs/_build/
+
+# Git
+.git/
+.gitignore
+
+# PID files
+*.pid
+.backend.pid
+.frontend.pid
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Large files
+*.mp4
+*.avi
+*.mov
+*.pdf
+*.zip
+*.tar.gz

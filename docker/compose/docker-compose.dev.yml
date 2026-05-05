@@ -1,0 +1,57 @@
+version: '3.8'
+
+services:
+  # Development backend with hot reload
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev.backend
+    container_name: open-notebook-backend-dev
+    ports:
+      - "${API_PORT:-5055}:5055"
+    environment:
+      - DATABASE_TYPE=${DATABASE_TYPE:-sqlite}
+      - SQLITE_DB_PATH=/app/data/database.db
+      - HANA_HOST=${HANA_HOST:-}
+      - HANA_PORT=${HANA_PORT:-443}
+      - HANA_USER=${HANA_USER:-}
+      - HANA_PASSWORD=${HANA_PASSWORD:-}
+      - HANA_DATABASE=${HANA_DATABASE:-}
+      - API_HOST=0.0.0.0
+      - API_PORT=5055
+      - OPEN_NOTEBOOK_ENCRYPTION_KEY=${OPEN_NOTEBOOK_ENCRYPTION_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - .:/app
+      - /app/venv
+      - ./data:/app/data
+    networks:
+      - open-notebook-network
+    command: uvicorn api.main:app --host 0.0.0.0 --port 5055 --reload
+
+  # Development frontend with hot reload
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev.frontend
+    container_name: open-notebook-frontend-dev
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://backend:5055
+      - NODE_ENV=development
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    depends_on:
+      - backend
+    networks:
+      - open-notebook-network
+    command: npm run dev
+
+networks:
+  open-notebook-network:
+    driver: bridge

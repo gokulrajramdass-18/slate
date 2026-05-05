@@ -1,0 +1,55 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "slate.fullname" . }}-frontend
+  labels:
+    {{- include "slate.frontend.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.frontend.replicaCount }}
+  selector:
+    matchLabels:
+      app: slate
+      component: frontend
+  template:
+    metadata:
+      labels:
+        app: slate
+        component: frontend
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+      - name: frontend
+        image: {{ include "slate.frontend.image" . }}
+        imagePullPolicy: {{ .Values.frontend.image.pullPolicy }}
+        ports:
+        - containerPort: {{ .Values.frontend.service.port }}
+          name: http
+        env:
+        - name: NODE_ENV
+          value: {{ .Values.frontend.env.nodeEnv | quote }}
+        - name: NEXT_TELEMETRY_DISABLED
+          value: {{ .Values.frontend.env.nextTelemetryDisabled | quote }}
+        - name: NEXT_PUBLIC_API_URL
+          value: "http://{{ include "slate.fullname" . }}-backend:{{ .Values.backend.service.port }}"
+        resources:
+          {{- toYaml .Values.frontend.resources | nindent 10 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "slate.fullname" . }}-frontend
+  labels:
+    {{- include "slate.frontend.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.frontend.service.type }}
+  ports:
+  - port: {{ .Values.frontend.service.port }}
+    targetPort: {{ .Values.frontend.service.port }}
+    protocol: TCP
+    name: http
+  selector:
+    app: slate
+    component: frontend

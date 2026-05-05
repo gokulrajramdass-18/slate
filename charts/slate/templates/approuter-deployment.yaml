@@ -1,0 +1,93 @@
+{{- if .Values.approuter.enabled }}
+{{- if .Values.approuter.sessionAffinity.enabled }}
+apiVersion: networking.istio.io/v1alpha3
+kind: DestinationRule
+metadata:
+  name: {{ include "slate.fullname" . }}-approuter
+  labels:
+    {{- include "slate.approuter.labels" . | nindent 4 }}
+spec:
+  host: {{ include "slate.fullname" . }}-approuter
+  trafficPolicy:
+    loadBalancer:
+      consistentHash:
+        httpCookie:
+          name: {{ .Values.approuter.sessionAffinity.cookieName }}
+          path: /
+          ttl: 0s
+---
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "slate.fullname" . }}-approuter
+  labels:
+    {{- include "slate.approuter.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.approuter.replicaCount }}
+  selector:
+    matchLabels:
+      app: slate
+      component: approuter
+  template:
+    metadata:
+      labels:
+        app: slate
+        component: approuter
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+      - name: xs-app
+        configMap:
+          name: {{ include "slate.fullname" . }}-xs-app
+      - name: xsuaa-binding
+        secret:
+          secretName: {{ include "slate.fullname" . }}-xsuaa-binding
+      containers:
+      - name: approuter
+        image: {{ include "slate.approuter.image" . }}
+        imagePullPolicy: {{ .Values.approuter.image.pullPolicy }}
+        ports:
+        - containerPort: {{ .Values.approuter.service.port }}
+          name: http
+        volumeMounts:
+        - name: xs-app
+          mountPath: /app/xs-app.json
+          subPath: xs-app.json
+          readOnly: true
+        - name: xsuaa-binding
+          mountPath: /etc/secrets/sapcp/xsuaa/{{ include "slate.fullname" . }}-xsuaa
+          readOnly: true
+        env:
+        - name: destinations
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "slate.fullname" . }}-destinations
+              key: destinations
+        {{- if .Values.approuter.sessionAffinity.enabled }}
+        - name: PLATFORM_COOKIE_NAME
+          value: {{ .Values.approuter.sessionAffinity.cookieName | quote }}
+        {{- end }}
+        resources:
+          {{- toYaml .Values.approuter.resources | nindent 10 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "slate.fullname" . }}-approuter
+  labels:
+    {{- include "slate.approuter.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.approuter.service.type }}
+  ports:
+  - port: {{ .Values.approuter.service.port }}
+    targetPort: {{ .Values.approuter.service.port }}
+    protocol: TCP
+    name: http
+  selector:
+    app: slate
+    component: approuter
+{{- end }}

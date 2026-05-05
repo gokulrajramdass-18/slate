@@ -1,0 +1,76 @@
+[project]
+name = "open-notebook"
+version = "0.1.0"
+description = "Privacy-focused alternative to Google Notebook LM with HANA Cloud support"
+requires-python = ">=3.11"
+dependencies = [
+    # Core web framework
+    "fastapi>=0.104.0",
+    "uvicorn[standard]>=0.24.0",
+    "python-multipart>=0.0.6",
+    "sse-starlette>=1.6.0",  # Server-Sent Events for streaming
+
+    # Database
+    "sqlalchemy>=2.0.0",
+    "aiosqlite>=0.19.0",  # SQLite (development)
+    "greenlet>=3.0.0",  # Required for SQLAlchemy async
+    "hdbcli>=2.19.0",  # HANA Cloud
+    "sqlalchemy-hana>=0.5.0",  # HANA SQLAlchemy dialect
+
+    # AI & ML
+    "langchain>=0.1.0",
+    "langgraph>=0.0.20",
+    "openai>=1.0.0",
+    "anthropic>=0.8.0",
+    "numpy>=1.26.0",
+    "tiktoken>=0.5.0",  # Token counting
+
+    # Data processing
+    "pydantic>=2.0.0",
+    "pydantic[email]>=2.0.0",  # Email validation
+    "python-dotenv>=1.0.0",
+
+    # Utilities
+    "httpx>=0.25.0",
+    "pydantic-settings>=2.0.0",
+    "apscheduler>=3.10.0",  # Background job scheduling
+    "cryptography>=41.0.0",  # Encryption for credentials
+    "reportlab>=4.0.0",  # PDF generation
+    "markdown>=3.5.0",  # Markdown to HTML conversion
+    "beautifulsoup4>=4.12.0",  # HTML parsing
+    "ddgs>=7.0.0",  # DuckDuckGo web search (formerly duckduckgo-search)
+    "python-a2a>=0.5.0",  # Agent-to-Agent protocol
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.1.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+]
+
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["open_notebook*", "api*"]
+exclude = ["tests*", "frontend*", "data*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_classes = "Test*"
+python_functions = "test_*"
+
+[tool.black]
+line-length = 100
+target-version = ['py311']
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

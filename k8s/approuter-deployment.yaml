@@ -1,0 +1,90 @@
+apiVersion: networking.istio.io/v1alpha3
+kind: DestinationRule
+metadata:
+  name: slate-approuter
+  labels:
+    app: slate
+spec:
+  host: slate-approuter
+  trafficPolicy:
+    loadBalancer:
+      consistentHash:
+        httpCookie:
+          name: SLATE_SESSION_ID
+          path: /
+          ttl: 0s
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: slate-approuter
+  labels:
+    app: slate
+    component: approuter
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: slate
+      component: approuter
+  template:
+    metadata:
+      labels:
+        app: slate
+        component: approuter
+    spec:
+      volumes:
+      - name: xs-app
+        configMap:
+          name: slate-xs-app
+      - name: xsuaa-binding
+        secret:
+          secretName: slate-xsuaa-binding
+      containers:
+      - name: approuter
+        image: sapse/approuter:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 5000
+          name: http
+        volumeMounts:
+        - name: xs-app
+          mountPath: /app/xs-app.json
+          subPath: xs-app.json
+          readOnly: true
+        - name: xsuaa-binding
+          mountPath: /etc/secrets/sapcp/xsuaa/slate-xsuaa
+          readOnly: true
+        env:
+        - name: destinations
+          valueFrom:
+            configMapKeyRef:
+              name: slate-destinations
+              key: destinations
+        - name: PLATFORM_COOKIE_NAME
+          value: "SLATE_SESSION_ID"
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "50m"
+          limits:
+            memory: "512Mi"
+            cpu: "250m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: slate-approuter
+  labels:
+    app: slate
+    component: approuter
+spec:
+  type: ClusterIP
+  ports:
+  - port: 5000
+    targetPort: 5000
+    protocol: TCP
+    name: http
+  selector:
+    app: slate
+    component: approuter
