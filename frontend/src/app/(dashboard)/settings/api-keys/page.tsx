@@ -300,10 +300,23 @@ export default function ApiKeysPage() {
     setLoadingLiteLLM(true);
     try {
       const result = await credentialsApi.getLiteLLMModels(litellmUrl, litellmApiKey);
+
+      // Check if the API call was successful
+      if (!result.success) {
+        toast.error(result.error || "Failed to load models from LiteLLM");
+        setLitellmModels([]);
+        return;
+      }
+
+      // Success - show models
       setLitellmModels(result.models);
       toast.success(`Found ${result.count} models from LiteLLM`);
     } catch (error: any) {
-      const errorMessage = error.response?.data?.detail || "Failed to load models from LiteLLM";
+      // Handle actual network/HTTP errors
+      const errorMessage = error.response?.data?.error ||
+                           error.response?.data?.detail ||
+                           error.message ||
+                           "Failed to load models from LiteLLM";
       toast.error(errorMessage);
       setLitellmModels([]);
     } finally {

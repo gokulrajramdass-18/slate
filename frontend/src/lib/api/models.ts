@@ -133,6 +133,7 @@ export const credentialsApi = {
       provider: string;
     }>;
     count: number;
+    error?: string;
   }> => {
     const params: any = {};
     if (baseUrl) params.base_url = baseUrl;
