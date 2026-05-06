@@ -28,6 +28,7 @@ class NodeType(str, Enum):
     OUTPUT = "output"
     NOTEBOOK_GENERATOR = "notebook_generator"
     MICROSITE_GENERATOR = "microsite_generator"
+    PRESENTATION_GENERATOR = "presentation_generator"
     HUMAN_APPROVAL = "human_approval"
     WORKSPACE = "workspace"
     TEMPLATE = "template"

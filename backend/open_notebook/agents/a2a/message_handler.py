@@ -15,9 +15,21 @@ from a2a.types import (
     Part,
     SendMessageRequest,
     SendMessageResponse,
-    SubscribeToTaskRequest as MessageStreamRequest,
-    TaskStatus,
 )
+
+try:
+    from a2a.types import TaskStatus
+except ImportError:
+    # Fallback for older a2a-sdk versions
+    class TaskStatus:
+        def __init__(self, state: str, progress: float = 0.0, message: str = None):
+            self.state = state
+            self.progress = progress
+            self.message = message
+
+# Define MessageStreamRequest locally as alias for SendMessageRequest
+# (streaming variants may not exist in all a2a-sdk versions)
+MessageStreamRequest = SendMessageRequest
 
 from open_notebook.agents.a2a.task_manager import A2ATaskManager
 from open_notebook.agents.skills.base import SkillContext, SkillExecutionResult

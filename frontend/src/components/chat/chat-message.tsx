@@ -28,6 +28,7 @@ import type {
 import { parseAgentSteps } from "@/lib/types";
 import { GenerativeUIRenderer } from "@/components/chat/generative-ui/GenerativeUIRenderer";
 import { AgentStepsViewer } from "./agent-steps-viewer";
+import { PresentationChatCommands, detectPresentationIntent } from "@/components/presentations/PresentationChatCommands";
 
 interface ChatMessageProps {
   message: ChatMessageType;
@@ -415,6 +416,16 @@ export function ChatMessage({ message, isStreaming = false, notebookId }: ChatMe
             ) : (
               renderAssistantContent()
             )}
+          </div>
+        )}
+
+        {/* Presentation Intent Detection - Show after user messages */}
+        {isUser && detectPresentationIntent(message.content).isMatch && (
+          <div className="w-full max-w-2xl mt-4">
+            <PresentationChatCommands
+              message={message.content}
+              notebookId={notebookId}
+            />
           </div>
         )}
 

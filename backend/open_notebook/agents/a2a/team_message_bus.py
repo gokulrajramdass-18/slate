@@ -12,7 +12,7 @@ from datetime import datetime
 from a2a.types import (
     SendMessageRequest,
     SendMessageResponse,
-    SendMessageConfiguration,
+    MessageSendConfiguration,
     Message,
     Part,
 )

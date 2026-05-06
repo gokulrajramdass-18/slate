@@ -16,7 +16,7 @@ from a2a.types import (
     Message,
     SendMessageRequest,
     SendMessageResponse,
-    SendMessageConfiguration,
+    MessageSendConfiguration,
     Part,
 )
 

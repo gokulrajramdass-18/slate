@@ -17,7 +17,7 @@ from fastapi.exceptions import RequestValidationError
 
 from api.middleware import OAuthRateLimitMiddleware, OAuthAuditMiddleware
 from api.models import ErrorResponse, HealthCheckResponse
-from api.routers import notebooks, sources, database, dashboard, chat, chat_settings, source_chat, auth, models, embedding, credentials, microsites, microsite_chat, smtp, notes, search, hana_connections, api_connections, deep_research, charts, files, tools, agents, agent_memory, agent_tools, agent_skills, mcp_servers, agent_prompts, system_prompts, user_query_prompts, standalone_agents, workflows, bookmarks, graph, mcp_oauth, workspace_guided, workspace_tasks, folders, a2a, a2a_remote, users, roles, resource_shares, entities, entity_relationships, communities, autonomous_orchestration, actions, orchestration_actions, oauth, workspace_templates, orchestration_schedules, workflow_templates, workflow_approvals, template_executions, notifications, external_notifications, api_keys
+from api.routers import notebooks, sources, database, dashboard, chat, chat_settings, source_chat, auth, models, embedding, credentials, microsites, microsite_chat, smtp, notes, search, hana_connections, api_connections, deep_research, charts, files, tools, agents, agent_memory, agent_tools, agent_skills, mcp_servers, agent_prompts, system_prompts, user_query_prompts, standalone_agents, workflows, bookmarks, graph, mcp_oauth, workspace_guided, workspace_tasks, folders, a2a, a2a_remote, users, roles, resource_shares, entities, entity_relationships, communities, autonomous_orchestration, actions, orchestration_actions, oauth, workspace_templates, orchestration_schedules, workflow_templates, workflow_approvals, template_executions, notifications, external_notifications, api_keys, presentations
 from api.services.database_service import get_database_service
 from open_notebook.database.interface import ConnectionConfig, DatabaseError
 from open_notebook.database.repository import init_database
@@ -507,6 +507,7 @@ app.include_router(oauth.oauth_protocol_router)  # OAuth 2.0 protocol endpoints
 app.include_router(notifications.router)  # Real-time notifications
 app.include_router(api_keys.router)  # API key management
 app.include_router(external_notifications.router)  # External notification API
+app.include_router(presentations.router)  # PowerPoint presentation generation
 
 # Mount public hosting router in development mode
 # (In production, a standalone hosting server handles this)

@@ -13,7 +13,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
-import { ArrowLeft, FileText, MessageSquare, Plus, Link as LinkIcon, Upload, Youtube, Globe, Share2, MessageCircle, Sparkles, Database, Code, Network, Search, Filter, X, RefreshCw, RotateCcw, CheckCircle, ChevronRight, ChevronDown, FolderOpen, Folder as FolderIcon } from "lucide-react";
+import { ArrowLeft, FileText, MessageSquare, Plus, Link as LinkIcon, Upload, Youtube, Globe, Share2, MessageCircle, Sparkles, Database, Code, Network, Search, Filter, X, RefreshCw, RotateCcw, CheckCircle, ChevronRight, ChevronDown, FolderOpen, Folder as FolderIcon, Presentation } from "lucide-react";
 import Link from "next/link";
 import { formatRelativeTime } from "@/lib/utils";
 import { toast } from "sonner";
@@ -613,8 +613,8 @@ export default function NotebookDetailPage() {
           )}
 
           {/* Secondary Actions */}
-          <Button 
-            variant="outline" 
+          <Button
+            variant="outline"
             size="sm"
             onClick={() => router.push(`/workspaces/${notebookId}/graph`)}
             className="gap-1.5 h-8 text-xs"
@@ -623,14 +623,24 @@ export default function NotebookDetailPage() {
             <span className="hidden lg:inline">Graph</span>
           </Button>
 
-          <Button 
-            variant="outline" 
+          <Button
+            variant="outline"
             size="sm"
             onClick={() => setShowMicrositeDialog(true)}
             className="gap-1.5 h-8 text-xs"
           >
             <Share2 className="w-3.5 h-3.5" />
             <span className="hidden lg:inline">Microsite</span>
+          </Button>
+
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => router.push(`/presentations/new?notebook_id=${notebookId}`)}
+            className="gap-1.5 h-8 text-xs"
+          >
+            <Presentation className="w-3.5 h-3.5" />
+            <span className="hidden lg:inline">Presentation</span>
           </Button>
 
           {/* Primary Action - Last */}

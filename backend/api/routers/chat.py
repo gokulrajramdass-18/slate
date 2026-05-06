@@ -1461,7 +1461,8 @@ The data shown in the "LIVE DATA FROM SOURCES" section above was fetched in real
                     session=session,
                     context_info=context_info,
                     enable_generative_ui=request.enable_generative_ui,
-                )
+                ),
+                ping=5   # Send ping every 5 seconds to keep connection alive
             )
         else:
             # Non-streaming agent response

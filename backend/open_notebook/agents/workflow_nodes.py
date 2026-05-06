@@ -1851,6 +1851,10 @@ class WebhookNodeExecutor(BaseNodeExecutor):
             }
 
 
+# Import PresentationGeneratorNodeExecutor
+from open_notebook.agents.presentation_generator_node import PresentationGeneratorNodeExecutor
+
+
 # ============================================================================
 # Executor Factory
 # ============================================================================
@@ -1875,6 +1879,7 @@ def create_node_executor(node_type: NodeType, config: NodeConfig) -> BaseNodeExe
         NodeType.OUTPUT: OutputNodeExecutor,
         NodeType.NOTEBOOK_GENERATOR: NotebookGeneratorNodeExecutor,
         NodeType.MICROSITE_GENERATOR: MicrositeGeneratorNodeExecutor,
+        NodeType.PRESENTATION_GENERATOR: PresentationGeneratorNodeExecutor,
         NodeType.HUMAN_APPROVAL: HumanApprovalNodeExecutor,
         NodeType.WORKSPACE: WorkspaceNodeExecutor,
         NodeType.TEMPLATE: TemplateNodeExecutor,

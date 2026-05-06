@@ -325,7 +325,7 @@ export const useNotifications = (
     const pollData = async () => {
       try {
         const response = await fetch(
-          `${API_BASE_URL}/api/notifications?user_id=${userId}&limit=50`
+          `${API_BASE_URL}/notifications?user_id=${userId}&limit=50`
         );
 
         if (!response.ok) {
