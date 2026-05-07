@@ -17,7 +17,7 @@ backend:
 
   image:
     repository: gokulraj18/slate-backend
-    tag: "1.0.15"  # Includes admin user seed script
+    tag: "1.0.16"  # Includes admin user seed script + latest features
     pullPolicy: Always
 
   resources:
@@ -41,7 +41,7 @@ frontend:
 
   image:
     repository: gokulraj18/slate-frontend
-    tag: "1.0.4"  # Built with Kubernetes service URL
+    tag: "1.0.5"  # Built with Kubernetes service URL + latest features
     pullPolicy: Always
 
   resources:

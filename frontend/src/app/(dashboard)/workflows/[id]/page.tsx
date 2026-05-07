@@ -16,6 +16,7 @@ import { GraphEditor, getCurrentGraphState } from '@/components/workflows/GraphE
 import { PropertyPanel } from '@/components/workflows/PropertyPanel';
 import { useGraphStore } from '@/lib/stores/graph-store';
 import { useSidebarStore } from '@/lib/stores/sidebar-store';
+import { useAuthStore } from '@/lib/stores/auth-store';
 import { workflowsApi } from '@/lib/api/workflows';
 import type { WorkflowCreate, WorkflowUpdate } from '@/lib/api/workflows';
 import { toast } from 'sonner';
@@ -28,6 +29,7 @@ export default function WorkflowEditorPage() {
   const params = useParams();
   const router = useRouter();
   const queryClient = useQueryClient();
+  const { user } = useAuthStore();
 
   const workflowId = params.id as string;
   const isNew = workflowId === 'new';
@@ -73,7 +75,7 @@ export default function WorkflowEditorPage() {
       if (hanaNode) {
         console.log('[WorkflowPage] HANA node from backend:', hanaNode.id);
         console.log('[WorkflowPage] HANA node config from backend:', JSON.stringify(hanaNode.config, null, 2));
-        console.log('[WorkflowPage] Conditions from backend:', hanaNode.config?.conditions);
+        console.log('[WorkflowPage] Conditions from backend:', (hanaNode.config as any)?.conditions);
       }
 
       useGraphStore.getState().loadWorkflow(workflow);
@@ -141,10 +143,11 @@ export default function WorkflowEditorPage() {
           entry_node_id: currentNodes.find((n: any) => n.data.type === 'input')?.id || currentNodes[0]?.id || '',
         },
         tags: metadata.tags || [],
+        created_by: user?.id || '00000000-0000-0000-0000-000000000001', // Fallback to admin user ID
       };
 
       if (isNew) {
-        // For create, only send name, description, graph, tags
+        // For create, only send name, description, graph, tags, created_by
         return workflowsApi.create(workflowData as WorkflowCreate);
       } else {
         // For update, can include is_active

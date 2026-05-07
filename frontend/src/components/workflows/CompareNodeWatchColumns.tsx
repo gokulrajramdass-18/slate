@@ -52,7 +52,7 @@ export function CompareNodeWatchColumns({ selectedNode, handleUpdate }: CompareN
       }
 
       // Check if source is HANA node with snapshots enabled
-      if (sourceNode.data.type === 'hana_table' && sourceNode.data.config.enable_snapshots) {
+      if (sourceNode.data.type === 'hana_table' && (sourceNode.data.config as any)?.enable_snapshots) {
         console.log('[CompareNodeWatchColumns] Found HANA source:', sourceNode.id);
         setSourceHanaNode(sourceNode);
       } else {

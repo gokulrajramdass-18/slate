@@ -6,12 +6,13 @@
 
 "use client";
 
+import { Suspense } from "react";
 import { PresentationGenerator } from "@/components/presentations/PresentationGenerator";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { ArrowLeft, X } from "lucide-react";
 
-export default function PresentationGeneratorPage() {
+function PresentationGeneratorContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const notebookId = searchParams.get("notebook_id") || undefined;
@@ -58,5 +59,13 @@ export default function PresentationGeneratorPage() {
         }}
       />
     </div>
+  );
+}
+
+export default function PresentationGeneratorPage() {
+  return (
+    <Suspense fallback={<div className="container mx-auto py-8">Loading...</div>}>
+      <PresentationGeneratorContent />
+    </Suspense>
   );
 }
