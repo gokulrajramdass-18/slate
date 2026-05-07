@@ -148,14 +148,23 @@ export const useNotifications = (
   // Refetch notifications
   const refetch = useCallback(async () => {
     const userId = getUserId();
-    if (!userId) return;
 
     try {
-      const response = await fetch(
-        `${API_BASE_URL}/notifications?user_id=${userId}&limit=50`
-      );
+      // Build URL with or without userId
+      const url = userId
+        ? `${API_BASE_URL}/notifications?user_id=${userId}&limit=50`
+        : `${API_BASE_URL}/notifications?limit=50`;
+
+      const response = await fetch(url);
 
       if (!response.ok) {
+        // Don't throw error for auth issues
+        if (response.status === 401 || response.status === 403) {
+          setNotifications([]);
+          setUnreadCount(0);
+          setError(null);
+          return;
+        }
         throw new Error("Failed to fetch notifications");
       }
 
@@ -173,21 +182,31 @@ export const useNotifications = (
   useEffect(() => {
     const userId = options?.userId || userIdRef.current;
     console.log("[useNotifications] Fetching with userId:", userId);
-    if (!userId) {
-      console.log("[useNotifications] No userId available, skipping fetch");
-      setLoading(false);
-      return;
-    }
 
     const fetchData = async () => {
       try {
-        const url = `${API_BASE_URL}/notifications?user_id=${userId}&limit=50`;
+        // Build URL with or without userId
+        const url = userId
+          ? `${API_BASE_URL}/notifications?user_id=${userId}&limit=50`
+          : `${API_BASE_URL}/notifications?limit=50`;
+
         console.log("[useNotifications] Fetching from:", url);
         const response = await fetch(url);
 
         if (!response.ok) {
           const errorText = await response.text();
           console.error("Notifications API error:", response.status, errorText);
+
+          // Don't throw error for auth issues, just set empty state
+          if (response.status === 401 || response.status === 403) {
+            console.log("[useNotifications] Auth error, setting empty state");
+            setNotifications([]);
+            setUnreadCount(0);
+            setError(null);
+            setLoading(false);
+            return;
+          }
+
           throw new Error(`Failed to fetch notifications: ${response.status}`);
         }
 
@@ -325,7 +344,7 @@ export const useNotifications = (
     const pollData = async () => {
       try {
         const response = await fetch(
-          `${API_BASE_URL}/api/notifications?user_id=${userId}&limit=50`
+          `${API_BASE_URL}/notifications?user_id=${userId}&limit=50`
         );
 
         if (!response.ok) {

@@ -187,13 +187,13 @@ def create_mcp_tool(
             "MCPToolArgs",
             **field_definitions
         )
-        # Set extra='allow' after creation
-        MCPToolArgs.model_config['extra'] = 'allow'
+        # Don't set extra='allow' - it causes LangChain tool binding to fail
+        # LangChain expects 'extra_data' field which Pydantic v2 doesn't create
     else:
-        # No fields defined, create simple model that accepts any fields
+        # No fields defined, create simple model with no extra fields allowed
+        # This is safer and avoids LangChain/Pydantic compatibility issues
         class MCPToolArgs(BaseModel):
-            class Config:
-                extra = "allow"
+            pass
 
     # Create the async function that will be wrapped
     async def mcp_tool_func(**kwargs) -> str:

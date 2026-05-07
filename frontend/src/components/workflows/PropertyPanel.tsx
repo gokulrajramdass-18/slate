@@ -26,6 +26,7 @@ import { InputFieldAutoSuggestions } from './InputFieldAutoSuggestions';
 import { NotebookGeneratorProperties } from './NotebookGeneratorProperties';
 import { MicrositeGeneratorProperties } from './MicrositeGeneratorProperties';
 import { HanaTablePropertyPanel } from './HanaTablePropertyPanel';
+import { CompareNodeWatchColumns } from './CompareNodeWatchColumns';
 import { getCurrentGraphState } from './GraphEditor';
 
 // ============================================================================
@@ -222,6 +223,20 @@ export function PropertyPanel() {
                 rows={6}
                 placeholder="Enter system prompt..."
               />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="user-prompt">User Prompt (Input Message)</Label>
+              <Textarea
+                id="user-prompt"
+                value={selectedNode.data.config.prompt || ''}
+                onChange={(e) => handleUpdate('prompt', e.target.value)}
+                rows={4}
+                placeholder="Enter user message... Use {{node-id.field}} to reference previous nodes"
+              />
+              <p className="text-xs text-muted-foreground">
+                Tip: Use variables like {"{{approval-node.compare-node.changed_rows.modified}}"} to access data
+              </p>
             </div>
 
             <div className="space-y-2">
@@ -815,6 +830,98 @@ export function PropertyPanel() {
             selectedNode={selectedNode}
             handleUpdate={handleUpdate}
           />
+        )}
+
+        {/* Snapshot Node */}
+        {selectedNode.data.type === 'snapshot' && (
+          <>
+            <div className="space-y-2">
+              <Label htmlFor="source-node-id">Source Node ID</Label>
+              <Input
+                id="source-node-id"
+                value={selectedNode.data.config.source_node_id || ''}
+                onChange={(e) => handleUpdate('source_node_id', e.target.value)}
+                placeholder="node-id"
+              />
+              <p className="text-xs text-muted-foreground">
+                ID of the API/HANA node whose data to snapshot
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="snapshot-label">Snapshot Label</Label>
+              <Input
+                id="snapshot-label"
+                value={selectedNode.data.config.snapshot_label || ''}
+                onChange={(e) => handleUpdate('snapshot_label', e.target.value)}
+                placeholder="today"
+              />
+              <p className="text-xs text-muted-foreground">
+                Unique label for this snapshot (e.g., "today", "baseline")
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="retention-days">Retention Days</Label>
+              <Input
+                id="retention-days"
+                type="number"
+                value={selectedNode.data.config.retention_days || 30}
+                onChange={(e) => handleUpdate('retention_days', parseInt(e.target.value))}
+                placeholder="30"
+              />
+              <p className="text-xs text-muted-foreground">
+                Number of days to keep this snapshot (default: 30)
+              </p>
+            </div>
+
+            <Card className="bg-blue-50 border-blue-200 dark:bg-blue-950 dark:border-blue-800">
+              <CardContent className="pt-4 pb-3">
+                <p className="text-xs text-muted-foreground">
+                  <strong>Snapshot Storage:</strong> Data is automatically stored using tiered strategy:
+                  inline (&lt;10MB), file (10-100MB), or chunked (&gt;100MB). Context includes user ID and query parameters
+                  for multi-tenant isolation.
+                </p>
+              </CardContent>
+            </Card>
+          </>
+        )}
+
+        {/* Compare Node */}
+        {selectedNode.data.type === 'compare' && (
+          <>
+            <Card className="bg-purple-50 border-purple-200 dark:bg-purple-950 dark:border-purple-800">
+              <CardContent className="pt-4 pb-3 space-y-3">
+                <p className="text-sm font-semibold text-purple-900 dark:text-purple-100">
+                  Automatic Snapshot Comparison
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  This node automatically detects snapshots from the connected HANA node.
+                  It compares the baseline (first run) with the current data and returns changed rows.
+                </p>
+                <div className="text-xs bg-white/50 dark:bg-black/20 p-2 rounded space-y-1">
+                  <div><strong>Output includes:</strong></div>
+                  <ul className="list-disc list-inside space-y-0.5 ml-2">
+                    <li><code>changed_rows.added</code> - New rows</li>
+                    <li><code>changed_rows.removed</code> - Deleted rows</li>
+                    <li><code>changed_rows.modified</code> - Updated rows</li>
+                    <li><code>has_changes</code> - Boolean flag</li>
+                    <li><code>change_percentage</code> - Percent changed</li>
+                  </ul>
+                </div>
+                <p className="text-xs text-amber-600 dark:text-amber-400">
+                  <strong>Note:</strong> Connect this node to a HANA node with "Enable Snapshots" checked.
+                  Run the workflow at least twice to generate comparison data.
+                </p>
+              </CardContent>
+            </Card>
+
+            {/* Watch Columns Configuration */}
+            <CompareNodeWatchColumns
+              selectedNode={selectedNode}
+              handleUpdate={handleUpdate}
+            />
+          </>
         )}
       </CardContent>
     </Card>

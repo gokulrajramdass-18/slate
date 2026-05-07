@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { hanaConnectionsApi, type HANAConnection, type HANAConnectionCreate } from "@/lib/api/hana-connections";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -284,16 +284,47 @@ function ConnectionDialog({
   isSubmitting: boolean;
 }) {
   const [formData, setFormData] = useState<HANAConnectionCreate>({
-    name: connection?.name || "",
-    host: connection?.host || "",
-    port: connection?.port || 443,
-    database: connection?.database || "",
-    user: connection?.user || "",
+    name: "",
+    host: "",
+    port: 443,
+    database: "",
+    user: "",
     password: "",
-    encrypt: connection?.encrypt ?? true,
-    schema: connection?.schema || "",
-    description: connection?.description || "",
+    encrypt: true,
+    schema: "",
+    description: "",
   });
+
+  // Reset form when connection changes
+  useEffect(() => {
+    if (connection) {
+      // Editing existing connection
+      setFormData({
+        name: connection.name || "",
+        host: connection.host || "",
+        port: connection.port || 443,
+        database: connection.database || "",
+        user: connection.user || "",
+        password: "",
+        encrypt: connection.encrypt ?? true,
+        schema: connection.schema || "",
+        description: connection.description || "",
+      });
+    } else {
+      // Adding new connection - reset to empty
+      setFormData({
+        name: "",
+        host: "",
+        port: 443,
+        database: "",
+        user: "",
+        password: "",
+        encrypt: true,
+        schema: "",
+        description: "",
+      });
+    }
+  }, [connection]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();

@@ -569,12 +569,28 @@ export function HumanApprovalNode({ data, selected }: any) {
         </CardContent>
       </Card>
 
+      {/* Two output handles: approved and rejected */}
       <Handle
         type="source"
         position={Position.Right}
-        className="!bg-amber-500"
-        style={handleStyle}
+        id="approved"
+        className="!bg-green-500"
+        style={{ top: '35%', ...handleStyle }}
       />
+      <div className="absolute right-[-65px] top-[calc(35%-12px)] text-[10px] font-semibold text-green-600 dark:text-green-400 bg-white dark:bg-gray-900 px-1 py-0.5 rounded border border-green-200 dark:border-green-800">
+        Approved
+      </div>
+
+      <Handle
+        type="source"
+        position={Position.Right}
+        id="rejected"
+        className="!bg-red-500"
+        style={{ top: '65%', ...handleStyle }}
+      />
+      <div className="absolute right-[-65px] top-[calc(65%-12px)] text-[10px] font-semibold text-red-600 dark:text-red-400 bg-white dark:bg-gray-900 px-1 py-0.5 rounded border border-red-200 dark:border-red-800">
+        Rejected
+      </div>
     </>
   );
 }
@@ -819,8 +835,8 @@ export function WebhookNode({ data, selected }: any) {
 // ============================================================================
 
 export function HanaTableNode({ data, selected }: any) {
-  const connectionId = data.config.connection_id;
-  const tableName = data.config.table_name;
+  const connectionId = data.config.hana_connection_id;
+  const tableName = data.config.hana_table_name;
   const conditions = data.config.conditions || [];
 
   return (
@@ -876,6 +892,139 @@ export function HanaTableNode({ data, selected }: any) {
 }
 
 // ============================================================================
+// Snapshot Node
+// ============================================================================
+
+export function SnapshotNode({ data, selected }: any) {
+  const sourceNodeId = data.config.source_node_id;
+  const snapshotLabel = data.config.snapshot_label || 'auto';
+  const retentionDays = data.config.retention_days || 30;
+
+  return (
+    <>
+      <Handle type="target" position={Position.Left} className="!bg-cyan-500" style={handleStyle} />
+
+      <Card className={cn(
+        "min-w-[220px] transition-all duration-200",
+        "bg-gradient-to-br from-cyan-50 to-sky-50 dark:from-cyan-950 dark:to-sky-950",
+        "border",
+        selected ? "ring-2 ring-cyan-500/50 border-cyan-500 shadow-lg" : "border-cyan-200 dark:border-cyan-800 hover:border-cyan-400 shadow"
+      )}>
+        <CardHeader className="pb-2 pt-2 px-3">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 min-w-0">
+              <div className="p-1.5 rounded bg-cyan-500 text-white shadow-sm flex-shrink-0">
+                <Database className="h-3.5 w-3.5" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <CardTitle className="text-sm font-semibold truncate">{data.label}</CardTitle>
+                <p className="text-[10px] text-muted-foreground truncate">Store snapshot</p>
+              </div>
+            </div>
+            {getStatusBadge(data.status)}
+          </div>
+        </CardHeader>
+
+        <CardContent className="pt-0 pb-2 px-3 space-y-1">
+          {sourceNodeId ? (
+            <>
+              <div className="text-[10px] bg-white/50 dark:bg-black/20 p-1.5 rounded">
+                <span className="text-muted-foreground">Source: </span>
+                <span className="font-mono">{sourceNodeId}</span>
+              </div>
+              <div className="flex gap-1">
+                <div className="text-[10px] bg-cyan-100/50 dark:bg-cyan-900/20 text-cyan-700 dark:text-cyan-300 px-1.5 py-0.5 rounded">
+                  {snapshotLabel}
+                </div>
+                <div className="text-[10px] text-muted-foreground flex items-center gap-1">
+                  <Clock className="h-2.5 w-2.5" />
+                  {retentionDays}d
+                </div>
+              </div>
+            </>
+          ) : (
+            <div className="text-[10px] text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/30 p-1.5 rounded flex items-center gap-1">
+              <XCircle className="h-3 w-3" />
+              Source not selected
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Handle type="source" position={Position.Right} className="!bg-cyan-500" style={handleStyle} />
+    </>
+  );
+}
+
+// ============================================================================
+// Compare Node
+// ============================================================================
+
+export function CompareNode({ data, selected }: any) {
+  const snapshot1 = data.config.compare_snapshot_1 || 'yesterday';
+  const snapshot2 = data.config.compare_snapshot_2 || 'today';
+  const strategy = data.config.comparison_strategy || 'fast';
+  const threshold = data.config.change_threshold || 0;
+
+  const strategyLabels: Record<string, string> = {
+    fast: 'Hash',
+    medium: 'Sample',
+    full: 'Full'
+  };
+
+  return (
+    <>
+      <Handle type="target" position={Position.Left} className="!bg-violet-500" style={handleStyle} />
+
+      <Card className={cn(
+        "min-w-[220px] transition-all duration-200",
+        "bg-gradient-to-br from-violet-50 to-purple-50 dark:from-violet-950 dark:to-purple-950",
+        "border",
+        selected ? "ring-2 ring-violet-500/50 border-violet-500 shadow-lg" : "border-violet-200 dark:border-violet-800 hover:border-violet-400 shadow"
+      )}>
+        <CardHeader className="pb-2 pt-2 px-3">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 min-w-0">
+              <div className="p-1.5 rounded bg-violet-500 text-white shadow-sm flex-shrink-0">
+                <GitBranch className="h-3.5 w-3.5" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <CardTitle className="text-sm font-semibold truncate">{data.label}</CardTitle>
+                <p className="text-[10px] text-muted-foreground truncate">Compare snapshots</p>
+              </div>
+            </div>
+            {getStatusBadge(data.status)}
+          </div>
+        </CardHeader>
+
+        <CardContent className="pt-0 pb-2 px-3 space-y-1">
+          <div className="text-[10px] bg-white/50 dark:bg-black/20 p-1.5 rounded space-y-1">
+            <div className="flex items-center gap-1">
+              <span className="text-muted-foreground">Compare:</span>
+              <Badge variant="secondary" className="text-[9px] px-1 py-0 h-3.5">{snapshot1}</Badge>
+              <span className="text-muted-foreground">vs</span>
+              <Badge variant="secondary" className="text-[9px] px-1 py-0 h-3.5">{snapshot2}</Badge>
+            </div>
+          </div>
+          <div className="flex gap-1">
+            <div className="text-[10px] bg-violet-100/50 dark:bg-violet-900/20 text-violet-700 dark:text-violet-300 px-1.5 py-0.5 rounded">
+              {strategyLabels[strategy]}
+            </div>
+            {threshold > 0 && (
+              <div className="text-[10px] text-muted-foreground flex items-center gap-1">
+                Threshold: {threshold}%
+              </div>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
+      <Handle type="source" position={Position.Right} className="!bg-violet-500" style={handleStyle} />
+    </>
+  );
+}
+
+// ============================================================================
 // Node Type Map
 // ============================================================================
 
@@ -894,4 +1043,6 @@ export const nodeTypes = {
   delay: DelayNode,
   webhook: WebhookNode,
   hana_table: HanaTableNode,
+  snapshot: SnapshotNode,
+  compare: CompareNode,
 };

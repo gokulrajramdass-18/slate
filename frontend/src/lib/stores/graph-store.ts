@@ -240,6 +240,13 @@ export const useGraphStore = create<GraphStore>()(
         // Convert workflow format to React Flow format
         const nodes: any[] = workflow.graph.nodes.map((n: any) => {
           console.log(`[Store] Node ${n.id}: position =`, n.position);
+
+          // Debug HANA nodes
+          if (n.type === 'hana_table') {
+            console.log(`[Store] HANA node ${n.id} config:`, n.config);
+            console.log(`[Store] HANA node conditions:`, n.config?.conditions);
+          }
+
           return {
             id: n.id,
             type: n.type,
@@ -287,6 +294,8 @@ export const useGraphStore = create<GraphStore>()(
           id: e.id,
           source: e.source,
           target: e.target,
+          sourceHandle: e.sourceHandle,
+          targetHandle: e.targetHandle,
           label: e.label,
         }));
 

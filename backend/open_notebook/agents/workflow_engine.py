@@ -152,6 +152,10 @@ class WorkflowEngine:
             true_edge = self._get_edge_for_condition(node.id, True)
             false_edge = self._get_edge_for_condition(node.id, False)
 
+            print(f"[WorkflowEngine] Setting up conditional edges for {node.id}")
+            print(f"[WorkflowEngine]   True edge: {true_edge.target if true_edge else 'None'}")
+            print(f"[WorkflowEngine]   False edge: {false_edge.target if false_edge else 'None'}")
+
             if true_edge and false_edge:
                 workflow_state.add_conditional_edges(
                     node.id,
@@ -162,6 +166,14 @@ class WorkflowEngine:
                         "end": END,
                     }
                 )
+            elif true_edge:
+                # Only true edge exists
+                workflow_state.add_edge(node.id, true_edge.target)
+                print(f"[WorkflowEngine]   Added single edge (true only)")
+            elif false_edge:
+                # Only false edge exists
+                workflow_state.add_edge(node.id, false_edge.target)
+                print(f"[WorkflowEngine]   Added single edge (false only)")
 
         # Add end condition for output nodes
         output_nodes = [
@@ -189,10 +201,12 @@ class WorkflowEngine:
         for edge in self.workflow.graph.edges:
             if edge.source == source_id:
                 # Match based on condition result
-                # This is simplified - in real impl, edges would have condition metadata
-                if condition_result and "true" in (edge.label or "").lower():
+                # Check both label and edge ID for "true" or "false"
+                edge_text = f"{edge.label or ''} {edge.id}".lower()
+
+                if condition_result and "true" in edge_text:
                     return edge
-                elif not condition_result and "false" in (edge.label or "").lower():
+                elif not condition_result and "false" in edge_text:
                     return edge
         return None
 
@@ -396,7 +410,7 @@ class WorkflowEngine:
             try:
                 from api.services.notification_service import notify_execution_complete
                 await notify_execution_complete(
-                    user_id=self.workflow.owner_id or "default-user",
+                    user_id=self.workflow.created_by or "default-user",
                     workflow_name=self.workflow.name,
                     execution_id=self._execution.id,
                     status="completed"
@@ -433,7 +447,7 @@ class WorkflowEngine:
             try:
                 from api.services.notification_service import notify_execution_complete
                 await notify_execution_complete(
-                    user_id=self.workflow.owner_id or "default-user",
+                    user_id=self.workflow.created_by or "default-user",
                     workflow_name=self.workflow.name,
                     execution_id=self._execution.id,
                     status="failed"

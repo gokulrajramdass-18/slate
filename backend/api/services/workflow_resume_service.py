@@ -118,17 +118,21 @@ async def resume_workflow_execution(
         # If approved, update node and continue execution
         print(f"[WorkflowResumeService] Workflow approved, continuing to next node")
 
+        # Get all previous node outputs (excluding approval node itself)
+        previous_node_outputs = {
+            node_id: state.output_data
+            for node_id, state in execution.node_states.items()
+            if node_id != approval_node_id
+        }
+
         node_state.output_data = {
             "status": "approved",
             "approval_response": approval_response,
             "approval_comment": resume_data.get("approval_comment"),
             "approved_by": resume_data.get("approved_by"),
             "approved": True,
-            "data": {
-                node_id: state.output_data
-                for node_id, state in execution.node_states.items()
-                if node_id != approval_node_id  # Exclude the approval node itself
-            }
+            # Make all previous node outputs accessible via approval node
+            **previous_node_outputs  # Merge all previous outputs directly
         }
         node_state.status = ExecutionStatus.COMPLETED
         node_state.completed_at = datetime.utcnow()
@@ -136,12 +140,22 @@ async def resume_workflow_execution(
     # Load workflow to get graph structure
     workflow = await Workflow.get(execution.workflow_id)
 
-    # Find the next node after approval node
-    next_nodes = [
-        edge.target
-        for edge in workflow.graph.edges
-        if edge.source == approval_node_id
-    ]
+    # Find the next node after approval node based on approval response
+    # Look for edges with sourceHandle = "approved" or "rejected"
+    next_nodes = []
+    approval_decision = "approved" if approval_response == "approve" else "rejected"
+
+    for edge in workflow.graph.edges:
+        if edge.source == approval_node_id:
+            # Check if edge has sourceHandle matching the decision
+            if edge.sourceHandle == approval_decision:
+                next_nodes.append(edge.target)
+                print(f"[WorkflowResumeService] Found {approval_decision} edge to {edge.target}")
+                break
+            # Fallback: if no sourceHandle specified, use the first edge
+            elif not edge.sourceHandle and not next_nodes:
+                next_nodes.append(edge.target)
+                print(f"[WorkflowResumeService] Using default edge to {edge.target}")
 
     # If no next nodes, mark as completed
     if not next_nodes:

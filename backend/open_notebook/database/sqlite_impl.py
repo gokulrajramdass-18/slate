@@ -207,6 +207,7 @@ class SQLiteDatabase(DatabaseInterface):
             'tool_usage_log',
             'a2a_execution_metrics',
             'action_executions',
+            'workflow_snapshots',  # Uses created_at/updated_at instead of created/updated
             # Junction tables (composite primary keys, no id column)
             'notebook_note',
             'notebook_source',
@@ -266,7 +267,8 @@ class SQLiteDatabase(DatabaseInterface):
             'actions',
             'orchestration_action_bindings',
             'workspace_templates',
-            'template_executions'  # NEW: Template executions use created_at/updated_at
+            'template_executions',  # NEW: Template executions use created_at/updated_at
+            'workflow_snapshots'  # NEW: Workflow snapshots use created_at/updated_at
         ]
         tables_without_timestamps = ['workflow_executions', 'chat_messages', 'agent_messages', 'microsite_versions', 'content_moderation_logs', 'tool_permissions', 'tool_usage_log', 'a2a_execution_metrics', 'action_executions']
 

@@ -9,15 +9,15 @@ Implements execution logic for different node types:
 """
 
 import json
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from abc import ABC, abstractmethod
 from uuid import uuid4
+from datetime import datetime, date, timedelta
 
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from langchain_openai import ChatOpenAI
 
 from open_notebook.domain.workflow import NodeConfig, NodeType
-from api.services.tool_factory import ToolFactory
 from open_notebook.agents.messaging import MessageBus
 from open_notebook.agents.task_manager import TaskManager
 from open_notebook.agents.agent_manager import get_agent_class
@@ -60,6 +60,7 @@ class BaseNodeExecutor(ABC):
     ) -> str:
         """
         Substitute {{variable}} placeholders with actual values.
+        Supports dot notation for nested access (e.g., {{summary.modified}})
 
         Args:
             template: Template string with {{var}} placeholders
@@ -81,34 +82,127 @@ class BaseNodeExecutor(ABC):
             var_name = var_name.strip()
             value = None
 
-            # Try to find value in input_data first
-            if var_name in input_data:
-                value = input_data[var_name]
-            # Then try context (node_outputs)
-            elif var_name in context:
-                value = context[var_name]
+            # Handle dot notation (e.g., summary.modified or approval-node.compare-node.field)
+            if '.' in var_name:
+                parts = var_name.split('.')
+
+                # Try direct lookup: first check if first part is a top-level key
+                if parts[0] in context:
+                    current = context[parts[0]]
+                    found = True
+                    # Navigate remaining path
+                    for part in parts[1:]:
+                        if isinstance(current, dict) and part in current:
+                            current = current[part]
+                        else:
+                            found = False
+                            break
+                    if found:
+                        value = current
+                else:
+                    # Search in all node outputs for the full path
+                    for node_output in context.values():
+                        if isinstance(node_output, dict):
+                            # Try to navigate the path
+                            current = node_output
+                            found = True
+                            for part in parts:
+                                if isinstance(current, dict) and part in current:
+                                    current = current[part]
+                                else:
+                                    found = False
+                                    break
+                            if found:
+                                value = current
+                                break
             else:
-                # Try to extract from nested node outputs (e.g., {{notebook_id}} could be in prev-node output)
-                for node_output in context.values():
-                    if isinstance(node_output, dict) and var_name in node_output:
-                        value = node_output[var_name]
-                        break
+                # Try to find value in input_data first
+                if var_name in input_data:
+                    value = input_data[var_name]
+                # Then try context (node_outputs)
+                elif var_name in context:
+                    value = context[var_name]
+                else:
+                    # Try to extract from nested node outputs
+                    for node_output in context.values():
+                        if isinstance(node_output, dict) and var_name in node_output:
+                            value = node_output[var_name]
+                            break
 
             if value is None:
                 # Keep placeholder if not found
                 print(f"[BaseNodeExecutor] Warning: Variable {{{{{var_name}}}}} not found in input_data or context")
                 continue
 
-            # Convert value to string
+            # Format value based on type
             if isinstance(value, (dict, list)):
-                value_str = json.dumps(value, indent=2)
+                # Pretty print JSON for complex types
+                import json
+                formatted_value = json.dumps(value, indent=2)
             else:
-                value_str = str(value)
+                formatted_value = str(value)
 
-            # Replace placeholder
-            result = result.replace(f"{{{{{var_name}}}}}", value_str)
+            # Replace placeholder with value
+            result = result.replace(f"{{{{{var_name}}}}}", formatted_value)
 
         return result
+
+
+# ============================================================================
+# Input Node Executor
+# ============================================================================
+
+class InputNodeExecutor(BaseNodeExecutor):
+    """Execute input node - receives workflow input data."""
+
+    async def execute(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """Store input data in state."""
+        input_data = state.get("input_data", {})
+
+        # Extract input fields from config
+        input_fields = self.config.input_fields or {}
+
+        # Store in node_outputs
+        return {
+            **state,
+            "node_outputs": {
+                **state.get("node_outputs", {}),
+                state["current_node_id"]: input_data
+            }
+        }
+
+
+# ============================================================================
+# Output Node Executor
+# ============================================================================
+
+class OutputNodeExecutor(BaseNodeExecutor):
+    """Execute output node - returns workflow output."""
+
+    async def execute(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """Extract output from previous nodes."""
+        node_outputs = state.get("node_outputs", {})
+
+        # Collect all outputs for final result
+        final_output = {
+            "workflow_outputs": node_outputs,
+            "summary": {
+                "total_nodes_executed": len(node_outputs),
+                "node_ids": list(node_outputs.keys())
+            }
+        }
+
+        return {
+            **state,
+            "final_output": final_output,  # Set final_output for workflow result
+            "node_outputs": {
+                **node_outputs,
+                state["current_node_id"]: {
+                    "status": "output_collected",
+                    "outputs": node_outputs
+                }
+            }
+        }
 
 
 # ============================================================================
@@ -116,93 +210,108 @@ class BaseNodeExecutor(ABC):
 # ============================================================================
 
 class LLMNodeExecutor(BaseNodeExecutor):
-    """
-    Execute LLM node - call AI model with context.
-
-    Builds prompt from previous node outputs and calls configured LLM.
-    """
-
-    def _create_llm(self) -> ChatOpenAI:
-        """Create LLM instance."""
-        import os
-
-        # Use LiteLLM proxy (same as IntelligentAgent)
-        litellm_base_url = os.getenv("LITELLM_BASE_URL", "http://localhost:6655/litellm/v1")
-        litellm_api_key = os.getenv("HAI_PROXY_KEY", "")
-
-        if not litellm_api_key:
-            raise ValueError(
-                "HAI_PROXY_KEY not configured. Please set it in your .env file."
-            )
-
-        model_name = self.config.model_name or "gpt-4"
-        temperature = self.config.temperature or 0.3
-        max_tokens = self.config.max_tokens or 4096
-
-        return ChatOpenAI(
-            model=model_name,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            base_url=litellm_base_url,
-            api_key=litellm_api_key,
-        )
+    """Execute LLM node - call AI model."""
 
     async def execute(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Execute LLM node.
+        """Call LLM with prompt."""
+        from api.services.settings import get_setting
+        from api.routers.credentials import _credentials_store
+        from langchain_openai import ChatOpenAI
+        from langchain_core.messages import SystemMessage, HumanMessage
 
-        Args:
-            state: Contains node_outputs (previous results), current_node_id, input_data
+        # Get input data
+        input_data = state.get("input_data", {})
+        node_outputs = state.get("node_outputs", {})
 
-        Returns:
-            Updated state with new node output
-        """
-        print(f"[LLMNodeExecutor] Executing LLM node")
-
-        # Get previous outputs as context
-        context = state.get("node_outputs", {})
-        current_node_id = state.get("current_node_id")
-
-        print(f"[LLMNodeExecutor] Current node: {current_node_id}")
-        print(f"[LLMNodeExecutor] Context: {list(context.keys())}")
+        # Debug: print available node outputs
+        print(f"[LLMNodeExecutor] Available node_outputs keys: {list(node_outputs.keys())}")
+        if 'approval-1778160383927' in node_outputs:
+            print(f"[LLMNodeExecutor] Approval node output keys: {list(node_outputs['approval-1778160383927'].keys())}")
 
         # Build prompt
-        system_prompt = self.config.system_prompt or "Process the following data:"
+        system_prompt = self.config.system_prompt or "You are a helpful assistant."
+        user_prompt = self.config.prompt or ""
 
-        # Format context data
-        context_str = json.dumps(context, indent=2) if context else "No previous data"
+        # Substitute variables in prompts
+        system_prompt = self._substitute_variables(system_prompt, input_data, node_outputs)
+        user_prompt = self._substitute_variables(user_prompt, input_data, node_outputs)
 
-        # Add input data if this is first node
-        input_data = state.get("input_data", {})
-        if input_data:
-            context_str += f"\n\nInput Data:\n{json.dumps(input_data, indent=2)}"
+        # If user prompt is still empty after substitution, use a default
+        if not user_prompt or not user_prompt.strip():
+            # Try to use input data or a generic prompt
+            if input_data:
+                user_prompt = f"Process this data:\n{json.dumps(input_data, indent=2)}"
+            else:
+                user_prompt = "Please generate output based on the system instructions."
 
-        print(f"[LLMNodeExecutor] Building messages with system prompt: {system_prompt[:100]}...")
+        print(f"[LLMNodeExecutor] System prompt: {system_prompt[:100]}...")
+        print(f"[LLMNodeExecutor] User prompt: {user_prompt[:100]}...")
 
+        # Get language model from settings
+        language_model_id = await get_setting("language_model_id", "gpt-4o-mini")
+
+        # Resolve model name and API key from credential if it's a UUID
+        model_name = self.config.model_name or language_model_id
+        api_key = None
+        api_base = None
+
+        # Check if language_model_id is a credential ID (UUID format)
+        if language_model_id and len(language_model_id) == 36 and language_model_id.count('-') == 4:
+            credential = _credentials_store.get(language_model_id)
+            if credential:
+                # If node doesn't have model_name configured, use credential's model
+                if not self.config.model_name:
+                    model_name = credential.get("model_name", language_model_id)
+                api_key = credential.get("api_key")
+                api_base = credential.get("base_url")
+            else:
+                # Fallback to default
+                if not self.config.model_name:
+                    model_name = "gpt-4o-mini"
+        elif not model_name:
+            model_name = "gpt-4o-mini"
+
+        # Create LLM with LiteLLM proxy support
+        llm = ChatOpenAI(
+            model=model_name,
+            openai_api_base=api_base if api_base else "http://localhost:6655/litellm/v1",
+            openai_api_key=api_key if api_key else "dummy-key-for-proxy",
+            temperature=self.config.temperature or 0.7,
+            max_tokens=self.config.max_tokens or 4096,
+        )
+
+        # Build messages
         messages = [
             SystemMessage(content=system_prompt),
-            HumanMessage(content=context_str)
+            HumanMessage(content=user_prompt)
         ]
 
         # Call LLM
-        print(f"[LLMNodeExecutor] Creating LLM instance...")
-        llm = self._create_llm()
-        print(f"[LLMNodeExecutor] Calling LLM...")
-        response = await llm.ainvoke(messages)
-        print(f"[LLMNodeExecutor] LLM response received: {response.content[:100]}...")
+        try:
+            response = await llm.ainvoke(messages)
+            result = response.content
 
-        # Store output
-        new_node_outputs = {
-            **state.get("node_outputs", {}),
-            current_node_id: response.content
-        }
-
-        print(f"[LLMNodeExecutor] Returning updated state with output for {current_node_id}")
-
-        return {
-            **state,
-            "node_outputs": new_node_outputs
-        }
+            return {
+                **state,
+                "node_outputs": {
+                    **node_outputs,
+                    state["current_node_id"]: {
+                        "text": result,
+                        "model": self.config.model_name
+                    }
+                }
+            }
+        except Exception as e:
+            print(f"[LLMNodeExecutor] Error: {e}")
+            return {
+                **state,
+                "node_outputs": {
+                    **node_outputs,
+                    state["current_node_id"]: {
+                        "error": str(e)
+                    }
+                }
+            }
 
 
 # ============================================================================
@@ -210,51 +319,37 @@ class LLMNodeExecutor(BaseNodeExecutor):
 # ============================================================================
 
 class ToolNodeExecutor(BaseNodeExecutor):
-    """
-    Execute tool node - call HANA, web search, calculator, etc.
-
-    Uses ToolFactory to get and execute tools.
-    """
+    """Execute tool node - call a tool/function."""
 
     async def execute(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Execute tool node.
+        """Execute tool."""
+        # For now, this is a placeholder
+        # Implement specific tool execution logic later
 
-        Args:
-            state: Contains node_outputs, current_node_id
-
-        Returns:
-            Updated state with tool result
-        """
         tool_name = self.config.tool_name
         tool_args = self.config.tool_args or {}
-        current_node_id = state.get("current_node_id")
 
-        if not tool_name:
-            raise ValueError(f"Tool node {current_node_id} missing tool_name")
+        # Substitute variables in tool args
+        input_data = state.get("input_data", {})
+        node_outputs = state.get("node_outputs", {})
 
-        # Get tool from factory
-        factory = ToolFactory()
-        tool = await factory.get_tool_by_name(tool_name)
-
-        if not tool:
-            raise ValueError(f"Tool not found: {tool_name}")
-
-        # Execute tool
-        try:
-            result = await tool.ainvoke(tool_args)
-        except Exception as e:
-            result = {"error": str(e)}
-
-        # Store output
-        new_node_outputs = {
-            **state.get("node_outputs", {}),
-            current_node_id: result
-        }
+        resolved_args = {}
+        for key, value in tool_args.items():
+            if isinstance(value, str):
+                resolved_args[key] = self._substitute_variables(value, input_data, node_outputs)
+            else:
+                resolved_args[key] = value
 
         return {
             **state,
-            "node_outputs": new_node_outputs
+            "node_outputs": {
+                **state.get("node_outputs", {}),
+                state["current_node_id"]: {
+                    "tool_name": tool_name,
+                    "tool_args": resolved_args,
+                    "result": "Tool execution placeholder"
+                }
+            }
         }
 
 
@@ -263,131 +358,60 @@ class ToolNodeExecutor(BaseNodeExecutor):
 # ============================================================================
 
 class ConditionalNodeExecutor(BaseNodeExecutor):
-    """
-    Execute conditional node - evaluate condition and route.
-
-    Supports: equals, contains, greater_than, less_than
-    """
-
-    def _extract_field(self, data: Any, field_path: str) -> Any:
-        """
-        Extract field from data using JSONPath-like syntax.
-
-        Args:
-            data: Data to extract from
-            field_path: Path like "$.status" or "status"
-
-        Returns:
-            Extracted value or None
-        """
-        if not field_path:
-            return data
-
-        # Remove leading $. if present
-        if field_path.startswith("$."):
-            field_path = field_path[2:]
-
-        # Simple path traversal (no arrays or complex paths)
-        parts = field_path.split(".")
-        current = data
-
-        for part in parts:
-            if isinstance(current, dict):
-                current = current.get(part)
-            else:
-                return None
-
-        return current
-
-    def _evaluate_condition(
-        self,
-        field_value: Any,
-        condition_type: str,
-        comparison_value: Any
-    ) -> bool:
-        """
-        Evaluate condition.
-
-        Args:
-            field_value: Value from data
-            condition_type: equals, contains, greater_than, less_than
-            comparison_value: Value to compare against
-
-        Returns:
-            True if condition met
-        """
-        if condition_type == "equals":
-            return field_value == comparison_value
-
-        elif condition_type == "contains":
-            if isinstance(field_value, str):
-                return comparison_value in field_value
-            elif isinstance(field_value, (list, tuple)):
-                return comparison_value in field_value
-            return False
-
-        elif condition_type == "greater_than":
-            try:
-                return float(field_value) > float(comparison_value)
-            except (ValueError, TypeError):
-                return False
-
-        elif condition_type == "less_than":
-            try:
-                return float(field_value) < float(comparison_value)
-            except (ValueError, TypeError):
-                return False
-
-        return False
+    """Execute conditional node - evaluate condition and route."""
 
     async def execute(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Execute conditional node.
+        """Evaluate condition."""
+        # Get condition configuration
+        condition_type = self.config.condition_type  # e.g., "equals", "contains", "greater_than"
+        field_path = self.config.field_path  # e.g., "node_id.field_name"
+        comparison_value = self.config.comparison_value
 
-        Args:
-            state: Contains node_outputs, current_node_id, prev_node_id
+        # Extract value from state
+        node_outputs = state.get("node_outputs", {})
 
-        Returns:
-            Updated state with condition result and next_node_id
-        """
-        current_node_id = state.get("current_node_id")
-        prev_node_id = state.get("prev_node_id")
-
-        # Get previous output
-        prev_output = state.get("node_outputs", {}).get(prev_node_id)
-
-        # Extract field value
-        field_value = self._extract_field(prev_output, self.config.field_path)
+        # Parse field path (e.g., "previous-node.status")
+        if "." in field_path:
+            node_id, field_name = field_path.split(".", 1)
+            if node_id in node_outputs:
+                value = node_outputs[node_id].get(field_name)
+            else:
+                value = None
+        else:
+            # Direct field from input_data
+            value = state.get("input_data", {}).get(field_path)
 
         # Evaluate condition
-        result = self._evaluate_condition(
-            field_value,
-            self.config.condition_type,
-            self.config.comparison_value
-        )
-
-        # Determine next node
-        next_node_id = (
-            self.config.true_edge_id if result
-            else self.config.false_edge_id
-        )
+        result = self._evaluate_condition(condition_type, value, comparison_value)
 
         # Store result
-        new_node_outputs = {
-            **state.get("node_outputs", {}),
-            current_node_id: {
-                "condition_result": result,
-                "field_value": field_value,
-                "comparison_value": self.config.comparison_value,
-                "next_node": next_node_id
+        return {
+            **state,
+            "node_outputs": {
+                **node_outputs,
+                state["current_node_id"]: {
+                    "condition_result": result,
+                    "evaluated_value": value,
+                    "comparison_value": comparison_value
+                }
             }
         }
 
-        return {
-            **state,
-            "node_outputs": new_node_outputs,
-            "next_node_id": next_node_id
-        }
+    def _evaluate_condition(self, condition_type: str, value: Any, comparison_value: Any) -> bool:
+        """Evaluate condition based on type."""
+        if condition_type == "equals":
+            return value == comparison_value
+        elif condition_type == "not_equals":
+            return value != comparison_value
+        elif condition_type == "contains":
+            return comparison_value in str(value)
+        elif condition_type == "greater_than":
+            return float(value) > float(comparison_value)
+        elif condition_type == "less_than":
+            return float(value) < float(comparison_value)
+        else:
+            # Default to False for unknown conditions
+            return False
 
 
 # ============================================================================
@@ -395,508 +419,66 @@ class ConditionalNodeExecutor(BaseNodeExecutor):
 # ============================================================================
 
 class AgentNodeExecutor(BaseNodeExecutor):
-    """
-    Execute agent node - run standalone agent or agent team.
-
-    Integrates with existing agent system.
-    """
+    """Execute agent node - invoke intelligent agent."""
 
     async def execute(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Execute agent node.
-
-        Args:
-            state: Contains node_outputs, current_node_id, input_data
-
-        Returns:
-            Updated state with agent result
-        """
+        """Invoke agent."""
+        # Get agent configuration
         agent_type = self.config.agent_type
-        agent_id = self.config.agent_id
         agent_name = self.config.agent_name
-        prompt_template = self.config.prompt  # NEW: Get prompt template
-        current_node_id = state.get("current_node_id")
+        prompt = self.config.prompt or ""
 
-        print(f"[AgentNodeExecutor] Executing agent node: {current_node_id}")
-        print(f"[AgentNodeExecutor] Agent type: {agent_type}, ID: {agent_id}, Name: {agent_name}")
-        print(f"[AgentNodeExecutor] Prompt template: {prompt_template}")
-
-        if not agent_type or not agent_id:
-            raise ValueError(f"Agent node {current_node_id} missing agent_type or agent_id")
-
-        if not prompt_template:
-            raise ValueError(f"Agent node {current_node_id} missing prompt field. Please configure a prompt in the node properties.")
-
-        # Get previous outputs and input data
-        context = state.get("node_outputs", {})
+        # Substitute variables in prompt
         input_data = state.get("input_data", {})
-
-        print(f"[AgentNodeExecutor] Context keys: {list(context.keys())}")
-        print(f"[AgentNodeExecutor] Input data keys: {list(input_data.keys())}")
-
-        # Substitute template variables in prompt
-        query = self._substitute_variables(prompt_template, input_data, context)
-        print(f"[AgentNodeExecutor] Substituted query: {query[:200]}...")
-
-        # Build additional context from previous outputs
-        context_text = self._format_context(context, input_data)
-
-        if agent_type == "standalone":
-            # Execute standalone agent
-            result = await self._execute_standalone_agent(agent_id, agent_name, query, context_text)
-        elif agent_type == "team":
-            # Execute agent team
-            result = await self._execute_agent_team(agent_id, agent_name, query, context_text)
-        else:
-            raise ValueError(f"Unknown agent_type: {agent_type}")
-
-        print(f"[AgentNodeExecutor] Agent execution completed, result: {result}")
-
-        # Store output
-        new_node_outputs = {
-            **state.get("node_outputs", {}),
-            current_node_id: result
-        }
-
-        return {
-            **state,
-            "node_outputs": new_node_outputs
-        }
-
-    def _format_context(self, context: Dict[str, Any], input_data: Dict[str, Any]) -> str:
-        """Format context and input data for agent prompt."""
-        parts = []
-
-        if context:
-            parts.append("Previous Node Outputs:")
-            for node_id, output in context.items():
-                parts.append(f"\n{node_id}: {json.dumps(output, indent=2)}")
-
-        if input_data:
-            parts.append("\n\nInput Data:")
-            parts.append(json.dumps(input_data, indent=2))
-
-        return "\n".join(parts) if parts else "No context available"
-
-    async def _execute_standalone_agent(
-        self,
-        agent_id: str,
-        agent_name: str,
-        query: str,
-        context: str
-    ) -> Dict[str, Any]:
-        """
-        Execute a standalone agent with query and context.
-
-        Args:
-            agent_id: Agent ID
-            agent_name: Agent name
-            query: User query/prompt (from template substitution)
-            context: Formatted context from previous nodes
-
-        Returns:
-            Agent execution result
-        """
-        print(f"[AgentNodeExecutor] Executing standalone agent: {agent_name}")
-        print(f"[AgentNodeExecutor] Query: {query[:100]}...")
-
-        try:
-            # Get agent configuration
-            from open_notebook.database.repository import repo_query
-            agent_rows = await repo_query(
-                "SELECT * FROM standalone_agents WHERE id = :id AND status = 'active'",
-                {"id": agent_id}
-            )
-
-            if not agent_rows:
-                raise ValueError(f"Standalone agent {agent_id} not found or inactive")
-
-            agent_data = agent_rows[0]
-            print(f"[AgentNodeExecutor] Found agent: {agent_data['name']}")
-
-            # Get LLM configuration
-            from api.services.settings import get_setting
-            from api.routers.credentials import _credentials_store
-
-            language_model_id = await get_setting("language_model_id", "")
-            model_id = agent_data.get("model_name") or language_model_id
-
-            if not model_id:
-                raise ValueError("No AI model configured")
-
-            credential = _credentials_store.get(model_id)
-            if not credential:
-                raise ValueError(f"Model {model_id} not found in credentials")
-
-            print(f"[AgentNodeExecutor] Using model: {credential['model_name']}")
-
-            # Get data sources for context
-            source_ids = json.loads(agent_data.get("data_source_ids") or "[]")
-            context_content = ""
-
-            if source_ids:
-                print(f"[AgentNodeExecutor] Loading {len(source_ids)} data sources")
-                param_names = [f":source_{i}" for i in range(len(source_ids))]
-                placeholders = ','.join(param_names)
-                sql = f"SELECT id, title, full_text, source_type FROM sources WHERE id IN ({placeholders})"
-                params = {f"source_{i}": source_id for i, source_id in enumerate(source_ids)}
-
-                sources_rows = await repo_query(sql, params)
-                if sources_rows:
-                    context_parts = []
-                    for source in sources_rows:
-                        title = source.get("title", "Untitled")
-                        full_text = source.get("full_text", "")
-                        context_parts.append(f"Source: {title}\n{full_text}\n")
-                    context_content = "\n\n---\n\n".join(context_parts)
-
-            # Get tools
-            tool_ids = json.loads(agent_data.get("tool_ids") or "[]")
-            tools = []
-
-            if tool_ids:
-                print(f"[AgentNodeExecutor] Loading {len(tool_ids)} tools")
-                tool_factory = ToolFactory()
-                all_registry_tools = await tool_factory._get_registry_tools()
-
-                for tool in all_registry_tools:
-                    tool_registry_id = None
-                    if hasattr(tool, 'metadata') and isinstance(tool.metadata, dict):
-                        tool_registry_id = tool.metadata.get('_registry_id')
-
-                    if tool_registry_id in tool_ids:
-                        tools.append(tool)
-
-                print(f"[AgentNodeExecutor] Loaded {len(tools)} tools")
-
-            # Build system prompt
-            system_prompt = agent_data.get("system_prompt") or f"You are a helpful {agent_data['role']} assistant."
-
-            # Add data source context
-            if context_content:
-                system_prompt += f"\n\nData Sources:\n\n{context_content}"
-
-            # Add workflow context from previous nodes
-            if context and context != "No context available":
-                system_prompt += f"\n\nWorkflow Context:\n\n{context}"
-
-            # Use the provided query (already has template substitution)
-            print(f"[AgentNodeExecutor] Using query: {query[:100]}...")
-
-            print(f"[AgentNodeExecutor] Calling LLM with system prompt length: {len(system_prompt)}, query length: {len(query)}")
-
-            # Prepare messages
-            llm_messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": query}
-            ]
-
-            # Call LLM via httpx (same pattern as standalone_agents.py)
-            import httpx
-
-            request_payload = {
-                "model": credential["model_name"],
-                "messages": llm_messages,
-                "max_tokens": 2000,
-                "temperature": 0.7,
-                "stream": False  # Non-streaming for workflow execution
-            }
-
-            # Add tools if available
-            if tools:
-                tool_schemas = []
-                for tool in tools:
-                    tool_schemas.append({
-                        "type": "function",
-                        "function": {
-                            "name": tool.name,
-                            "description": tool.description,
-                            "parameters": getattr(tool, "args_schema", {}).schema() if hasattr(tool, "args_schema") else {}
-                        }
-                    })
-                request_payload["tools"] = tool_schemas
-                print(f"[AgentNodeExecutor] Including {len(tool_schemas)} tools")
-
-            endpoint_url = f"{credential['base_url']}/chat/completions"
-
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                response = await client.post(
-                    endpoint_url,
-                    json=request_payload,
-                    headers={
-                        "Authorization": f"Bearer {credential['api_key']}",
-                        "Content-Type": "application/json"
-                    }
-                )
-
-                if response.status_code != 200:
-                    raise ValueError(f"LLM API error: {response.status_code} {response.text}")
-
-                result_data = response.json()
-                message = result_data["choices"][0]["message"]
-                content = message.get("content", "")
-
-                print(f"[AgentNodeExecutor] LLM response length: {len(content)}")
-
-                # Handle tool calls if present
-                tool_calls = message.get("tool_calls", [])
-                tool_results = []
-
-                if tool_calls:
-                    print(f"[AgentNodeExecutor] Processing {len(tool_calls)} tool calls")
-                    for tool_call in tool_calls:
-                        tool_name = tool_call["function"]["name"]
-                        tool_args = json.loads(tool_call["function"]["arguments"])
-
-                        # Find and execute tool
-                        tool = next((t for t in tools if t.name == tool_name), None)
-                        if tool:
-                            tool_result = await tool.ainvoke(tool_args)
-                            tool_results.append({
-                                "tool": tool_name,
-                                "args": tool_args,
-                                "result": tool_result
-                            })
-
-                return {
-                    "agent_type": "standalone",
-                    "agent_id": agent_id,
-                    "agent_name": agent_name,
-                    "status": "completed",
-                    "output": content,
-                    "tool_calls": tool_results,
-                }
-
-        except Exception as e:
-            print(f"[AgentNodeExecutor] Agent execution failed: {e}")
-            import traceback
-            traceback.print_exc()
-
-            return {
-                "agent_type": "standalone",
-                "agent_id": agent_id,
-                "agent_name": agent_name,
-                "status": "failed",
-                "error": str(e),
-            }
-
-    async def _execute_agent_team(
-        self,
-        team_id: str,
-        team_name: str,
-        query: str,
-        context: str
-    ) -> Dict[str, Any]:
-        """
-        Execute an agent team with query and context.
-
-        Args:
-            team_id: Team ID
-            team_name: Team name
-            query: User query/prompt (from template substitution)
-            context: Formatted context from previous nodes
-
-        Returns:
-            Team execution result
-        """
-        print(f"[AgentNodeExecutor] Executing agent team: {team_name}")
-        print(f"[AgentNodeExecutor] Query: {query[:100]}...")
-
-        try:
-            # Get team configuration
-            from open_notebook.database.repository import repo_query
-            from open_notebook.domain.agent_team import AgentTeam
-
-            team = await AgentTeam.get(team_id)
-            if not team:
-                raise ValueError(f"Agent team {team_id} not found")
-
-            print(f"[AgentNodeExecutor] Found team: {team.name} with {len(team.agents)} agents")
-
-            # Execute team using AgentManager
-            from open_notebook.agents.agent_manager import AgentManager
-
-            # Create manager
-            manager = AgentManager()
-
-            # Load existing team
-            manager._buses[team.id] = MessageBus(team_id=team.id)
-            manager._task_managers[team.id] = TaskManager(team_id=team.id)
-            manager._agents[team.id] = {}
-
-            # Instantiate agents
-            for agent_instance in team.agents:
-                agent_cls = get_agent_class(agent_instance.role)
-                if not agent_cls:
-                    print(f"[AgentNodeExecutor] Warning: No agent class for role {agent_instance.role}")
-                    continue
-
-                agent = agent_cls(
-                    name=agent_instance.name,
-                    role=agent_instance.role,
-                    model_name=agent_instance.model_name or manager.model_name,
-                    system_prompt=agent_instance.system_prompt,
-                )
-                manager._agents[team.id][agent_instance.id] = agent
-
-            # Load existing tasks
-            tasks = await TaskManager.get_tasks_for_team(team.id)
-            for task in tasks:
-                manager._task_managers[team.id].add_task(task)
-
-            # Add a task for the workflow query
-            workflow_task = AgentTask(
-                id=str(uuid4()),
-                team_id=team.id,
-                name=f"Process workflow query",
-                description=f"{query}\n\nAdditional Context:\n{context}",
-                status="pending",
-            )
-            await workflow_task.save()
-            manager._task_managers[team.id].add_task(workflow_task)
-
-            print(f"[AgentNodeExecutor] Running team with {len(tasks) + 1} tasks")
-
-            # Run team
-            result = await manager.run_team(team.id)
-
-            print(f"[AgentNodeExecutor] Team execution completed with status: {result.get('status')}")
-
-            return {
-                "agent_type": "team",
-                "agent_id": team_id,
-                "agent_name": team_name,
-                "status": "completed",
-                "output": result.get("summary", ""),
-                "task_results": result.get("task_results", []),
-                "metadata": result.get("metadata", {}),
-            }
-
-        except Exception as e:
-            print(f"[AgentNodeExecutor] Team execution failed: {e}")
-            import traceback
-            traceback.print_exc()
-
-            return {
-                "agent_type": "team",
-                "agent_id": team_id,
-                "agent_name": team_name,
-                "status": "failed",
-                "error": str(e),
-            }
-
-
-# ============================================================================
-# Input/Output Node Executors
-# ============================================================================
-
-class InputNodeExecutor(BaseNodeExecutor):
-    """Input node - validates and passes through input data based on field definitions."""
-
-    async def execute(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        """Validate input data against defined fields and pass through."""
-        current_node_id = state.get("current_node_id")
-        input_data = state.get("input_data", {})
-
-        # Get field definitions from config
-        input_fields = self.config.input_fields or []
-
-        # If no fields defined, pass through all data (backward compatibility)
-        if not input_fields:
-            new_node_outputs = {
-                **state.get("node_outputs", {}),
-                current_node_id: input_data
-            }
-            return {**state, "node_outputs": new_node_outputs}
-
-        # Validate and filter input data
-        validated_data = {}
-        errors = []
-
-        for field_def in input_fields:
-            field_name = field_def.name
-
-            # Check if required field is present
-            if field_def.required and field_name not in input_data:
-                if field_def.default_value is not None:
-                    validated_data[field_name] = field_def.default_value
-                else:
-                    errors.append(f"Required field '{field_name}' is missing")
-                    continue
-
-            # Get value or default
-            value = input_data.get(field_name, field_def.default_value)
-
-            # Type validation
-            if value is not None:
-                try:
-                    validated_value = self._validate_type(value, field_def.type)
-                    validated_data[field_name] = validated_value
-                except ValueError as e:
-                    errors.append(f"Field '{field_name}': {str(e)}")
-
-        # If validation errors, fail the workflow
-        if errors:
+        node_outputs = state.get("node_outputs", {})
+        prompt = self._substitute_variables(prompt, input_data, node_outputs)
+
+        # Get agent class
+        agent_class = get_agent_class(agent_type)
+        if not agent_class:
             return {
                 **state,
-                "error": f"Input validation failed: {'; '.join(errors)}"
+                "node_outputs": {
+                    **state.get("node_outputs", {}),
+                    state["current_node_id"]: {
+                        "error": f"Unknown agent type: {agent_type}"
+                    }
+                }
             }
 
-        # Store validated data in node outputs
-        new_node_outputs = {
-            **state.get("node_outputs", {}),
-            current_node_id: validated_data
-        }
+        # Create agent instance
+        try:
+            agent = agent_class(
+                name=agent_name or agent_type,
+                user_id=state.get("user_id", "system")
+            )
 
-        return {
-            **state,
-            "node_outputs": new_node_outputs
-        }
+            # Execute agent
+            result = await agent.execute(prompt)
 
-    def _validate_type(self, value: Any, expected_type: str) -> Any:
-        """Validate and coerce value to expected type."""
-        if expected_type == "string":
-            return str(value)
-        elif expected_type == "number":
-            try:
-                return float(value) if isinstance(value, (int, float, str)) else value
-            except (ValueError, TypeError):
-                raise ValueError(f"Cannot convert '{value}' to number")
-        elif expected_type == "boolean":
-            if isinstance(value, bool):
-                return value
-            if isinstance(value, str):
-                return value.lower() in ["true", "1", "yes"]
-            return bool(value)
-        elif expected_type == "array":
-            if not isinstance(value, list):
-                raise ValueError(f"Expected array, got {type(value).__name__}")
-            return value
-        elif expected_type == "object":
-            if not isinstance(value, dict):
-                raise ValueError(f"Expected object, got {type(value).__name__}")
-            return value
-        else:
-            return value
-
-
-class OutputNodeExecutor(BaseNodeExecutor):
-    """Output node - collects final output."""
-
-    async def execute(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        """Collect final output from all node outputs."""
-        node_outputs = state.get("node_outputs", {})
-
-        # Final output is all collected data
-        final_output = {
-            "all_outputs": node_outputs,
-            "completed": True
-        }
-
-        return {
-            **state,
-            "final_output": final_output
-        }
+            return {
+                **state,
+                "node_outputs": {
+                    **state.get("node_outputs", {}),
+                    state["current_node_id"]: {
+                        "agent_type": agent_type,
+                        "result": result
+                    }
+                }
+            }
+        except Exception as e:
+            print(f"[AgentNodeExecutor] Error: {e}")
+            import traceback
+            traceback.print_exc()
+            return {
+                **state,
+                "node_outputs": {
+                    **state.get("node_outputs", {}),
+                    state["current_node_id"]: {
+                        "error": str(e)
+                    }
+                }
+            }
 
 
 # ============================================================================
@@ -904,76 +486,92 @@ class OutputNodeExecutor(BaseNodeExecutor):
 # ============================================================================
 
 class NotebookGeneratorNodeExecutor(BaseNodeExecutor):
-    """
-    Execute notebook generator node - create notebooks from workflow outputs.
-
-    Supports:
-    - Template variable substitution for notebook name/description
-    - 3 content extraction modes: full_output, smart_parse, json_path
-    - Creating new sources or linking existing ones
-    """
+    """Execute notebook generator node - create workspace from sources."""
 
     async def execute(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Execute notebook generator node.
+        """Generate notebook/workspace."""
+        from open_notebook.domain.notebook import Notebook
+        from open_notebook.domain.source import Source
 
-        Args:
-            state: Contains node_outputs, current_node_id, input_data
+        # Get configuration
+        notebook_name = self.config.notebook_name
+        notebook_description = self.config.notebook_description
+        folder_id = self.config.folder_id
+        tags = self.config.tags or []
 
-        Returns:
-            Updated state with notebook creation result
-        """
-        current_node_id = state.get("current_node_id")
+        # Substitute variables
         input_data = state.get("input_data", {})
-        context = state.get("node_outputs", {})
+        node_outputs = state.get("node_outputs", {})
 
-        print(f"[NotebookGeneratorNodeExecutor] Executing node: {current_node_id}")
+        if notebook_name:
+            notebook_name = self._substitute_variables(notebook_name, input_data, node_outputs)
+        if notebook_description:
+            notebook_description = self._substitute_variables(notebook_description, input_data, node_outputs)
 
+        # Get user
+        user_id = state.get("user_id", "system")
+
+        # Create notebook
         try:
-            # Step 1: Validate prerequisites
-            await self._validate_language_model_configured()
-
-            # Step 2: Substitute template variables
-            notebook_name = self._substitute_variables(
-                self.config.notebook_name or "Generated Notebook",
-                input_data,
-                context
-            )
-            notebook_description = None
-            if self.config.notebook_description:
-                notebook_description = self._substitute_variables(
-                    self.config.notebook_description,
-                    input_data,
-                    context
-                )
-
-            print(f"[NotebookGeneratorNodeExecutor] Creating notebook: {notebook_name}")
-
-            # Step 3: Create notebook
-            from open_notebook.domain.notebook import Notebook
             notebook = Notebook(
-                name=notebook_name,
+                id=str(uuid4()),
+                name=notebook_name or "Generated Notebook",
                 description=notebook_description,
-                folder_id=self.config.folder_id,
-                tags=self.config.tags or []
+                created_by=user_id,
+                folder_id=folder_id,
+                tags=tags
             )
-            notebook_id = await notebook.save()
+            await notebook.save()
 
-            print(f"[NotebookGeneratorNodeExecutor] Notebook created: {notebook_id}")
+            # Handle source mode
+            source_mode = self.config.source_mode  # "extract" | "existing"
 
-            # Step 4: Handle sources
-            source_ids = await self._handle_sources(notebook, state)
+            if source_mode == "extract":
+                # Extract content from previous node output
+                content_source_node_id = self.config.content_source_node_id
+                if content_source_node_id and content_source_node_id in node_outputs:
+                    content = node_outputs[content_source_node_id]
 
-            # Step 5: Format output
-            output = self._format_output(notebook_id, notebook_name, source_ids)
+                    # Extract based on mode
+                    extraction_mode = self.config.content_extraction_mode  # "full" | "field"
+                    if extraction_mode == "field":
+                        field_path = self.config.content_extraction_path
+                        if field_path and isinstance(content, dict):
+                            content = content.get(field_path, content)
 
-            print(f"[NotebookGeneratorNodeExecutor] Execution complete: {output}")
+                    # Create source from extracted content
+                    source_title = self.config.source_title_template or "Extracted Content"
+                    source_title = self._substitute_variables(source_title, input_data, node_outputs)
+
+                    source = Source(
+                        id=str(uuid4()),
+                        notebook_id=notebook.id,
+                        type=self.config.source_type or "text",
+                        url=None,
+                        title=source_title,
+                        content=json.dumps(content) if not isinstance(content, str) else content,
+                        created_by=user_id
+                    )
+                    await source.save()
+
+            elif source_mode == "existing":
+                # Link existing sources to notebook
+                existing_source_ids = self.config.existing_source_ids or []
+                for source_id in existing_source_ids:
+                    source = await Source.get(source_id)
+                    if source:
+                        source.notebook_id = notebook.id
+                        await source.save()
 
             return {
                 **state,
                 "node_outputs": {
-                    **context,
-                    current_node_id: output
+                    **state.get("node_outputs", {}),
+                    state["current_node_id"]: {
+                        "notebook_id": notebook.id,
+                        "notebook_name": notebook.name,
+                        "status": "created"
+                    }
                 }
             }
 
@@ -981,202 +579,14 @@ class NotebookGeneratorNodeExecutor(BaseNodeExecutor):
             print(f"[NotebookGeneratorNodeExecutor] Error: {e}")
             import traceback
             traceback.print_exc()
-
             return {
                 **state,
                 "node_outputs": {
-                    **context,
-                    current_node_id: {
-                        "status": "failed",
-                        "error": str(e),
-                        "notebook_id": None
+                    **state.get("node_outputs", {}),
+                    state["current_node_id"]: {
+                        "error": str(e)
                     }
                 }
-            }
-
-    async def _validate_language_model_configured(self):
-        """Validate that a language model is configured (required for notebooks)."""
-        from api.services.settings import get_setting
-
-        language_model_id = await get_setting("language_model_id", "")
-        if not language_model_id:
-            raise ValueError(
-                "No language model configured. Please configure a language model "
-                "in Settings → Models before creating notebooks."
-            )
-
-    async def _handle_sources(self, notebook, state: Dict[str, Any]) -> list:
-        """
-        Handle source creation and linking based on source_mode.
-
-        Args:
-            notebook: Notebook instance
-            state: Workflow state
-
-        Returns:
-            List of source IDs that were created/linked
-        """
-        from open_notebook.domain.notebook import Source
-        source_mode = self.config.source_mode or "create_from_content"
-        source_ids = []
-
-        # Create sources from content
-        if source_mode in ["create_from_content", "both"]:
-            if not self.config.content_source_node_id:
-                # Only error if we're trying to create sources
-                if source_mode == "create_from_content":
-                    raise ValueError(
-                        "content_source_node_id is required when source_mode is 'create_from_content'"
-                    )
-                # For "both" mode, skip content creation if not configured
-            else:
-                created_source_ids = await self._create_sources_from_content(notebook, state)
-                source_ids.extend(created_source_ids)
-
-        # Link existing sources
-        if source_mode in ["use_existing", "both"]:
-            existing_ids = self.config.existing_source_ids or []
-            # It's OK to have an empty list - notebook can have 0 sources
-
-            for source_id in existing_ids:
-                await notebook.add_source(source_id)
-                source_ids.append(source_id)
-
-        return source_ids
-
-    async def _create_sources_from_content(self, notebook, state: Dict[str, Any]) -> list:
-        """
-        Create sources from previous node output based on extraction mode.
-
-        Args:
-            notebook: Notebook instance
-            state: Workflow state
-
-        Returns:
-            List of created source IDs
-        """
-        from open_notebook.domain.notebook import Source
-        from jsonpath_ng import parse
-
-        context = state.get("node_outputs", {})
-        content_source_node_id = self.config.content_source_node_id
-        extraction_mode = self.config.content_extraction_mode or "full_output"
-
-        if content_source_node_id not in context:
-            raise ValueError(
-                f"Node '{content_source_node_id}' not found in previous outputs. "
-                f"Available nodes: {list(context.keys())}"
-            )
-
-        output = context[content_source_node_id]
-        source_title_template = self.config.source_title_template or "Generated Source"
-        source_type = self.config.source_type or "text"
-        source_ids = []
-
-        if extraction_mode == "full_output":
-            # Extract entire output as string
-            content = json.dumps(output) if isinstance(output, (dict, list)) else str(output)
-            source = Source(
-                title=source_title_template,
-                source_type=source_type,
-                full_text=content
-            )
-            source_id = await source.save()
-            await notebook.add_source(source_id)
-            source_ids.append(source_id)
-
-        elif extraction_mode == "smart_parse":
-            # Intelligently parse structured outputs
-            if isinstance(output, list):
-                # Create multiple sources from array
-                for i, item in enumerate(output):
-                    title = f"{source_title_template} {i+1}"
-                    content = json.dumps(item) if isinstance(item, dict) else str(item)
-                    source = Source(
-                        title=title,
-                        source_type=source_type,
-                        full_text=content
-                    )
-                    source_id = await source.save()
-                    await notebook.add_source(source_id)
-                    source_ids.append(source_id)
-            elif isinstance(output, dict) and "content" in output:
-                # Extract content field if present
-                content = output["content"]
-                source = Source(
-                    title=source_title_template,
-                    source_type=source_type,
-                    full_text=str(content)
-                )
-                source_id = await source.save()
-                await notebook.add_source(source_id)
-                source_ids.append(source_id)
-            else:
-                # Fallback to string conversion
-                content = str(output)
-                source = Source(
-                    title=source_title_template,
-                    source_type=source_type,
-                    full_text=content
-                )
-                source_id = await source.save()
-                await notebook.add_source(source_id)
-                source_ids.append(source_id)
-
-        elif extraction_mode == "json_path":
-            # Use JSONPath expression
-            if not self.config.content_extraction_path:
-                raise ValueError(
-                    "content_extraction_path is required when content_extraction_mode is 'json_path'"
-                )
-
-            jsonpath_expr = parse(self.config.content_extraction_path)
-            matches = [match.value for match in jsonpath_expr.find(output)]
-
-            if not matches:
-                raise ValueError(
-                    f"JSONPath '{self.config.content_extraction_path}' returned no matches"
-                )
-
-            for i, match in enumerate(matches):
-                title = f"{source_title_template} {i+1}" if len(matches) > 1 else source_title_template
-                content = json.dumps(match) if isinstance(match, (dict, list)) else str(match)
-                source = Source(
-                    title=title,
-                    source_type=source_type,
-                    full_text=content
-                )
-                source_id = await source.save()
-                await notebook.add_source(source_id)
-                source_ids.append(source_id)
-
-        return source_ids
-
-    def _format_output(self, notebook_id: str, notebook_name: str, source_ids: list) -> dict:
-        """Format output based on output_format configuration."""
-        output_format = self.config.output_format or "summary"
-
-        if output_format == "id_only":
-            return {"notebook_id": notebook_id}
-
-        elif output_format == "full_object":
-            return {
-                "notebook_id": notebook_id,
-                "name": notebook_name,
-                "description": self.config.notebook_description,
-                "folder_id": self.config.folder_id,
-                "tags": self.config.tags or [],
-                "source_ids": source_ids,
-                "source_count": len(source_ids),
-                "status": "created"
-            }
-
-        else:  # summary (default)
-            return {
-                "notebook_id": notebook_id,
-                "name": notebook_name,
-                "source_count": len(source_ids),
-                "status": "created"
             }
 
 
@@ -1185,358 +595,162 @@ class NotebookGeneratorNodeExecutor(BaseNodeExecutor):
 # ============================================================================
 
 class MicrositeGeneratorNodeExecutor(BaseNodeExecutor):
-    """
-    Execute microsite generator node - create microsites from workflow outputs.
-
-    Supports:
-    - Template variable substitution for microsite title/description
-    - Auto-creates notebook if not provided
-    - Multiple source resolution modes
-    - Moderation failure handling
-    - Auto-publishing
-    """
+    """Execute microsite generator node - generate static website."""
 
     async def execute(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Execute microsite generator node.
+        """Generate microsite."""
+        from api.services.microsite_generation_service import MicrositeGenerationService
+        from open_notebook.database.connection import get_db
 
-        Args:
-            state: Contains node_outputs, current_node_id, input_data
+        # Get configuration
+        title = self.config.microsite_title
+        description = self.config.microsite_description
+        notebook_id_template = self.config.notebook_id_template
+        template_id = self.config.template_id
 
-        Returns:
-            Updated state with microsite creation result
-        """
-        current_node_id = state.get("current_node_id")
+        # Substitute variables
         input_data = state.get("input_data", {})
-        context = state.get("node_outputs", {})
+        node_outputs = state.get("node_outputs", {})
 
-        print(f"[MicrositeGeneratorNodeExecutor] Executing node: {current_node_id}")
+        if title:
+            title = self._substitute_variables(title, input_data, node_outputs)
+        if description:
+            description = self._substitute_variables(description, input_data, node_outputs)
+        if notebook_id_template:
+            notebook_id_template = self._substitute_variables(notebook_id_template, input_data, node_outputs)
 
+        # Get source IDs
+        source_mode = self.config.microsite_source_mode  # "from_notebook" | "specific_sources"
+
+        if source_mode == "from_notebook":
+            # Get sources from notebook
+            notebook_id = notebook_id_template
+            if notebook_id:
+                from open_notebook.domain.source import Source
+                sources = await Source.get_all(
+                    filters={"notebook_id": notebook_id}
+                )
+                source_ids = [s.id for s in sources]
+            else:
+                source_ids = []
+        else:
+            # Use specific source IDs
+            source_ids = self.config.microsite_source_ids or []
+
+        # Generate microsite
         try:
-            # Step 1: Validate prerequisites
-            await self._validate_language_model_configured()
-            await self._validate_template_exists()
+            async with get_db() as db:
+                service = MicrositeGenerationService(db)
 
-            # Step 2: Substitute template variables
-            microsite_title = self._substitute_variables(
-                self.config.microsite_title or "Generated Microsite",
-                input_data,
-                context
-            )
-            microsite_description = None
-            if self.config.microsite_description:
-                microsite_description = self._substitute_variables(
-                    self.config.microsite_description,
-                    input_data,
-                    context
+                microsite_id = str(uuid4())
+
+                result = await service.generate_microsite(
+                    microsite_id=microsite_id,
+                    template_id=template_id,
+                    source_ids=source_ids,
+                    notebook_id=notebook_id_template,
+                    user_prompt=f"Generate a microsite about {title}",
+                    auto_publish=self.config.auto_publish or False
                 )
 
-            user_prompt = None
-            if self.config.user_prompt:
-                user_prompt = self._substitute_variables(
-                    self.config.user_prompt,
-                    input_data,
-                    context
-                )
-
-            print(f"[MicrositeGeneratorNodeExecutor] Creating microsite: {microsite_title}")
-
-            # Step 3: Resolve/create notebook
-            notebook_id = await self._resolve_or_create_notebook(
-                microsite_title,
-                input_data,
-                context
-            )
-            auto_created_notebook = self.config.auto_create_notebook and not self.config.notebook_id_template
-
-            # Step 4: Resolve source IDs
-            source_ids = await self._resolve_source_ids(notebook_id, state)
-
-            if not source_ids:
-                raise ValueError(
-                    "No sources found for microsite generation. "
-                    "Please provide sources via notebook, explicit IDs, or previous node."
-                )
-
-            # Step 5: Create microsite record
-            from open_notebook.domain.microsite import Microsite
-            microsite = await Microsite.create(
-                notebook_id=notebook_id,
-                title=microsite_title,
-                created_by="workflow"
-            )
-            if microsite_description:
-                microsite.description = microsite_description
-                await microsite.save()
-
-            print(f"[MicrositeGeneratorNodeExecutor] Microsite created: {microsite.id}")
-
-            # Step 6: Generate content
-            from api.services.microsite_generation_service import get_generation_service
-            result = await get_generation_service().generate_microsite(
-                microsite_id=microsite.id,
-                template_id=self.config.template_id,
-                source_ids=source_ids,
-                notebook_id=notebook_id,
-                user_prompt=user_prompt
-            )
-
-            print(f"[MicrositeGeneratorNodeExecutor] Content generated: {result}")
-
-            # Step 7: Check moderation status
-            moderation_status = result.get("moderation", {}).get("status", "passed")
-            if moderation_status == "blocked":
-                fail_on_block = self.config.fail_on_moderation_block
-                if fail_on_block is None:
-                    fail_on_block = True  # Default to True
-
-                if fail_on_block:
-                    raise ValueError(
-                        f"Microsite generation blocked by moderation.\n"
-                        f"Moderation report: {json.dumps(result.get('moderation', {}), indent=2)}\n"
-                        f"To bypass, set fail_on_moderation_block=false in node configuration."
-                    )
-
-            # Step 8: Auto-publish if configured
-            published = False
-            if self.config.auto_publish and moderation_status != "blocked":
-                version = result.get("version")
-                if version:
-                    await microsite.publish(version_id=version)
-                    published = True
-                    print(f"[MicrositeGeneratorNodeExecutor] Microsite published")
-
-            # Step 9: Format output
-            output = self._format_output(
-                microsite.id,
-                notebook_id,
-                auto_created_notebook,
-                result,
-                published
-            )
-
-            print(f"[MicrositeGeneratorNodeExecutor] Execution complete: {output}")
-
-            return {
-                **state,
-                "node_outputs": {
-                    **context,
-                    current_node_id: output
+                return {
+                    **state,
+                    "node_outputs": {
+                        **state.get("node_outputs", {}),
+                        state["current_node_id"]: {
+                            "microsite_id": microsite_id,
+                            "title": title,
+                            "preview_url": f"/microsites/{microsite_id}/preview",
+                            "status": "generated"
+                        }
+                    }
                 }
-            }
 
         except Exception as e:
             print(f"[MicrositeGeneratorNodeExecutor] Error: {e}")
             import traceback
             traceback.print_exc()
-
             return {
                 **state,
                 "node_outputs": {
-                    **context,
-                    current_node_id: {
-                        "status": "failed",
-                        "error": str(e),
-                        "microsite_id": None,
-                        "preview_url": None
+                    **state.get("node_outputs", {}),
+                    state["current_node_id"]: {
+                        "error": str(e)
                     }
                 }
             }
 
-    async def _validate_language_model_configured(self):
-        """Validate that a language model is configured."""
-        from api.services.settings import get_setting
 
-        language_model_id = await get_setting("language_model_id", "")
-        if not language_model_id:
-            raise ValueError(
-                "No language model configured. Please configure a language model "
-                "in Settings → Models before generating microsites."
-            )
+# ============================================================================
+# Presentation Generator Node Executor
+# ============================================================================
 
-    async def _validate_template_exists(self):
-        """Validate that the specified template exists."""
-        from open_notebook.database.repository import repo_query
+class PresentationGeneratorNodeExecutor(BaseNodeExecutor):
+    """Execute presentation generator node - generate PowerPoint."""
 
-        if not self.config.template_id:
-            raise ValueError("template_id is required for microsite generation")
+    async def execute(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate presentation."""
+        from api.services.presentation_generation_service import PresentationGenerationService
+        from open_notebook.database.connection import get_db
 
-        templates = await repo_query(
-            "SELECT id FROM microsite_templates WHERE id = :template_id",
-            {"template_id": self.config.template_id}
-        )
+        # Get configuration
+        template_id = self.config.template_id
+        source_ids = self.config.source_ids or []
+        notebook_id = self.config.notebook_id
+        user_prompt = self.config.user_prompt
+        target_slide_count = self.config.target_slide_count or 10
 
-        if not templates:
-            # Get available templates for error message
-            available = await repo_query(
-                "SELECT id, name FROM microsite_templates ORDER BY name",
-                {}
-            )
-            template_list = ", ".join([f"'{t['id']}' ({t['name']})" for t in available])
-            raise ValueError(
-                f"Template '{self.config.template_id}' not found. "
-                f"Available templates: {template_list}"
-            )
+        # Substitute variables
+        input_data = state.get("input_data", {})
+        node_outputs = state.get("node_outputs", {})
 
-    async def _resolve_or_create_notebook(
-        self,
-        microsite_title: str,
-        input_data: Dict[str, Any],
-        context: Dict[str, Any]
-    ) -> str:
-        """
-        Resolve notebook ID or create a new notebook if needed.
-
-        Args:
-            microsite_title: Microsite title (used as notebook name if auto-creating)
-            input_data: Input data
-            context: Node outputs context
-
-        Returns:
-            Notebook ID
-        """
-        from open_notebook.domain.notebook import Notebook
-
-        # Try to get notebook_id from template or config
-        notebook_id = None
-        if self.config.notebook_id_template:
-            notebook_id = self._substitute_variables(
-                self.config.notebook_id_template,
-                input_data,
-                context
-            )
-
-        # Check if notebook exists
+        if user_prompt:
+            user_prompt = self._substitute_variables(user_prompt, input_data, node_outputs)
         if notebook_id:
-            notebook = await Notebook.get(notebook_id)
-            if notebook:
-                return notebook_id
+            notebook_id = self._substitute_variables(notebook_id, input_data, node_outputs)
 
-        # Auto-create notebook if enabled
-        auto_create = self.config.auto_create_notebook
-        if auto_create is None:
-            auto_create = True  # Default to True
+        # Generate presentation
+        try:
+            async with get_db() as db:
+                service = PresentationGenerationService(db)
 
-        if auto_create:
-            print(f"[MicrositeGeneratorNodeExecutor] Auto-creating notebook: {microsite_title}")
-            notebook = Notebook(
-                name=microsite_title,
-                description=self.config.auto_notebook_description,
-                tags=[]
-            )
-            notebook_id = await notebook.save()
-            return notebook_id
+                presentation_id = str(uuid4())
 
-        # If not auto-creating and no valid notebook, fail
-        raise ValueError(
-            "Notebook not found and auto_create_notebook is disabled. "
-            "Please provide a valid notebook_id or enable auto_create_notebook."
-        )
-
-    async def _resolve_source_ids(self, notebook_id: str, state: Dict[str, Any]) -> list:
-        """
-        Resolve source IDs based on source_mode.
-
-        Args:
-            notebook_id: Notebook ID
-            state: Workflow state
-
-        Returns:
-            List of source IDs
-        """
-        from open_notebook.database.repository import repo_query
-
-        source_mode = self.config.microsite_source_mode or "from_notebook"
-        context = state.get("node_outputs", {})
-
-        if source_mode == "from_notebook":
-            # Query notebook_source junction table
-            rows = await repo_query(
-                "SELECT source_id FROM notebook_source WHERE notebook_id = :notebook_id",
-                {"notebook_id": notebook_id}
-            )
-            return [row["source_id"] for row in rows]
-
-        elif source_mode == "explicit_ids":
-            # Use provided list
-            if not self.config.microsite_source_ids:
-                raise ValueError(
-                    "microsite_source_ids is required when microsite_source_mode is 'explicit_ids'"
-                )
-            return self.config.microsite_source_ids
-
-        elif source_mode == "from_node":
-            # Extract from previous node output
-            if not self.config.source_node_id:
-                raise ValueError(
-                    "source_node_id is required when microsite_source_mode is 'from_node'"
+                result = await service.generate_presentation(
+                    presentation_id=presentation_id,
+                    template_id=template_id,
+                    source_ids=source_ids,
+                    notebook_id=notebook_id,
+                    user_prompt=user_prompt,
+                    target_slide_count=target_slide_count
                 )
 
-            if self.config.source_node_id not in context:
-                raise ValueError(
-                    f"Node '{self.config.source_node_id}' not found in previous outputs. "
-                    f"Available nodes: {list(context.keys())}"
-                )
+                return {
+                    **state,
+                    "node_outputs": {
+                        **state.get("node_outputs", {}),
+                        state["current_node_id"]: {
+                            "presentation_id": presentation_id,
+                            "slide_count": result.get("slide_count", 0),
+                            "download_url": f"/api/presentations/{presentation_id}/download",
+                            "status": "generated"
+                        }
+                    }
+                }
 
-            output = context[self.config.source_node_id]
-
-            # Try to extract source_ids from output
-            if isinstance(output, dict) and "source_ids" in output:
-                return output["source_ids"]
-            elif isinstance(output, list):
-                return output
-            else:
-                raise ValueError(
-                    f"Could not extract source IDs from node '{self.config.source_node_id}'. "
-                    f"Expected format: {{'source_ids': [...]}} or [...]. "
-                    f"Got: {type(output).__name__}"
-                )
-
-        return []
-
-    def _format_output(
-        self,
-        microsite_id: str,
-        notebook_id: str,
-        auto_created_notebook: bool,
-        result: dict,
-        published: bool
-    ) -> dict:
-        """Format output based on output_format configuration."""
-        output_format = self.config.microsite_output_format or "summary"
-
-        preview_url = f"/api/microsites/{microsite_id}/preview"
-        status = "published" if published else "draft"
-
-        if output_format == "preview_url":
+        except Exception as e:
+            print(f"[PresentationGeneratorNodeExecutor] Error: {e}")
+            import traceback
+            traceback.print_exc()
             return {
-                "microsite_id": microsite_id,
-                "preview_url": preview_url,
-                "status": status
+                **state,
+                "node_outputs": {
+                    **state.get("node_outputs", {}),
+                    state["current_node_id"]: {
+                        "error": str(e)
+                    }
+                }
             }
-
-        elif output_format == "full_response":
-            return {
-                "microsite_id": microsite_id,
-                "notebook_id": notebook_id,
-                "auto_created_notebook": auto_created_notebook,
-                "preview_url": preview_url,
-                "status": status,
-                "generation_result": result
-            }
-
-        else:  # summary (default)
-            return {
-                "microsite_id": microsite_id,
-                "notebook_id": notebook_id,
-                "auto_created_notebook": auto_created_notebook,
-                "version": result.get("version"),
-                "preview_url": preview_url,
-                "sections_generated": len(result.get("sections", [])),
-                "moderation_status": result.get("moderation", {}).get("status", "passed"),
-                "status": status
-            }
-
 
 
 # ============================================================================
@@ -1544,79 +758,69 @@ class MicrositeGeneratorNodeExecutor(BaseNodeExecutor):
 # ============================================================================
 
 class HumanApprovalNodeExecutor(BaseNodeExecutor):
-    """
-    Executor for human approval nodes.
-
-    Creates an approval request, pauses execution, and waits for user response.
-    """
+    """Execute human approval node - pause workflow for approval."""
 
     async def execute(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """Create approval request and wait."""
         from open_notebook.domain.workflow_approval import WorkflowApproval
-        from datetime import datetime, timedelta
-        import uuid
-        import json
 
-        # Calculate timeout
-        timeout_at = None
-        if self.config.timeout_seconds:
-            timeout_at = datetime.utcnow() + timedelta(seconds=self.config.timeout_seconds)
+        # Get configuration
+        approval_type = self.config.approval_type or "manual"
+        approval_prompt = self.config.approval_prompt or "Please review and approve"
+        approval_options = self.config.approval_options or ["approve", "reject"]
+        timeout_seconds = self.config.timeout_seconds
+        timeout_action = self.config.timeout_action or "fail"  # "fail" | "approve" | "reject"
+
+        # Substitute variables
+        input_data = state.get("input_data", {})
+        node_outputs = state.get("node_outputs", {})
+        approval_prompt = self._substitute_variables(approval_prompt, input_data, node_outputs)
+
+        # Get execution info
+        workflow_id = state.get("workflow_id")
+        execution_id = state.get("execution_id")
+        user_id = state.get("user_id", "system")
 
         # Create approval request
-        approval = WorkflowApproval(
-            id=str(uuid.uuid4()),
-            workflow_id=state.get("workflow_id"),
-            execution_id=state.get("execution_id"),
-            node_id=state.get("current_node_id"),
-            approval_prompt=self.config.approval_prompt or "Please review and approve",
-            approval_options=json.dumps(self.config.approval_options or ["approve", "reject"]),
-            required_approvers=json.dumps(self.config.required_approvers) if self.config.required_approvers else None,
-            input_data=json.dumps(state.get("node_outputs", {})),
-            timeout_seconds=self.config.timeout_seconds,
-            timeout_action=self.config.timeout_action,
-            timeout_at=timeout_at,
-        )
-        await approval.save()
-
-        # Send notification to required approvers
-        try:
-            from api.services.notification_service import notify_approval_pending
-            from open_notebook.domain.workflow import Workflow
-
-            workflow = await Workflow.get(state.get("workflow_id"))
-            workflow_name = workflow.name if workflow else "Unknown Workflow"
-
-            required_approvers = self.config.required_approvers or []
-            for user_id in required_approvers:
-                await notify_approval_pending(
-                    user_id=user_id,
-                    workflow_name=workflow_name,
-                    execution_id=state.get("execution_id"),
-                    approval_id=approval.id,
-                    node_name=self.config.label or "Approval Node"
-                )
-        except Exception as e:
-            # Don't fail execution if notification fails
-            import logging
-            logging.error(f"Failed to send approval notification: {e}")
-
-        # Store the approval output in state (will be saved by workflow engine)
-        state["node_outputs"][state["current_node_id"]] = {
-            "status": "awaiting_approval",
-            "approval_id": approval.id
-        }
-
-        # Set paused flag to stop graph execution
-        state["paused"] = True
-        state["approval_id"] = approval.id
-
-        # Raise a special exception to stop LangGraph execution
-        # The workflow engine will handle the pause
         from open_notebook.agents.workflow_engine import WorkflowPausedException
-        raise WorkflowPausedException(
-            execution_id=state["execution_id"],
-            approval_id=approval.id,
-            message="Workflow paused for human approval"
-        )
+
+        try:
+            approval = WorkflowApproval(
+                id=str(uuid4()),
+                workflow_id=workflow_id,
+                execution_id=execution_id,
+                node_id=state["current_node_id"],
+                approval_prompt=approval_prompt,
+                approval_options=json.dumps(approval_options),  # Must be JSON string
+                status="pending",
+                timeout_seconds=timeout_seconds,
+                timeout_action=timeout_action
+            )
+            await approval.save()
+
+            # Raise exception to pause workflow
+            raise WorkflowPausedException(
+                execution_id=execution_id,
+                approval_id=approval.id,
+                message=f"Workflow paused for approval: {approval_prompt}"
+            )
+
+        except WorkflowPausedException:
+            # Re-raise WorkflowPausedException to let workflow engine handle it
+            raise
+        except Exception as e:
+            print(f"[HumanApprovalNodeExecutor] Error: {e}")
+            import traceback
+            traceback.print_exc()
+            return {
+                **state,
+                "node_outputs": {
+                    **state.get("node_outputs", {}),
+                    state["current_node_id"]: {
+                        "error": str(e)
+                    }
+                }
+            }
 
 
 # ============================================================================
@@ -1624,39 +828,66 @@ class HumanApprovalNodeExecutor(BaseNodeExecutor):
 # ============================================================================
 
 class WorkspaceNodeExecutor(BaseNodeExecutor):
-    """
-    Executor for workspace template nodes.
-
-    Instantiates and executes a workspace template.
-    """
+    """Execute workspace node - create workspace from template."""
 
     async def execute(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        from api.services.template_instantiation_service import get_template_instantiation_service
+        """Create workspace from template."""
+        from open_notebook.domain.notebook import Notebook
 
-        service = get_template_instantiation_service()
+        # Get configuration
+        workspace_template_id = self.config.workspace_template_id
+        workspace_parameters = self.config.workspace_parameters or {}
 
-        # Instantiate template
-        workspace_id = await service.instantiate_template(
-            template_id=self.config.workspace_template_id,
-            parameters=self.config.workspace_parameters or {},
-            user_id=state.get("user_id", "default-user")
-        )
+        # Substitute variables in parameters
+        input_data = state.get("input_data", {})
+        node_outputs = state.get("node_outputs", {})
 
-        # Optionally wait for completion
-        result = {"workspace_id": workspace_id, "status": "created"}
+        resolved_parameters = {}
+        for key, value in workspace_parameters.items():
+            if isinstance(value, str):
+                resolved_parameters[key] = self._substitute_variables(value, input_data, node_outputs)
+            else:
+                resolved_parameters[key] = value
 
-        if self.config.wait_for_completion:
-            # TODO: Implement workspace completion check
-            # For now, just return the workspace_id
-            result["status"] = "completed"
+        # Create workspace
+        try:
+            user_id = state.get("user_id", "system")
 
-        return {
-            **state,
-            "node_outputs": {
-                **state.get("node_outputs", {}),
-                state["current_node_id"]: result
+            # For now, create a simple notebook
+            # In the future, this should use workspace templates
+            notebook = Notebook(
+                id=str(uuid4()),
+                name=resolved_parameters.get("name", "Generated Workspace"),
+                description=resolved_parameters.get("description"),
+                created_by=user_id
+            )
+            await notebook.save()
+
+            return {
+                **state,
+                "node_outputs": {
+                    **state.get("node_outputs", {}),
+                    state["current_node_id"]: {
+                        "workspace_id": notebook.id,
+                        "workspace_name": notebook.name,
+                        "status": "created"
+                    }
+                }
             }
-        }
+
+        except Exception as e:
+            print(f"[WorkspaceNodeExecutor] Error: {e}")
+            import traceback
+            traceback.print_exc()
+            return {
+                **state,
+                "node_outputs": {
+                    **state.get("node_outputs", {}),
+                    state["current_node_id"]: {
+                        "error": str(e)
+                    }
+                }
+            }
 
 
 # ============================================================================
@@ -1664,50 +895,86 @@ class WorkspaceNodeExecutor(BaseNodeExecutor):
 # ============================================================================
 
 class TemplateNodeExecutor(BaseNodeExecutor):
-    """
-    Executor for workflow template nodes.
-
-    Instantiates and executes a nested workflow template.
-    """
+    """Execute template node - instantiate workflow template."""
 
     async def execute(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        # Import here to avoid circular dependency
-        from api.services.workflow_template_service import get_workflow_template_service
+        """Instantiate workflow template."""
+        # Get configuration
+        template_id = self.config.template_id
+        template_parameters = self.config.template_parameters or {}
+        wait_for_completion = self.config.wait_for_completion or False
 
-        service = get_workflow_template_service()
+        # Substitute variables in parameters
+        input_data = state.get("input_data", {})
+        node_outputs = state.get("node_outputs", {})
+
+        resolved_parameters = {}
+        for key, value in template_parameters.items():
+            if isinstance(value, str):
+                resolved_parameters[key] = self._substitute_variables(value, input_data, node_outputs)
+            else:
+                resolved_parameters[key] = value
 
         # Instantiate template
-        workflow_id = await service.instantiate_template(
-            template_id=self.config.template_id,
-            parameters=self.config.template_parameters or {},
-            user_id=state.get("user_id", "default-user")
-        )
-
-        # Execute nested workflow if wait_for_completion is true
-        result = {"workflow_id": workflow_id, "status": "created"}
-
-        if self.config.wait_for_completion:
+        try:
+            from open_notebook.domain.workflow_template import WorkflowTemplate
             from open_notebook.domain.workflow import Workflow
-            from open_notebook.agents.workflow_engine import WorkflowEngine
 
-            workflow = await Workflow.get(workflow_id)
-            engine = WorkflowEngine(workflow)
-            execution = await engine.execute()
+            # Load template
+            template = await WorkflowTemplate.get(template_id)
+            if not template:
+                raise ValueError(f"Template not found: {template_id}")
 
-            result = {
-                "workflow_id": workflow_id,
-                "execution_id": execution.id,
-                "status": execution.status.value,
-                "output": execution.final_output
+            # Create workflow from template
+            workflow = await template.instantiate(
+                parameters=resolved_parameters,
+                user_id=state.get("user_id", "system")
+            )
+
+            # Execute workflow if wait_for_completion is True
+            if wait_for_completion:
+                from open_notebook.agents.workflow_engine import WorkflowEngine
+
+                engine = WorkflowEngine(workflow)
+                execution_result = await engine.execute(input_data)
+
+                return {
+                    **state,
+                    "node_outputs": {
+                        **state.get("node_outputs", {}),
+                        state["current_node_id"]: {
+                            "workflow_id": workflow.id,
+                            "execution_result": execution_result,
+                            "status": "completed"
+                        }
+                    }
+                }
+            else:
+                # Just create the workflow, don't execute
+                return {
+                    **state,
+                    "node_outputs": {
+                        **state.get("node_outputs", {}),
+                        state["current_node_id"]: {
+                            "workflow_id": workflow.id,
+                            "status": "instantiated"
+                        }
+                    }
+                }
+
+        except Exception as e:
+            print(f"[TemplateNodeExecutor] Error: {e}")
+            import traceback
+            traceback.print_exc()
+            return {
+                **state,
+                "node_outputs": {
+                    **state.get("node_outputs", {}),
+                    state["current_node_id"]: {
+                        "error": str(e)
+                    }
+                }
             }
-
-        return {
-            **state,
-            "node_outputs": {
-                **state.get("node_outputs", {}),
-                state["current_node_id"]: result
-            }
-        }
 
 
 # ============================================================================
@@ -1715,45 +982,64 @@ class TemplateNodeExecutor(BaseNodeExecutor):
 # ============================================================================
 
 class DelayNodeExecutor(BaseNodeExecutor):
-    """
-    Executor for delay nodes.
-
-    Pauses execution for a specified duration.
-    """
+    """Execute delay node - wait for specified duration."""
 
     async def execute(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """Wait for specified duration."""
         import asyncio
 
-        # Determine delay duration
-        delay = 0
+        # Get delay configuration
+        delay_seconds = self.config.delay_seconds
+        delay_expression = self.config.delay_expression
 
-        if self.config.delay_seconds:
-            delay = self.config.delay_seconds
-        elif self.config.delay_expression:
-            # Extract delay from data using JSONPath
-            try:
-                import jsonpath_ng
-                parser = jsonpath_ng.parse(self.config.delay_expression)
-                matches = parser.find(state.get("node_outputs", {}))
-                delay = matches[0].value if matches else 0
-            except ImportError:
-                print("[DelayNodeExecutor] jsonpath_ng not installed, using default delay of 0")
-            except Exception as e:
-                print(f"[DelayNodeExecutor] Error parsing JSONPath: {e}")
+        # If expression is provided, evaluate it
+        if delay_expression:
+            # Substitute variables
+            input_data = state.get("input_data", {})
+            node_outputs = state.get("node_outputs", {})
+            delay_expression = self._substitute_variables(delay_expression, input_data, node_outputs)
 
-        # Sleep for delay duration
-        if delay > 0:
-            await asyncio.sleep(delay)
+            # Parse expression (e.g., "5m", "1h", "30s")
+            delay_seconds = self._parse_duration(delay_expression)
+
+        # Wait
+        if delay_seconds and delay_seconds > 0:
+            print(f"[DelayNodeExecutor] Waiting for {delay_seconds} seconds")
+            await asyncio.sleep(delay_seconds)
 
         return {
             **state,
             "node_outputs": {
                 **state.get("node_outputs", {}),
                 state["current_node_id"]: {
-                    "delayed_seconds": delay
+                    "delay_seconds": delay_seconds,
+                    "status": "delay_completed"
                 }
             }
         }
+
+    def _parse_duration(self, expression: str) -> int:
+        """Parse duration expression (e.g., '5m', '1h', '30s') into seconds."""
+        import re
+
+        # Parse pattern: number + unit
+        match = re.match(r"(\d+)([smhd])", expression.strip().lower())
+        if not match:
+            return 0
+
+        value = int(match.group(1))
+        unit = match.group(2)
+
+        if unit == "s":
+            return value
+        elif unit == "m":
+            return value * 60
+        elif unit == "h":
+            return value * 3600
+        elif unit == "d":
+            return value * 86400
+        else:
+            return 0
 
 
 # ============================================================================
@@ -1761,70 +1047,47 @@ class DelayNodeExecutor(BaseNodeExecutor):
 # ============================================================================
 
 class WebhookNodeExecutor(BaseNodeExecutor):
-    """
-    Executor for webhook nodes.
-
-    Sends HTTP request to external system.
-    """
+    """Execute webhook node - send HTTP request."""
 
     async def execute(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """Send webhook request."""
         import httpx
-        from jinja2 import Template
 
-        # Render body template with state data
-        body = None
-        if self.config.webhook_body_template:
-            template = Template(self.config.webhook_body_template)
-            body_str = template.render(state)
-            try:
-                body = json.loads(body_str)
-            except json.JSONDecodeError:
-                # If not JSON, send as text
-                body = body_str
+        # Get webhook configuration
+        webhook_url = self.config.webhook_url
+        webhook_method = self.config.webhook_method or "POST"
+        webhook_headers = self.config.webhook_headers or {}
+        webhook_body_template = self.config.webhook_body_template or ""
+        webhook_auth_type = self.config.webhook_auth_type  # "none", "bearer", "basic"
+        webhook_auth_token = self.config.webhook_auth_token
 
-        # Prepare headers
-        headers = self.config.webhook_headers or {}
-        if body and isinstance(body, dict):
-            headers["Content-Type"] = "application/json"
+        # Substitute variables
+        input_data = state.get("input_data", {})
+        node_outputs = state.get("node_outputs", {})
 
-        # Add authentication
-        if self.config.webhook_auth_type == "bearer" and self.config.webhook_auth_token:
-            headers["Authorization"] = f"Bearer {self.config.webhook_auth_token}"
-        elif self.config.webhook_auth_type == "basic" and self.config.webhook_auth_token:
-            # Assuming auth_token is "username:password"
-            import base64
-            encoded = base64.b64encode(self.config.webhook_auth_token.encode()).decode()
-            headers["Authorization"] = f"Basic {encoded}"
+        webhook_url = self._substitute_variables(webhook_url, input_data, node_outputs)
+        webhook_body = self._substitute_variables(webhook_body_template, input_data, node_outputs)
 
-        # Send HTTP request
+        # Build headers
+        headers = {**webhook_headers}
+        if webhook_auth_type == "bearer" and webhook_auth_token:
+            headers["Authorization"] = f"Bearer {webhook_auth_token}"
+        elif webhook_auth_type == "basic" and webhook_auth_token:
+            headers["Authorization"] = f"Basic {webhook_auth_token}"
+
+        # Send request
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                if self.config.webhook_method == "GET":
-                    response = await client.get(self.config.webhook_url, headers=headers)
-                elif self.config.webhook_method == "POST":
-                    response = await client.post(
-                        self.config.webhook_url,
-                        headers=headers,
-                        json=body if isinstance(body, dict) else None,
-                        content=body if isinstance(body, str) else None
-                    )
-                elif self.config.webhook_method == "PUT":
-                    response = await client.put(
-                        self.config.webhook_url,
-                        headers=headers,
-                        json=body if isinstance(body, dict) else None,
-                        content=body if isinstance(body, str) else None
-                    )
+            async with httpx.AsyncClient() as client:
+                if webhook_method.upper() == "POST":
+                    response = await client.post(webhook_url, content=webhook_body, headers=headers)
+                elif webhook_method.upper() == "PUT":
+                    response = await client.put(webhook_url, content=webhook_body, headers=headers)
+                elif webhook_method.upper() == "GET":
+                    response = await client.get(webhook_url, headers=headers)
+                else:
+                    raise ValueError(f"Unsupported HTTP method: {webhook_method}")
 
                 response.raise_for_status()
-
-                # Parse response
-                response_data = None
-                content_type = response.headers.get("content-type", "")
-                if "application/json" in content_type:
-                    response_data = response.json()
-                else:
-                    response_data = response.text
 
                 return {
                     **state,
@@ -1832,27 +1095,689 @@ class WebhookNodeExecutor(BaseNodeExecutor):
                         **state.get("node_outputs", {}),
                         state["current_node_id"]: {
                             "status_code": response.status_code,
-                            "response": response_data
+                            "response_body": response.text,
+                            "status": "webhook_sent"
                         }
                     }
                 }
 
-        except httpx.HTTPError as e:
+        except Exception as e:
+            print(f"[WebhookNodeExecutor] Error: {e}")
+            import traceback
+            traceback.print_exc()
             return {
                 **state,
                 "node_outputs": {
                     **state.get("node_outputs", {}),
                     state["current_node_id"]: {
-                        "error": str(e),
-                        "status_code": getattr(e.response, "status_code", None) if hasattr(e, "response") else None
+                        "error": str(e)
                     }
-                },
-                "error": f"Webhook request failed: {str(e)}"
+                }
             }
 
 
 # ============================================================================
-# Executor Factory
+# Snapshot Node Executor
+# ============================================================================
+
+class SnapshotNodeExecutor(BaseNodeExecutor):
+    """
+    Execute snapshot node - store workflow data snapshots.
+
+    Features:
+    - Context-aware (user + query params)
+    - Tiered storage (inline/file/chunked)
+    - Auto-cleanup via retention
+    """
+
+    async def execute(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute snapshot storage"""
+        from open_notebook.domain.workflow_snapshot import SnapshotContext, WorkflowSnapshot
+        from datetime import date
+
+        print(f"[SnapshotNode] Executing snapshot node")
+
+        # Extract context from workflow state
+        context = SnapshotContext.from_workflow_state(state)
+
+        # Capture source node query params if available
+        source_node_id = self.config.source_node_id
+        if source_node_id:
+            node_outputs = state.get("node_outputs", {})
+            if source_node_id in node_outputs:
+                source_output = node_outputs[source_node_id]
+                if isinstance(source_output, dict) and "query_params" in source_output:
+                    context.query_params.update(source_output["query_params"])
+
+        print(f"[SnapshotNode] User: {context.user_id}, Context hash: {context.calculate_hash()}")
+
+        try:
+            # Get data to snapshot
+            node_outputs = state.get("node_outputs", {})
+            if source_node_id not in node_outputs:
+                raise ValueError(f"Source node {source_node_id} not found")
+
+            data = node_outputs[source_node_id]
+            if isinstance(data, dict) and "data" in data:
+                data = data["data"]
+
+            # Create snapshot
+            snapshot = await WorkflowSnapshot.create_from_data(
+                workflow_id=state.get("workflow_id"),
+                node_id=state.get("current_node_id"),
+                execution_id=state.get("execution_id"),
+                context=context,
+                data=data,
+                snapshot_label=self.config.snapshot_label,
+                retention_days=self.config.retention_days or 30
+            )
+
+            return {
+                **state,
+                "node_outputs": {
+                    **node_outputs,
+                    state["current_node_id"]: {
+                        "status": "snapshot_stored",
+                        "snapshot_id": snapshot.id,
+                        "storage_type": snapshot.storage_type,
+                        "snapshot_date": snapshot.snapshot_date.isoformat(),
+                        "context_hash": context.calculate_hash(),
+                        "row_count": snapshot.row_count
+                    }
+                }
+            }
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return self._error_result(state, str(e))
+
+    def _error_result(self, state: Dict[str, Any], error_message: str) -> Dict[str, Any]:
+        """Build error result"""
+        return {
+            **state,
+            "node_outputs": {
+                **state.get("node_outputs", {}),
+                state["current_node_id"]: {
+                    "status": "snapshot_failed",
+                    "error": error_message
+                }
+            }
+        }
+
+
+# ============================================================================
+# Compare Node Executor
+# ============================================================================
+
+class CompareNodeExecutor(BaseNodeExecutor):
+    """
+    Execute compare node - compare two data snapshots.
+
+    Features:
+    - Auto-detect source HANA node
+    - Context-aware comparison (same user + query params)
+    - Fast vs deep comparison strategies
+    - Row-level change detection
+    """
+
+    async def execute(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute comparison"""
+        from open_notebook.domain.workflow_snapshot import WorkflowSnapshot, SnapshotContext
+        from datetime import date, timedelta
+
+        print(f"[CompareNode] Executing comparison node")
+
+        # Get config (default to "previous" and "current" if not specified)
+        compare_snapshot_1 = self.config.compare_snapshot_1 or "previous"  # "previous" | "snapshot_id"
+        compare_snapshot_2 = self.config.compare_snapshot_2 or "current"   # "current" | "snapshot_id"
+        comparison_strategy = self.config.comparison_strategy or "fast"  # "fast" | "deep"
+        change_threshold = self.config.change_threshold or 0.0
+
+        print(f"[CompareNode] Comparing {compare_snapshot_1} vs {compare_snapshot_2}")
+
+        # Auto-detect source node if not configured
+        source_node_id = self.config.source_node_id
+        if not source_node_id:
+            source_node_id = await self._detect_source_node(state)
+            if not source_node_id:
+                return self._error_result(state, "Could not detect source HANA node. Please configure source_node_id.")
+
+        print(f"[CompareNode] Source node: {source_node_id}")
+
+        # Get context
+        context = SnapshotContext.from_workflow_state(state)
+
+        # Capture query params from source node
+        node_outputs = state.get("node_outputs", {})
+        if source_node_id in node_outputs:
+            source_output = node_outputs[source_node_id]
+            if isinstance(source_output, dict) and "query_params" in source_output:
+                context.query_params.update(source_output["query_params"])
+
+        print(f"[CompareNode] Context hash: {context.calculate_hash()}")
+
+        try:
+            # Get current snapshot
+            if compare_snapshot_2 == "current":
+                # Get latest snapshot for this context
+                snapshot_current = await WorkflowSnapshot.get_latest_for_context(
+                    workflow_id=state.get("workflow_id"),
+                    node_id=source_node_id,
+                    context=context
+                )
+                if not snapshot_current:
+                    return self._error_result(state, "No current snapshot found for this context")
+            else:
+                snapshot_current = await WorkflowSnapshot.get(compare_snapshot_2)
+                if not snapshot_current:
+                    return self._error_result(state, f"Snapshot not found: {compare_snapshot_2}")
+
+            # Get previous snapshot
+            if compare_snapshot_1 == "previous":
+                # Get previous snapshot before current
+                snapshot_previous = await WorkflowSnapshot.get_previous_for_context(
+                    workflow_id=state.get("workflow_id"),
+                    node_id=source_node_id,
+                    context=context,
+                    before_date=snapshot_current.snapshot_date
+                )
+                if not snapshot_previous:
+                    return {
+                        **state,
+                        "node_outputs": {
+                            **state.get("node_outputs", {}),
+                            state["current_node_id"]: {
+                                "status": "no_previous_snapshot",
+                                "has_changes": True,  # Treat as changed if no previous
+                                "current_snapshot_id": snapshot_current.id,
+                                "current_date": snapshot_current.snapshot_date.isoformat()
+                            }
+                        }
+                    }
+            else:
+                snapshot_previous = await WorkflowSnapshot.get(compare_snapshot_1)
+                if not snapshot_previous:
+                    return self._error_result(state, f"Snapshot not found: {compare_snapshot_1}")
+
+            print(f"[CompareNode] Comparing snapshots: {snapshot_previous.id} vs {snapshot_current.id}")
+
+            # Compare snapshots
+            delta = await snapshot_previous.compare_with(
+                snapshot_current,
+                strategy=comparison_strategy
+            )
+
+            print(f"[CompareNode] Delta from compare_with: {json.dumps(delta, indent=2, default=str)}")
+
+            # Check if changes exceed threshold
+            has_changes = delta.get("changed", False) and delta.get("change_percentage", 0) > change_threshold
+
+            # Extract changed rows
+            changed_rows = self._extract_changed_rows(delta)
+
+            print(f"[CompareNode] After _extract_changed_rows: {json.dumps(changed_rows, indent=2, default=str)}")
+
+            # Filter changed rows by watch_columns if configured
+            watch_columns = self.config.watch_columns
+            if watch_columns:
+                changed_rows = self._filter_by_watch_columns(changed_rows, watch_columns)
+                print(f"[CompareNode] Filtered by watch_columns: {watch_columns}")
+
+            print(f"[CompareNode] Has changes: {has_changes}, Changed rows: {len(changed_rows.get('added', [])) + len(changed_rows.get('removed', [])) + len(changed_rows.get('modified', []))}")
+
+            # Build result
+            result = {
+                "status": "comparison_complete",
+                "has_changes": has_changes,
+                "change_percentage": delta.get("change_percentage", 0),
+                "previous_snapshot_id": snapshot_previous.id,
+                "current_snapshot_id": snapshot_current.id,
+                "previous_date": snapshot_previous.snapshot_date.isoformat(),
+                "current_date": snapshot_current.snapshot_date.isoformat(),
+                "changed_rows": changed_rows,
+                "summary": {
+                    "added": len(changed_rows.get("added", [])),
+                    "removed": len(changed_rows.get("removed", [])),
+                    "modified": len(changed_rows.get("modified", []))
+                }
+            }
+
+            return {
+                **state,
+                "node_outputs": {
+                    **state.get("node_outputs", {}),
+                    state["current_node_id"]: result
+                }
+            }
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return self._error_result(state, str(e))
+
+    async def _detect_source_node(self, state: Dict[str, Any]) -> Optional[str]:
+        """
+        Detect source HANA node by finding previous node in workflow graph.
+
+        Args:
+            state: Workflow state with graph information
+
+        Returns:
+            Source node ID or None
+        """
+        # Get workflow graph to find connected nodes
+        from open_notebook.domain.workflow import Workflow
+
+        workflow_id = state.get("workflow_id")
+        current_node_id = state.get("current_node_id")
+
+        if not workflow_id or not current_node_id:
+            return None
+
+        # Load workflow to get graph
+        workflow = await Workflow.get(workflow_id)
+        if not workflow or not workflow.graph:
+            return None
+
+        # Find edges pointing to current node
+        edges = workflow.graph.edges if hasattr(workflow.graph, 'edges') else []
+        incoming_edges = [e for e in edges if getattr(e, 'target', None) == current_node_id or (isinstance(e, dict) and e.get("target") == current_node_id)]
+
+        if not incoming_edges:
+            return None
+
+        # Get source node ID from first incoming edge
+        first_edge = incoming_edges[0]
+        source_node_id = getattr(first_edge, 'source', None) or (first_edge.get("source") if isinstance(first_edge, dict) else None)
+
+        # Verify source node has snapshots enabled
+        nodes = workflow.graph.nodes if hasattr(workflow.graph, 'nodes') else []
+        source_node = next((n for n in nodes if (getattr(n, 'id', None) == source_node_id or (isinstance(n, dict) and n.get("id") == source_node_id))), None)
+
+        if source_node:
+            # Get config from node
+            config = getattr(source_node, 'config', None) or (source_node.get("config") if isinstance(source_node, dict) else None)
+            if config:
+                enable_snapshots = getattr(config, 'enable_snapshots', None) or (config.get("enable_snapshots") if isinstance(config, dict) else None)
+                if enable_snapshots:
+                    return source_node_id
+
+        return None
+
+    def _extract_changed_rows(self, delta: Dict[str, Any]) -> Dict[str, list]:
+        """
+        Extract changed rows from comparison delta.
+
+        Args:
+            delta: Comparison delta with added/removed/modified rows
+
+        Returns:
+            Dict with added, removed, modified lists
+        """
+        return {
+            "added": delta.get("added_rows", []),
+            "removed": delta.get("removed_rows", []),
+            "modified": delta.get("modified_rows", [])
+        }
+
+    def _filter_by_watch_columns(self, changed_rows: Dict[str, list], watch_columns: List[Dict[str, Any]]) -> Dict[str, list]:
+        """
+        Filter changed rows by watch_columns configuration.
+
+        Args:
+            changed_rows: Dict with added, removed, modified lists
+            watch_columns: List of {column: str, watch_value: Optional[str]} dicts
+
+        Returns:
+            Filtered changed rows dict
+        """
+        if not watch_columns:
+            return changed_rows
+
+        # Build filter map: column -> watch_value (None means watch any change)
+        watch_map = {}
+        for wc in watch_columns:
+            if isinstance(wc, dict):
+                col_name = wc.get("column")
+                watch_value = wc.get("watch_value")
+                if col_name:
+                    watch_map[col_name] = watch_value
+
+        if not watch_map:
+            return changed_rows
+
+        print(f"[CompareNode] Watch map: {watch_map}")
+
+        def row_matches_watch_criteria(row: Dict[str, Any], is_modified: bool = False) -> bool:
+            """Check if row matches any watch column criteria"""
+            # For modified rows, check the 'after' state
+            check_row = row.get("after", row) if is_modified else row
+
+            for col_name, watch_value in watch_map.items():
+                if col_name not in check_row:
+                    continue
+
+                row_value = check_row[col_name]
+
+                # If watch_value is None or empty, any change in this column counts
+                if not watch_value:
+                    return True
+
+                # If watch_value is specified, check if row value matches
+                if str(row_value) == str(watch_value):
+                    return True
+
+            return False
+
+        # Filter each category
+        filtered = {
+            "added": [row for row in changed_rows.get("added", []) if row_matches_watch_criteria(row, False)],
+            "removed": [row for row in changed_rows.get("removed", []) if row_matches_watch_criteria(row, False)],
+            "modified": [row for row in changed_rows.get("modified", []) if row_matches_watch_criteria(row, True)]
+        }
+
+        print(f"[CompareNode] Filtered: added={len(filtered['added'])}, removed={len(filtered['removed'])}, modified={len(filtered['modified'])}")
+
+        return filtered
+
+    def _error_result(self, state: Dict[str, Any], error_message: str) -> Dict[str, Any]:
+        """Build error result"""
+        return {
+            **state,
+            "node_outputs": {
+                **state.get("node_outputs", {}),
+                state["current_node_id"]: {
+                    "status": "comparison_failed",
+                    "error": error_message,
+                    "has_changes": False,
+                    "changed_rows": []
+                }
+            }
+        }
+
+
+# ============================================================================
+# HANA Table Node Executor
+# ============================================================================
+
+class HANATableNodeExecutor(BaseNodeExecutor):
+    """Execute HANA table node - query HANA database."""
+
+    async def execute(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute HANA query."""
+        from hdbcli import dbapi
+        from api.routers.hana_connections import decrypt_password
+        from open_notebook.database.repository import repo_query
+        import json
+
+        print(f"[HANATableNodeExecutor] Executing HANA_TABLE node")
+
+        # Get configuration
+        connection_id = self.config.hana_connection_id
+        table_name = self.config.hana_table_name
+        custom_query = self.config.hana_query
+        where_clause = self.config.hana_where_clause
+        limit = self.config.hana_limit or 100
+        columns = self.config.hana_columns
+        conditions = self.config.conditions or []
+
+        # Build WHERE clause from conditions if provided
+        if conditions and len(conditions) > 0:
+            condition_clauses = []
+            for cond in conditions:
+                column = cond.get("column")
+                operator = cond.get("operator", "=")
+                value = cond.get("value")
+
+                if column and value is not None:
+                    # Quote the value if it's a string
+                    if isinstance(value, str):
+                        quoted_value = f"'{value}'"
+                    else:
+                        quoted_value = str(value)
+
+                    # Handle different operators
+                    if operator in ["IS NULL", "IS NOT NULL"]:
+                        condition_clauses.append(f'"{column}" {operator}')
+                    elif operator == "IN":
+                        condition_clauses.append(f'"{column}" {operator} ({quoted_value})')
+                    else:
+                        condition_clauses.append(f'"{column}" {operator} {quoted_value}')
+
+            # Combine with existing where_clause if present
+            if condition_clauses:
+                conditions_where = " AND ".join(condition_clauses)
+                if where_clause:
+                    where_clause = f"({where_clause}) AND ({conditions_where})"
+                else:
+                    where_clause = conditions_where
+
+                print(f"[HANATableNodeExecutor] Built WHERE clause from conditions: {where_clause}")
+
+        # Validate configuration
+        if not connection_id:
+            return self._error_result(state, "HANA connection_id is required")
+
+        if not table_name and not custom_query:
+            return self._error_result(state, "Either hana_table_name or hana_query is required")
+
+        try:
+            # Get connection credentials from hana_connections table
+            conn_sql = "SELECT * FROM hana_connections WHERE id = :id"
+            conn_results = await repo_query(conn_sql, {"id": connection_id})
+
+            if not conn_results:
+                return self._error_result(state, f"HANA connection {connection_id} not found")
+
+            conn = conn_results[0]
+
+            # Decrypt password
+            encrypted_password = conn.get("password_encrypted")
+            if not encrypted_password:
+                return self._error_result(state, f"No password stored for connection {connection_id}")
+
+            decrypted_password = decrypt_password(encrypted_password)
+
+            # Build SQL query
+            if custom_query:
+                # Use custom query (must be SELECT only)
+                sql = custom_query.strip()
+                if not sql.upper().startswith("SELECT"):
+                    return self._error_result(state, "Custom query must be a SELECT statement")
+            else:
+                # Build query from table and filters
+                if columns and len(columns) > 0:
+                    columns_str = ", ".join(columns)
+                else:
+                    columns_str = "*"
+
+                # Qualify table name with schema if not already qualified
+                # If table_name doesn't contain a dot, prepend the schema from connection
+                if "." not in table_name:
+                    schema = conn.get("schema")
+                    if schema:
+                        qualified_table = f'"{schema}"."{table_name}"'
+                    else:
+                        # No schema in connection, use table name as-is (might fail for virtual tables)
+                        qualified_table = f'"{table_name}"'
+                else:
+                    # Table name already has schema (e.g., "SCHEMA"."TABLE")
+                    qualified_table = table_name
+
+                sql = f"SELECT {columns_str} FROM {qualified_table}"
+
+                if where_clause:
+                    sql += f" WHERE {where_clause}"
+
+                sql += f" LIMIT {limit}"
+
+            print(f"[HANATableNodeExecutor] Executing SQL: {sql}")
+
+            # Connect to HANA and execute query
+            connection = None
+            cursor = None
+
+            try:
+                connection_params = {
+                    "address": conn["host"],
+                    "port": conn["port"],
+                    "user": conn["user"],
+                    "password": decrypted_password,
+                    "encrypt": True
+                }
+
+                connection = dbapi.connect(**connection_params)
+                cursor = connection.cursor()
+                cursor.execute(sql)
+
+                # Fetch results
+                column_names = [desc[0] for desc in cursor.description]
+                rows = cursor.fetchall()
+
+                # Convert to list of dicts
+                results = [
+                    {column_names[i]: self._convert_value(row[i]) for i in range(len(column_names))}
+                    for row in rows
+                ]
+
+                print(f"[HANATableNodeExecutor] Query returned {len(results)} rows")
+
+                # Store query params for context-aware snapshots
+                query_params = {
+                    "connection_id": connection_id,
+                    "table_name": table_name,
+                    "where_clause": where_clause,
+                    "limit": limit
+                }
+
+                # Build output
+                output = {
+                    "status": "success",
+                    "data": results,
+                    "row_count": len(results),
+                    "columns": column_names,
+                    "query": sql,
+                    "query_params": query_params
+                }
+
+                # If snapshots enabled, create snapshot automatically
+                if self.config.enable_snapshots:
+                    try:
+                        from open_notebook.domain.workflow_snapshot import SnapshotContext, WorkflowSnapshot
+                        from open_notebook.database.repository import repo_delete, repo_query
+
+                        print(f"[HANATableNodeExecutor] Creating automatic snapshot (enable_snapshots=True)")
+
+                        # Build context
+                        context = SnapshotContext.from_workflow_state(state)
+                        context.query_params.update(query_params)
+
+                        # Create snapshot with HANA node's ID as the node_id
+                        snapshot = await WorkflowSnapshot.create_from_data(
+                            workflow_id=state.get("workflow_id"),
+                            node_id=state["current_node_id"],  # Use HANA node's ID
+                            execution_id=state.get("execution_id"),
+                            context=context,
+                            data=results,
+                            snapshot_label=self.config.snapshot_label,
+                            retention_days=self.config.retention_days or 30
+                        )
+
+                        # Include snapshot info in output
+                        output["snapshot_id"] = snapshot.id
+                        output["snapshot_created"] = True
+                        print(f"[HANATableNodeExecutor] Snapshot created: {snapshot.id}")
+
+                        # Cleanup: Keep only the 2 most recent snapshots for this workflow+node
+                        try:
+                            # Get all snapshots for this workflow and node, ordered by date (newest first)
+                            all_snapshots = await repo_query(
+                                """
+                                SELECT id FROM workflow_snapshots
+                                WHERE workflow_id = :workflow_id
+                                AND node_id = :node_id
+                                ORDER BY snapshot_date DESC
+                                """,
+                                {
+                                    "workflow_id": state.get("workflow_id"),
+                                    "node_id": state["current_node_id"]
+                                }
+                            )
+
+                            # If more than 2 snapshots, delete the old ones
+                            if len(all_snapshots) > 2:
+                                snapshots_to_delete = all_snapshots[2:]  # Keep first 2 (newest)
+                                for snap_row in snapshots_to_delete:
+                                    await repo_delete("workflow_snapshots", snap_row["id"])
+                                    print(f"[HANATableNodeExecutor] Deleted old snapshot: {snap_row['id']}")
+
+                                print(f"[HANATableNodeExecutor] Cleaned up {len(snapshots_to_delete)} old snapshot(s), kept 2 most recent")
+
+                        except Exception as cleanup_err:
+                            print(f"[HANATableNodeExecutor] Warning: Failed to cleanup old snapshots: {cleanup_err}")
+                            # Don't fail if cleanup fails
+
+                    except Exception as snap_err:
+                        print(f"[HANATableNodeExecutor] Warning: Failed to create snapshot: {snap_err}")
+                        import traceback
+                        traceback.print_exc()
+                        # Don't fail the whole node if snapshot fails
+                        output["snapshot_error"] = str(snap_err)
+
+                return {
+                    **state,
+                    "node_outputs": {
+                        **state.get("node_outputs", {}),
+                        state["current_node_id"]: output
+                    }
+                }
+
+            finally:
+                if cursor:
+                    cursor.close()
+                if connection:
+                    connection.close()
+
+        except Exception as e:
+            print(f"[HANATableNodeExecutor] Error: {e}")
+            import traceback
+            traceback.print_exc()
+            return self._error_result(state, str(e))
+
+    def _convert_value(self, value):
+        """Convert database value to JSON-serializable type"""
+        from datetime import datetime, date, time
+        from decimal import Decimal
+
+        if value is None:
+            return None
+        elif isinstance(value, (datetime, date, time)):
+            return value.isoformat()
+        elif isinstance(value, Decimal):
+            return float(value)
+        elif isinstance(value, bytes):
+            return value.decode('utf-8', errors='replace')
+        else:
+            return value
+
+    def _error_result(self, state: Dict[str, Any], error_message: str) -> Dict[str, Any]:
+        """Build error result"""
+        return {
+            **state,
+            "node_outputs": {
+                **state.get("node_outputs", {}),
+                state["current_node_id"]: {
+                    "status": "error",
+                    "error": error_message,
+                    "data": []
+                }
+            }
+        }
+
+
+# ============================================================================
+# Node Executor Factory
 # ============================================================================
 
 def create_node_executor(node_type: NodeType, config: NodeConfig) -> BaseNodeExecutor:
@@ -1875,11 +1800,15 @@ def create_node_executor(node_type: NodeType, config: NodeConfig) -> BaseNodeExe
         NodeType.OUTPUT: OutputNodeExecutor,
         NodeType.NOTEBOOK_GENERATOR: NotebookGeneratorNodeExecutor,
         NodeType.MICROSITE_GENERATOR: MicrositeGeneratorNodeExecutor,
+        NodeType.PRESENTATION_GENERATOR: PresentationGeneratorNodeExecutor,
         NodeType.HUMAN_APPROVAL: HumanApprovalNodeExecutor,
         NodeType.WORKSPACE: WorkspaceNodeExecutor,
         NodeType.TEMPLATE: TemplateNodeExecutor,
         NodeType.DELAY: DelayNodeExecutor,
         NodeType.WEBHOOK: WebhookNodeExecutor,
+        NodeType.SNAPSHOT: SnapshotNodeExecutor,
+        NodeType.COMPARE: CompareNodeExecutor,
+        NodeType.HANA_TABLE: HANATableNodeExecutor,
     }
 
     executor_class = executors.get(node_type)
