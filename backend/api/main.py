@@ -17,7 +17,7 @@ from fastapi.exceptions import RequestValidationError
 
 from api.middleware import OAuthRateLimitMiddleware, OAuthAuditMiddleware
 from api.models import ErrorResponse, HealthCheckResponse
-from api.routers import notebooks, sources, database, dashboard, chat, chat_settings, source_chat, auth, models, embedding, credentials, microsites, microsite_chat, smtp, notes, search, hana_connections, api_connections, deep_research, charts, files, tools, agents, agent_memory, agent_tools, agent_skills, mcp_servers, agent_prompts, system_prompts, user_query_prompts, standalone_agents, workflows, bookmarks, graph, mcp_oauth, workspace_guided, workspace_tasks, folders, a2a, a2a_remote, users, roles, resource_shares, entities, entity_relationships, communities, autonomous_orchestration, actions, orchestration_actions, oauth, workspace_templates, orchestration_schedules, workflow_templates, workflow_approvals, template_executions, notifications, external_notifications, api_keys, presentations
+from api.routers import notebooks, sources, database, dashboard, chat, chat_settings, source_chat, auth, models, embedding, credentials, microsites, microsite_chat, smtp, notes, search, hana_connections, api_connections, deep_research, charts, files, tools, agents, agent_memory, agent_tools, agent_skills, mcp_servers, agent_prompts, system_prompts, user_query_prompts, standalone_agents, workflows, bookmarks, graph, mcp_oauth, workspace_guided, workspace_tasks, folders, a2a, a2a_remote, users, roles, resource_shares, entities, entity_relationships, communities, autonomous_orchestration, actions, orchestration_actions, oauth, workspace_templates, orchestration_schedules, workflow_templates, workflow_approvals, template_executions, notifications, external_notifications, api_keys, presentations, workflow_snapshots
 from api.services.database_service import get_database_service
 from open_notebook.database.interface import ConnectionConfig, DatabaseError
 from open_notebook.database.repository import init_database
@@ -378,13 +378,19 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
             "type": error["type"],
         })
 
+    print(f"DEBUG: Validation errors: {errors}")
+
+    response_data = {
+        "error": "Validation Error",
+        "detail": "Request validation failed",
+        "errors": errors,
+    }
+
+    print(f"DEBUG: Returning response: {response_data}")
+
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-        content={
-            "error": "Validation Error",
-            "detail": "Request validation failed",
-            "errors": errors,
-        },
+        content=response_data,
     )
 
 
@@ -508,6 +514,7 @@ app.include_router(notifications.router)  # Real-time notifications
 app.include_router(api_keys.router)  # API key management
 app.include_router(external_notifications.router)  # External notification API
 app.include_router(presentations.router)  # PowerPoint presentation generation
+app.include_router(workflow_snapshots.router)  # Workflow snapshot management
 
 # Mount public hosting router in development mode
 # (In production, a standalone hosting server handles this)

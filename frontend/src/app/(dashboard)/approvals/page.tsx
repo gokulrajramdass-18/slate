@@ -229,6 +229,65 @@ export default function ApprovalsPage() {
     });
   };
 
+  // Parse change details from approval prompt
+  const parseChangeDetails = (prompt: string) => {
+    try {
+      const match = prompt.match(/CHANGE_DETAILS_START\s*([\s\S]*?)\s*CHANGE_DETAILS_END/);
+      if (!match) return null;
+
+      const detailsText = match[1].trim();
+
+      // Split by empty arrays or JSON arrays
+      const jsonArrays: any[] = [];
+      let currentJson = '';
+      let bracketCount = 0;
+
+      for (let i = 0; i < detailsText.length; i++) {
+        const char = detailsText[i];
+
+        if (char === '[') {
+          if (bracketCount === 0) {
+            currentJson = '';
+          }
+          bracketCount++;
+          currentJson += char;
+        } else if (char === ']') {
+          currentJson += char;
+          bracketCount--;
+
+          if (bracketCount === 0 && currentJson) {
+            try {
+              const parsed = JSON.parse(currentJson);
+              jsonArrays.push(parsed);
+            } catch (e) {
+              console.error('Failed to parse JSON array:', currentJson, e);
+            }
+            currentJson = '';
+          }
+        } else if (bracketCount > 0) {
+          currentJson += char;
+        }
+      }
+
+      // First array is modified, second is added, third is removed
+      const modified = jsonArrays[0] || [];
+      const added = jsonArrays[1] || [];
+      const removed = jsonArrays[2] || [];
+
+      console.log('Parsed change details:', { modified, added, removed });
+
+      return { modified, added, removed };
+    } catch (e) {
+      console.error('Failed to parse change details:', e);
+      return null;
+    }
+  };
+
+  // Format prompt for display (remove internal markers)
+  const formatPromptForDisplay = (prompt: string) => {
+    return prompt.replace(/CHANGE_DETAILS_START[\s\S]*?CHANGE_DETAILS_END/, '').trim();
+  };
+
   // Filter approvals based on search query
   const filteredApprovals = approvals.filter(approval => {
     if (!searchQuery) return true;
@@ -340,6 +399,9 @@ export default function ApprovalsPage() {
             <>
               {paginatedApprovals.map((approval) => {
                 const isExpanded = expandedCards.has(approval.id);
+                const changeDetails = parseChangeDetails(approval.approval_prompt);
+                const displayPrompt = formatPromptForDisplay(approval.approval_prompt);
+
                 return (
                   <Card key={approval.id} className="hover:shadow-md transition-shadow">
                     <CardHeader className="pb-3">
@@ -347,7 +409,7 @@ export default function ApprovalsPage() {
                         <div className="flex-1 min-w-0">
                           <div className="flex items-start gap-2">
                             <div className="flex-1 min-w-0">
-                              <CardTitle className="text-base mb-1 truncate">{approval.approval_prompt}</CardTitle>
+                              <CardTitle className="text-base mb-1">{displayPrompt}</CardTitle>
                               <CardDescription className="flex items-center gap-2 text-xs">
                                 <Calendar className="h-3 w-3 flex-shrink-0" />
                                 {formatDate(approval.created_at)}
@@ -378,6 +440,117 @@ export default function ApprovalsPage() {
 
                     {isExpanded && (
                       <CardContent className="space-y-3 pt-0">
+                        {/* Change Details Table */}
+                        {changeDetails && (changeDetails.modified.length > 0 || changeDetails.added.length > 0 || changeDetails.removed.length > 0) && (
+                          <div className="border rounded-lg overflow-hidden">
+                            {/* Modified Rows */}
+                            {changeDetails.modified.length > 0 && (
+                              <div className="mb-4">
+                                <div className="bg-yellow-50 dark:bg-yellow-900/20 px-3 py-2 border-b">
+                                  <h4 className="text-sm font-semibold text-yellow-800 dark:text-yellow-300">Modified Rows ({changeDetails.modified.length})</h4>
+                                </div>
+                                <div className="overflow-x-auto">
+                                  {changeDetails.modified.map((change: any, idx: number) => {
+                                    const allKeys = new Set([...Object.keys(change.before || {}), ...Object.keys(change.after || {})]);
+                                    const changedKeys = Array.from(allKeys).filter(key =>
+                                      JSON.stringify(change.before?.[key]) !== JSON.stringify(change.after?.[key])
+                                    );
+
+                                    return (
+                                      <div key={idx} className="border-b last:border-b-0">
+                                        <Table>
+                                          <TableHeader>
+                                            <TableRow className="bg-muted/50">
+                                              <TableHead className="w-32 font-semibold">Field</TableHead>
+                                              <TableHead className="font-semibold">Before</TableHead>
+                                              <TableHead className="font-semibold">After</TableHead>
+                                            </TableRow>
+                                          </TableHeader>
+                                          <TableBody>
+                                            {changedKeys.map((key) => (
+                                              <TableRow key={key} className="bg-yellow-50/50 dark:bg-yellow-900/10">
+                                                <TableCell className="font-medium">{key}</TableCell>
+                                                <TableCell className="font-mono text-sm text-red-600 dark:text-red-400">
+                                                  {JSON.stringify(change.before?.[key])}
+                                                </TableCell>
+                                                <TableCell className="font-mono text-sm text-green-600 dark:text-green-400">
+                                                  {JSON.stringify(change.after?.[key])}
+                                                </TableCell>
+                                              </TableRow>
+                                            ))}
+                                          </TableBody>
+                                        </Table>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            )}
+
+                            {/* Added Rows */}
+                            {changeDetails.added.length > 0 && (
+                              <div className="mb-4">
+                                <div className="bg-green-50 dark:bg-green-900/20 px-3 py-2 border-b">
+                                  <h4 className="text-sm font-semibold text-green-800 dark:text-green-300">Added Rows ({changeDetails.added.length})</h4>
+                                </div>
+                                <div className="overflow-x-auto">
+                                  <Table>
+                                    <TableHeader>
+                                      <TableRow className="bg-muted/50">
+                                        {Object.keys(changeDetails.added[0] || {}).map((key) => (
+                                          <TableHead key={key} className="font-semibold">{key}</TableHead>
+                                        ))}
+                                      </TableRow>
+                                    </TableHeader>
+                                    <TableBody>
+                                      {changeDetails.added.map((row: any, idx: number) => (
+                                        <TableRow key={idx} className="bg-green-50/50 dark:bg-green-900/10">
+                                          {Object.keys(changeDetails.added[0]).map((key) => (
+                                            <TableCell key={key} className="font-mono text-sm">
+                                              {JSON.stringify(row[key])}
+                                            </TableCell>
+                                          ))}
+                                        </TableRow>
+                                      ))}
+                                    </TableBody>
+                                  </Table>
+                                </div>
+                              </div>
+                            )}
+
+                            {/* Removed Rows */}
+                            {changeDetails.removed.length > 0 && (
+                              <div className="mb-4">
+                                <div className="bg-red-50 dark:bg-red-900/20 px-3 py-2 border-b">
+                                  <h4 className="text-sm font-semibold text-red-800 dark:text-red-300">Removed Rows ({changeDetails.removed.length})</h4>
+                                </div>
+                                <div className="overflow-x-auto">
+                                  <Table>
+                                    <TableHeader>
+                                      <TableRow className="bg-muted/50">
+                                        {Object.keys(changeDetails.removed[0] || {}).map((key) => (
+                                          <TableHead key={key} className="font-semibold">{key}</TableHead>
+                                        ))}
+                                      </TableRow>
+                                    </TableHeader>
+                                    <TableBody>
+                                      {changeDetails.removed.map((row: any, idx: number) => (
+                                        <TableRow key={idx} className="bg-red-50/50 dark:bg-red-900/10">
+                                          {Object.keys(changeDetails.removed[0]).map((key) => (
+                                            <TableCell key={key} className="font-mono text-sm">
+                                              {JSON.stringify(row[key])}
+                                            </TableCell>
+                                          ))}
+                                        </TableRow>
+                                      ))}
+                                    </TableBody>
+                                  </Table>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+
                         {/* Workflow info */}
                         <div className="flex gap-4 text-xs bg-muted/50 p-2 rounded">
                           {approval.workflow_id && (

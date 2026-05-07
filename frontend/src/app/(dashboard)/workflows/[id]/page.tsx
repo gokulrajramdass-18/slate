@@ -18,7 +18,7 @@ import { useGraphStore } from '@/lib/stores/graph-store';
 import { useSidebarStore } from '@/lib/stores/sidebar-store';
 import { workflowsApi } from '@/lib/api/workflows';
 import type { WorkflowCreate, WorkflowUpdate } from '@/lib/api/workflows';
-import { useToast } from '@/hooks/use-toast';
+import { toast } from 'sonner';
 
 // ============================================================================
 // Workflow Editor Page
@@ -27,7 +27,6 @@ import { useToast } from '@/hooks/use-toast';
 export default function WorkflowEditorPage() {
   const params = useParams();
   const router = useRouter();
-  const { toast } = useToast();
   const queryClient = useQueryClient();
 
   const workflowId = params.id as string;
@@ -68,6 +67,15 @@ export default function WorkflowEditorPage() {
     if (workflow) {
       console.log('[WorkflowPage] Calling loadWorkflow for:', workflow.name);
       console.log('[WorkflowPage] Graph has', workflow.graph.nodes.length, 'nodes and', workflow.graph.edges.length, 'edges');
+
+      // Debug: Check HANA node config from backend
+      const hanaNode = workflow.graph.nodes.find((n: any) => n.type === 'hana_table');
+      if (hanaNode) {
+        console.log('[WorkflowPage] HANA node from backend:', hanaNode.id);
+        console.log('[WorkflowPage] HANA node config from backend:', JSON.stringify(hanaNode.config, null, 2));
+        console.log('[WorkflowPage] Conditions from backend:', hanaNode.config?.conditions);
+      }
+
       useGraphStore.getState().loadWorkflow(workflow);
       loadedWorkflowIdRef.current = workflow.id;
       console.log('[WorkflowPage] loadWorkflow called');
@@ -91,19 +99,45 @@ export default function WorkflowEditorPage() {
         name: metadata.name,
         description: metadata.description,
         graph: {
-          nodes: currentNodes.map((n: any) => ({
-            id: n.id,
-            type: n.data.type,
-            label: n.data.label,
-            position: n.position,
-            config: n.data.config,
-          })),
-          edges: currentEdges.map((e: any) => ({
-            id: e.id,
-            source: e.source,
-            target: e.target,
-            label: e.label,
-          })),
+          nodes: currentNodes.map((n: any) => {
+            // Debug log for HANA nodes
+            if (n.data.type === 'hana_table') {
+              console.log('[Save] HANA node config:', n.id);
+              console.log('[Save] Full config:', JSON.stringify(n.data.config, null, 2));
+              console.log('[Save] Conditions:', n.data.config.conditions);
+              console.log('[Save] hana_connection_id:', n.data.config.hana_connection_id);
+              console.log('[Save] hana_table_name:', n.data.config.hana_table_name);
+            }
+            return {
+              id: n.id,
+              type: n.data.type,
+              label: n.data.label,
+              position: n.position,
+              config: n.data.config,
+            };
+          }),
+          edges: currentEdges.map((e: any) => {
+            // Extract label from edge ID if not explicitly set
+            // React Flow generates IDs like "xy-edge__conditional-1true-output-123"
+            let label = e.label;
+            if (!label && e.id) {
+              const idLower = e.id.toLowerCase();
+              if (idLower.includes('true')) {
+                label = 'true';
+              } else if (idLower.includes('false')) {
+                label = 'false';
+              }
+            }
+
+            return {
+              id: e.id,
+              source: e.source,
+              target: e.target,
+              sourceHandle: e.sourceHandle,  // Preserve source handle for conditional nodes
+              targetHandle: e.targetHandle,  // Preserve target handle
+              label: label,
+            };
+          }),
           entry_node_id: currentNodes.find((n: any) => n.data.type === 'input')?.id || currentNodes[0]?.id || '',
         },
         tags: metadata.tags || [],
@@ -121,10 +155,7 @@ export default function WorkflowEditorPage() {
       }
     },
     onSuccess: (data) => {
-      toast({
-        title: 'Success',
-        description: `Workflow ${isNew ? 'created' : 'updated'} successfully`,
-      });
+      toast.success(`Workflow ${isNew ? 'created' : 'updated'} successfully`);
 
       queryClient.invalidateQueries({ queryKey: ['workflows'] });
       queryClient.invalidateQueries({ queryKey: ['workflow', workflowId] });
@@ -138,11 +169,7 @@ export default function WorkflowEditorPage() {
       }
     },
     onError: (error: any) => {
-      toast({
-        title: 'Error',
-        description: error.message || 'Failed to save workflow',
-        variant: 'destructive',
-      });
+      toast.error(error.message || 'Failed to save workflow');
     },
   });
 
@@ -150,20 +177,13 @@ export default function WorkflowEditorPage() {
   const executeMutation = useMutation({
     mutationFn: () => workflowsApi.execute(workflowId),
     onSuccess: (execution) => {
-      toast({
-        title: 'Success',
-        description: 'Workflow execution started',
-      });
+      toast.success('Workflow execution started');
 
       // Start polling for execution status
       setCurrentExecution(execution);
     },
     onError: (error: any) => {
-      toast({
-        title: 'Error',
-        description: error.message || 'Failed to execute workflow',
-        variant: 'destructive',
-      });
+      toast.error(error.message || 'Failed to execute workflow');
     },
   });
 
@@ -200,11 +220,7 @@ export default function WorkflowEditorPage() {
 
   const handleExecute = () => {
     if (isNew) {
-      toast({
-        title: 'Save Required',
-        description: 'Please save the workflow before executing',
-        variant: 'destructive',
-      });
+      toast.error('Please save the workflow before executing');
       return;
     }
 
@@ -403,6 +419,16 @@ export default function WorkflowEditorPage() {
               >
                 <Plus className="h-3 w-3 mr-1" />
                 Hana Table
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => (window as any).__workflowAddNode?.('compare')}
+                disabled={isExecuting}
+                className="h-7 px-2 text-xs shrink-0"
+              >
+                <Plus className="h-3 w-3 mr-1" />
+                Compare
               </Button>
             </div>
           </div>

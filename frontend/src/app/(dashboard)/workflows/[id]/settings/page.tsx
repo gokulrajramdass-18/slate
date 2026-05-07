@@ -29,20 +29,20 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { ArrowLeft, Plus, Calendar, Clock, Zap, GitBranch, MoreVertical, Trash2, Edit, Play } from 'lucide-react';
+import { ArrowLeft, Plus, Calendar, Clock, Zap, GitBranch, MoreVertical, Trash2, Edit, Play, Database, Loader2 } from 'lucide-react';
 import { workflowsApi, schedulesApi, schedulerApi } from '@/lib/api/workflows';
 import type { WorkflowSchedule } from '@/lib/api/workflows';
-import { useToast } from '@/hooks/use-toast';
+import { toast } from 'sonner';
 import { ScheduleDialog } from '@/components/workflows/ScheduleDialog';
 import { JobStatusMonitor } from '@/components/workflows/JobStatusMonitor';
-import { format } from 'date-fns';
+import { format, formatDistanceToNow } from 'date-fns';
+import { apiClient } from '@/lib/api/client';
 
 // ============================================================================
 // Schedule Card Component
 // ============================================================================
 
 function ScheduleCard({ schedule, workflowId }: { schedule: WorkflowSchedule; workflowId: string }) {
-  const { toast } = useToast();
   const queryClient = useQueryClient();
   const [showDeleteDialog, setShowDeleteDialog] = React.useState(false);
   const [showEditDialog, setShowEditDialog] = React.useState(false);
@@ -54,18 +54,11 @@ function ScheduleCard({ schedule, workflowId }: { schedule: WorkflowSchedule; wo
         enabled: !schedule.enabled,
       }),
     onSuccess: () => {
-      toast({
-        title: 'Success',
-        description: `Schedule ${schedule.enabled ? 'disabled' : 'enabled'}`,
-      });
+      toast.success(`Schedule ${schedule.enabled ? 'disabled' : 'enabled'}`);
       queryClient.invalidateQueries({ queryKey: ['schedules', workflowId] });
     },
     onError: (error: any) => {
-      toast({
-        title: 'Error',
-        description: error.message || 'Failed to update schedule',
-        variant: 'destructive',
-      });
+      toast.error(error.message || 'Failed to update schedule');
     },
   });
 
@@ -73,19 +66,12 @@ function ScheduleCard({ schedule, workflowId }: { schedule: WorkflowSchedule; wo
   const deleteMutation = useMutation({
     mutationFn: () => schedulesApi.delete(workflowId, schedule.id),
     onSuccess: () => {
-      toast({
-        title: 'Success',
-        description: 'Schedule deleted',
-      });
+      toast.success('Schedule deleted');
       queryClient.invalidateQueries({ queryKey: ['schedules', workflowId] });
       setShowDeleteDialog(false);
     },
     onError: (error: any) => {
-      toast({
-        title: 'Error',
-        description: error.message || 'Failed to delete schedule',
-        variant: 'destructive',
-      });
+      toast.error(error.message || 'Failed to delete schedule');
     },
   });
 
@@ -93,17 +79,10 @@ function ScheduleCard({ schedule, workflowId }: { schedule: WorkflowSchedule; wo
   const triggerMutation = useMutation({
     mutationFn: () => workflowsApi.execute(workflowId),
     onSuccess: () => {
-      toast({
-        title: 'Success',
-        description: 'Workflow execution started',
-      });
+      toast.success('Workflow execution started');
     },
     onError: (error: any) => {
-      toast({
-        title: 'Error',
-        description: error.message || 'Failed to execute workflow',
-        variant: 'destructive',
-      });
+      toast.error(error.message || 'Failed to execute workflow');
     },
   });
 
@@ -229,6 +208,185 @@ function ScheduleCard({ schedule, workflowId }: { schedule: WorkflowSchedule; wo
 }
 
 // ============================================================================
+// Snapshots Section Component
+// ============================================================================
+
+function SnapshotsSection({ workflowId }: { workflowId: string }) {
+  const queryClient = useQueryClient();
+  const [showDeleteDialog, setShowDeleteDialog] = React.useState(false);
+  const [snapshotToDelete, setSnapshotToDelete] = React.useState<string | null>(null);
+
+  // Fetch snapshots for this workflow
+  const { data: snapshots, isLoading } = useQuery({
+    queryKey: ['snapshots', workflowId],
+    queryFn: async () => {
+      const { data } = await apiClient.get('/snapshots/', {
+        params: { workflow_id: workflowId }
+      });
+      return data;
+    },
+  });
+
+  // Delete mutation
+  const deleteMutation = useMutation({
+    mutationFn: async (snapshotId: string) => {
+      await apiClient.delete(`/snapshots/${snapshotId}`);
+    },
+    onSuccess: () => {
+      toast.success('Snapshot deleted');
+      queryClient.invalidateQueries({ queryKey: ['snapshots', workflowId] });
+      setShowDeleteDialog(false);
+      setSnapshotToDelete(null);
+    },
+    onError: (error: any) => {
+      toast.error(error.message || 'Failed to delete snapshot');
+    },
+  });
+
+  const handleDelete = (snapshotId: string) => {
+    setSnapshotToDelete(snapshotId);
+    setShowDeleteDialog(true);
+  };
+
+  const confirmDelete = () => {
+    if (snapshotToDelete) {
+      deleteMutation.mutate(snapshotToDelete);
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <h2 className="text-xl font-semibold flex items-center gap-2">
+          <Database className="h-5 w-5" />
+          Snapshots
+        </h2>
+        <p className="text-sm text-muted-foreground mt-1">
+          Data snapshots captured during workflow executions
+        </p>
+      </div>
+
+      {isLoading ? (
+        <div className="flex items-center justify-center p-8">
+          <Loader2 className="h-6 w-6 animate-spin" />
+        </div>
+      ) : snapshots && snapshots.length > 0 ? (
+        <div className="space-y-2">
+          <div className="flex items-center justify-between px-2 text-sm text-muted-foreground">
+            <span>{snapshots.length} snapshot(s) found</span>
+          </div>
+          <div className="border rounded-lg divide-y">
+            {snapshots.map((snapshot: any, index: number) => (
+              <div key={snapshot.id} className="p-4 hover:bg-muted/50">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="flex-1 min-w-0 space-y-2">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-mono text-xs bg-muted px-2 py-1 rounded">
+                        ID: {snapshot.id.substring(0, 12)}...
+                      </span>
+                      <Badge variant="outline" className="text-xs">
+                        {snapshot.storage_type}
+                      </Badge>
+                      {index === 0 && (
+                        <Badge className="text-xs bg-green-500 hover:bg-green-600">
+                          Current
+                        </Badge>
+                      )}
+                      {index === 1 && (
+                        <Badge variant="secondary" className="text-xs">
+                          Previous
+                        </Badge>
+                      )}
+                      {snapshot.snapshot_label && (
+                        <Badge variant="secondary" className="text-xs">
+                          {snapshot.snapshot_label}
+                        </Badge>
+                      )}
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm">
+                      <div>
+                        <span className="text-muted-foreground">Node ID:</span>{' '}
+                        <span className="font-mono text-xs">{snapshot.node_id}</span>
+                      </div>
+                      <div>
+                        <span className="text-muted-foreground">Rows:</span>{' '}
+                        <span className="font-semibold">{snapshot.row_count?.toLocaleString() || 0}</span>
+                      </div>
+                      <div>
+                        <span className="text-muted-foreground">Created:</span>{' '}
+                        <span>{formatDistanceToNow(new Date(snapshot.snapshot_date), { addSuffix: true })}</span>
+                      </div>
+                      <div>
+                        <span className="text-muted-foreground">Date:</span>{' '}
+                        <span className="text-xs">{format(new Date(snapshot.snapshot_date), 'PPp')}</span>
+                      </div>
+                      {snapshot.execution_id && (
+                        <div className="col-span-2">
+                          <span className="text-muted-foreground">Execution ID:</span>{' '}
+                          <span className="font-mono text-xs">{snapshot.execution_id.substring(0, 12)}...</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => handleDelete(snapshot.id)}
+                    disabled={deleteMutation.isPending}
+                    className="shrink-0"
+                  >
+                    {deleteMutation.isPending && snapshotToDelete === snapshot.id ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Trash2 className="h-4 w-4 text-destructive" />
+                    )}
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <Card className="p-8 text-center">
+          <div className="flex flex-col items-center gap-3">
+            <Database className="h-8 w-8 text-muted-foreground" />
+            <div>
+              <h3 className="font-semibold">No snapshots yet</h3>
+              <p className="text-sm text-muted-foreground">
+                Snapshots will appear here after workflow executions with HANA nodes that have snapshots enabled
+              </p>
+            </div>
+          </div>
+        </Card>
+      )}
+
+      {/* Delete Confirmation Dialog */}
+      <AlertDialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Snapshot?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently delete the snapshot data. This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={confirmDelete}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
+  );
+}
+
+// ============================================================================
 // Workflow Settings Page
 // ============================================================================
 
@@ -324,6 +482,9 @@ export default function WorkflowSettingsPage() {
           </Card>
         )}
       </div>
+
+      {/* Snapshots Section */}
+      <SnapshotsSection workflowId={workflowId} />
 
       {/* Job Status Monitor */}
       <JobStatusMonitor workflowId={workflowId} />

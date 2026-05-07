@@ -34,6 +34,9 @@ class NodeType(str, Enum):
     TEMPLATE = "template"
     DELAY = "delay"
     WEBHOOK = "webhook"
+    SNAPSHOT = "snapshot"       # Store data snapshot
+    COMPARE = "compare"         # Compare two snapshots
+    HANA_TABLE = "hana_table"   # HANA table data source
 
 
 class ExecutionStatus(str, Enum):
@@ -97,6 +100,7 @@ class NodeConfig(BaseModel):
     # Tool node config
     tool_name: Optional[str] = None
     tool_args: Optional[Dict[str, Any]] = None
+    enable_snapshots: Optional[bool] = False  # Enable automatic snapshots for tool nodes
 
     # Conditional node config
     condition_type: Optional[Literal["equals", "contains", "greater_than", "less_than"]] = None
@@ -182,6 +186,28 @@ class NodeConfig(BaseModel):
     webhook_auth_type: Optional[Literal["none", "bearer", "basic"]] = None
     webhook_auth_token: Optional[str] = None
 
+    # Snapshot node config
+    snapshot_mode: Optional[Literal["store", "compare"]] = "store"
+    snapshot_label: Optional[str] = None  # 'yesterday', 'today', 'baseline'
+    source_node_id: Optional[str] = None  # Node to snapshot
+    retention_days: Optional[int] = 30    # Auto-cleanup old snapshots
+
+    # Compare mode config
+    compare_snapshot_1: Optional[str] = None  # e.g., 'yesterday'
+    compare_snapshot_2: Optional[str] = None  # e.g., 'today'
+    comparison_strategy: Optional[Literal["fast", "medium", "full"]] = "fast"
+    change_threshold: Optional[float] = 0.0  # Minimum % change to trigger
+    watch_columns: Optional[List[Dict[str, Any]]] = None  # Columns to watch: [{column: str, watch_value: Optional[str]}]
+
+    # HANA Table node config
+    hana_connection_id: Optional[str] = None  # Reference to hana_connections table
+    hana_table_name: Optional[str] = None  # Fully qualified table name (SCHEMA.TABLE)
+    hana_query: Optional[str] = None  # Optional custom SQL query (SELECT only)
+    hana_where_clause: Optional[str] = None  # WHERE clause filter
+    hana_limit: Optional[int] = 100  # Row limit
+    hana_columns: Optional[List[str]] = None  # Specific columns to select
+    conditions: Optional[List[Dict[str, Any]]] = None  # Filter conditions: [{column: str, operator: str, value: str}]
+
 
 class WorkflowNode(BaseModel):
     """A node in the workflow graph."""
@@ -197,6 +223,8 @@ class WorkflowEdge(BaseModel):
     id: str
     source: str  # source node_id
     target: str  # target node_id
+    sourceHandle: Optional[str] = None  # Source handle ID (for conditional nodes)
+    targetHandle: Optional[str] = None  # Target handle ID
     label: Optional[str] = None
     condition_result: Optional[bool] = None  # For conditional edges
 

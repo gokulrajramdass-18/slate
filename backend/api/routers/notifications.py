@@ -115,7 +115,7 @@ async def create_notification(
 
 @router.get("", response_model=NotificationListResponse)
 async def get_notifications(
-    user_id: str = Query(..., description="User ID"),
+    user_id: Optional[str] = Query(None, description="User ID"),
     unread_only: bool = Query(False, description="Show only unread notifications"),
     category: Optional[NotificationCategory] = Query(None, description="Filter by category"),
     limit: int = Query(50, ge=1, le=100, description="Maximum number of results"),
@@ -127,6 +127,14 @@ async def get_notifications(
     Returns a paginated list of notifications with filtering options.
     """
     try:
+        # If no user_id provided, return empty list
+        if not user_id:
+            return NotificationListResponse(
+                notifications=[],
+                total=0,
+                unread_count=0
+            )
+
         notifications = await Notification.get_user_notifications(
             user_id=user_id,
             unread_only=unread_only,
@@ -148,9 +156,13 @@ async def get_notifications(
 
 
 @router.get("/unread-count", response_model=UnreadCountResponse)
-async def get_unread_count(user_id: str = Query(..., description="User ID")):
+async def get_unread_count(user_id: Optional[str] = Query(None, description="User ID")):
     """Get count of unread notifications for a user"""
     try:
+        # If no user_id provided, return 0
+        if not user_id:
+            return UnreadCountResponse(count=0)
+
         count = await Notification.get_unread_count(user_id)
         return UnreadCountResponse(count=count)
 

@@ -511,13 +511,17 @@ async def get_discovered_tables(connection_id: str):
         )
 
 
-@router.get("/{connection_id}/tables", response_model=List[dict])
+@router.get("/{connection_id}/tables")
 async def list_tables(connection_id: str, schema: Optional[str] = None):
     """
     List tables available in a HANA connection
 
     Returns table names and basic metadata.
+    If no schema specified, uses CURRENT_SCHEMA or lists all accessible tables.
     """
+    import sys
+    print(f"[HANA] ========== list_tables ENTRY POINT ==========", file=sys.stderr, flush=True)
+    print(f"[HANA] list_tables called for connection {connection_id}, schema={schema}", flush=True)
     try:
         # Get connection
         connection = await get_connection_by_id(connection_id)
@@ -527,6 +531,7 @@ async def list_tables(connection_id: str, schema: Optional[str] = None):
                 detail=f"Connection {connection_id} not found"
             )
 
+        print(f"[HANA] Connection found, decrypting password...")
         # Decrypt password
         password = decrypt_password(connection["password_encrypted"])
 
@@ -545,27 +550,90 @@ async def list_tables(connection_id: str, schema: Optional[str] = None):
         db_connection = dbapi.connect(**conn_params)
         cursor = db_connection.cursor()
 
-        # Query tables
-        schema_filter = schema or connection.get("schema") or connection["database"]
-        cursor.execute("""
-            SELECT SCHEMA_NAME, TABLE_NAME, TABLE_TYPE, RECORD_COUNT
-            FROM SYS.M_TABLES
-            WHERE SCHEMA_NAME = ?
-            ORDER BY TABLE_NAME
-        """, (schema_filter,))
+        # Debug: Show current user and available schemas
+        try:
+            cursor.execute("SELECT CURRENT_USER FROM DUMMY")
+            current_user = cursor.fetchone()[0]
+            print(f"[HANA] Connected as user: {current_user}")
+
+            cursor.execute("SELECT DISTINCT SCHEMA_NAME FROM SYS.M_TABLES ORDER BY SCHEMA_NAME LIMIT 20")
+            all_schemas = [row[0] for row in cursor.fetchall()]
+            print(f"[HANA] Available schemas (first 20): {all_schemas}")
+        except Exception as e:
+            print(f"[HANA] Debug query failed: {e}")
+
+        # Determine schema to use (from parameter, connection config, or current schema)
+        schema_filter = schema or connection.get("schema")
+
+        # If no schema specified, try to get the user's current schema
+        if not schema_filter:
+            try:
+                cursor.execute("SELECT CURRENT_SCHEMA FROM DUMMY")
+                result = cursor.fetchone()
+                if result and result[0]:
+                    schema_filter = result[0]
+            except Exception:
+                pass  # If fails, will list all accessible schemas below
 
         tables = []
-        for row in cursor.fetchall():
-            tables.append({
-                "schema_name": row[0],
-                "table_name": row[1],
-                "table_type": row[2],
-                "record_count": row[3]
-            })
+
+        if schema_filter:
+            # Query specific schema - use TABLES view instead of M_TABLES to include virtual tables
+            query = """
+                SELECT SCHEMA_NAME, TABLE_NAME, TABLE_TYPE, 0 as RECORD_COUNT
+                FROM SYS.TABLES
+                WHERE SCHEMA_NAME = ?
+                AND IS_USER_DEFINED_TYPE = 'FALSE'
+                ORDER BY TABLE_NAME
+            """
+            print(f"[HANA] Executing query with schema_filter: {schema_filter}")
+            print(f"[HANA] Using SYS.TABLES to include virtual tables")
+            cursor.execute(query, (schema_filter,))
+
+            rows = cursor.fetchall()
+            print(f"[HANA] Query returned {len(rows)} rows")
+
+            for row in rows:
+                tables.append({
+                    "schema_name": row[0],
+                    "table_name": row[1],
+                    "table_type": row[2],
+                    "record_count": row[3] if len(row) > 3 else 0
+                })
+
+        # If no tables found or no schema specified, list all accessible tables
+        if not tables:
+            # List all tables from non-system schemas - use TABLES view to include virtual tables
+            query = """
+                SELECT SCHEMA_NAME, TABLE_NAME, TABLE_TYPE, 0 as RECORD_COUNT
+                FROM SYS.TABLES
+                WHERE SCHEMA_NAME NOT LIKE '_SYS%'
+                AND SCHEMA_NAME NOT IN ('SYS', 'SYSTEM')
+                AND IS_USER_DEFINED_TYPE = 'FALSE'
+                ORDER BY SCHEMA_NAME, TABLE_NAME
+                LIMIT 1000
+            """
+            print(f"[HANA] No tables found with schema filter, trying fallback query")
+            print(f"[HANA] Using SYS.TABLES to include virtual tables")
+            cursor.execute(query)
+
+            rows = cursor.fetchall()
+            print(f"[HANA] Fallback query returned {len(rows)} rows")
+
+            for row in rows:
+                tables.append({
+                    "schema_name": row[0],
+                    "table_name": row[1],
+                    "table_type": row[2],
+                    "record_count": row[3] if len(row) > 3 else 0
+                })
 
         cursor.close()
         db_connection.close()
 
+        print(f"[HANA] Found {len(tables)} tables for connection {connection_id}, schema_filter: {schema_filter}")
+
+        # Return array format for consistency
         return tables
 
     except HTTPException:

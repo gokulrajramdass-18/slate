@@ -34,9 +34,21 @@ const OPERATORS = [
 ];
 
 export function HanaTablePropertyPanel({ selectedNode, handleUpdate }: HanaTablePropertyPanelProps) {
-  const [selectedConnection, setSelectedConnection] = useState(selectedNode.data.config.connection_id || "");
-  const [selectedTable, setSelectedTable] = useState(selectedNode.data.config.table_name || "");
+  const [selectedConnection, setSelectedConnection] = useState(selectedNode.data.config.hana_connection_id || "");
+  const [selectedTable, setSelectedTable] = useState(selectedNode.data.config.hana_table_name || "");
   const [conditions, setConditions] = useState<Condition[]>(selectedNode.data.config.conditions || []);
+
+  // Sync local state with node config when node changes (e.g., after workflow load)
+  useEffect(() => {
+    console.log('[HanaTablePropertyPanel] Syncing from node config');
+    console.log('[HanaTablePropertyPanel] Node ID:', selectedNode.id);
+    console.log('[HanaTablePropertyPanel] Node config:', selectedNode.data.config);
+    console.log('[HanaTablePropertyPanel] Conditions from config:', selectedNode.data.config.conditions);
+
+    setSelectedConnection(selectedNode.data.config.hana_connection_id || "");
+    setSelectedTable(selectedNode.data.config.hana_table_name || "");
+    setConditions(selectedNode.data.config.conditions || []);
+  }, [selectedNode.id]); // Re-sync when node ID changes (different node selected)
 
   // Fetch HANA connections
   const { data: connections = [], isLoading: connectionsLoading } = useQuery({
@@ -48,15 +60,22 @@ export function HanaTablePropertyPanel({ selectedNode, handleUpdate }: HanaTable
   });
 
   // Fetch tables for selected connection
-  const { data: tables = [], isLoading: tablesLoading } = useQuery({
+  const { data: tablesResponse, isLoading: tablesLoading } = useQuery({
     queryKey: ["hana-tables", selectedConnection],
     queryFn: async () => {
-      if (!selectedConnection) return [];
+      if (!selectedConnection) return { tables: [], message: null };
       const response = await apiClient.get(`/hana-connections/${selectedConnection}/tables`);
+      // Handle both array response (old format) and object response (new format)
+      if (Array.isArray(response.data)) {
+        return { tables: response.data, message: null };
+      }
       return response.data;
     },
     enabled: !!selectedConnection,
   });
+
+  const tables = tablesResponse?.tables || [];
+  const tablesMessage = tablesResponse?.message;
 
   // Fetch columns for selected table
   const { data: columns = [], isLoading: columnsLoading } = useQuery({
@@ -73,29 +92,42 @@ export function HanaTablePropertyPanel({ selectedNode, handleUpdate }: HanaTable
 
   // Update node configuration when connection changes
   useEffect(() => {
-    if (selectedConnection !== selectedNode.data.config.connection_id) {
-      handleUpdate("connection_id", selectedConnection);
+    const nodeConnection = selectedNode.data.config.hana_connection_id || "";
+    // Only update if there's an actual change and selectedConnection is not empty
+    if (selectedConnection && selectedConnection !== nodeConnection) {
+      handleUpdate("hana_connection_id", selectedConnection);
       // Reset table and conditions when connection changes
       setSelectedTable("");
       setConditions([]);
-      handleUpdate("table_name", "");
+      handleUpdate("hana_table_name", "");
       handleUpdate("conditions", []);
     }
   }, [selectedConnection]);
 
   // Update node configuration when table changes
   useEffect(() => {
-    if (selectedTable !== selectedNode.data.config.table_name) {
-      handleUpdate("table_name", selectedTable);
-      // Reset conditions when table changes
-      setConditions([]);
-      handleUpdate("conditions", []);
+    const nodeTable = selectedNode.data.config.hana_table_name || "";
+    // Only update if there's an actual change and selectedTable is not empty
+    if (selectedTable && selectedTable !== nodeTable) {
+      handleUpdate("hana_table_name", selectedTable);
+      // Only reset conditions if this is a real table change, not initialization
+      if (nodeTable !== "") {
+        setConditions([]);
+        handleUpdate("conditions", []);
+      }
     }
   }, [selectedTable]);
 
   // Update node configuration when conditions change
   useEffect(() => {
-    if (JSON.stringify(conditions) !== JSON.stringify(selectedNode.data.config.conditions)) {
+    const currentConditions = selectedNode.data.config.conditions || [];
+    const conditionsChanged = JSON.stringify(conditions) !== JSON.stringify(currentConditions);
+    console.log('[HanaTablePropertyPanel] Conditions changed:', conditionsChanged);
+    console.log('[HanaTablePropertyPanel] Current conditions:', conditions);
+    console.log('[HanaTablePropertyPanel] Node conditions:', currentConditions);
+
+    if (conditionsChanged) {
+      console.log('[HanaTablePropertyPanel] Calling handleUpdate with conditions:', conditions);
       handleUpdate("conditions", conditions);
     }
   }, [conditions]);
@@ -154,8 +186,11 @@ export function HanaTablePropertyPanel({ selectedNode, handleUpdate }: HanaTable
               Loading tables...
             </div>
           ) : tables.length === 0 ? (
-            <div className="text-sm text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/30 p-3 rounded">
-              No tables found for this connection.
+            <div className="text-sm text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/30 p-3 rounded space-y-2">
+              <p className="font-medium">No tables found for this connection.</p>
+              {tablesMessage && (
+                <p className="text-xs opacity-90">{tablesMessage}</p>
+              )}
             </div>
           ) : (
             <Select value={selectedTable} onValueChange={setSelectedTable}>
@@ -283,6 +318,30 @@ export function HanaTablePropertyPanel({ selectedNode, handleUpdate }: HanaTable
               )}
             </>
           )}
+        </div>
+      )}
+
+      {/* Enable Snapshots */}
+      {selectedTable && (
+        <div className="space-y-2 pt-2 border-t">
+          <div className="flex items-start gap-2">
+            <input
+              type="checkbox"
+              id="enable-snapshots"
+              checked={selectedNode.data.config.enable_snapshots || false}
+              onChange={(e) => handleUpdate('enable_snapshots', e.target.checked)}
+              className="mt-1"
+            />
+            <div className="flex-1">
+              <Label htmlFor="enable-snapshots" className="cursor-pointer">
+                Enable Automatic Snapshots
+              </Label>
+              <p className="text-xs text-muted-foreground mt-1">
+                Automatically store query results. First run creates baseline, subsequent runs store current data.
+                Connect a Compare node to detect changes.
+              </p>
+            </div>
+          </div>
         </div>
       )}
 

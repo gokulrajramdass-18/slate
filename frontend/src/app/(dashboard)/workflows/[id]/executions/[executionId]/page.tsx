@@ -22,7 +22,7 @@ import { format } from 'date-fns';
 // Node State Card Component
 // ============================================================================
 
-function NodeStateCard({ nodeId, state }: { nodeId: string; state: NodeExecutionState }) {
+function NodeStateCard({ nodeId, nodeLabel, state }: { nodeId: string; nodeLabel?: string; state: NodeExecutionState }) {
   const statusConfig = {
     pending: { icon: Clock, color: 'text-gray-500', bg: 'bg-gray-100' },
     running: { icon: Loader2, color: 'text-blue-500', bg: 'bg-blue-100' },
@@ -47,7 +47,12 @@ function NodeStateCard({ nodeId, state }: { nodeId: string; state: NodeExecution
             <div className={`p-2 rounded-full ${config.bg}`}>
               <Icon className={`h-4 w-4 ${config.color} ${state.status === 'running' ? 'animate-spin' : ''}`} />
             </div>
-            <CardTitle className="text-base">{nodeId}</CardTitle>
+            <div>
+              <CardTitle className="text-base">{nodeLabel || nodeId}</CardTitle>
+              {nodeLabel && (
+                <p className="text-xs text-muted-foreground mt-0.5">{nodeId}</p>
+              )}
+            </div>
           </div>
           <Badge variant={
             state.status === 'completed' ? 'default' :
@@ -188,6 +193,17 @@ export default function ExecutionDetailPage() {
       return (status === 'running' || status === 'paused') ? 2000 : false;
     },
   });
+
+  // Create node label mapping from workflow graph
+  const nodeLabels = React.useMemo(() => {
+    const map: Record<string, string> = {};
+    workflow?.graph?.nodes?.forEach((node: any) => {
+      if (node.id && node.data?.label) {
+        map[node.id] = node.data.label;
+      }
+    });
+    return map;
+  }, [workflow]);
 
   if (isLoading) {
     return (
@@ -340,7 +356,7 @@ export default function ExecutionDetailPage() {
         {/* Node States Tab */}
         <TabsContent value="nodes" className="space-y-4">
           {Object.entries(nodeStates).map(([nodeId, state]) => (
-            <NodeStateCard key={nodeId} nodeId={nodeId} state={state} />
+            <NodeStateCard key={nodeId} nodeId={nodeId} nodeLabel={nodeLabels[nodeId]} state={state} />
           ))}
         </TabsContent>
 

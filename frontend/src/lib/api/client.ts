@@ -41,6 +41,8 @@ apiClient.interceptors.response.use(
       console.error("Validation error:", error.response.data);
       console.error("Request data:", error.config?.data);
       console.error("Request URL:", error.config?.url);
+      console.error("Response headers:", error.response.headers);
+      console.error("Full error:", error);
     }
 
     // Handle 401 - try to refresh token
