@@ -22,7 +22,7 @@ export interface InputFieldDefinition {
 
 export interface NodeData {
   label: string;
-  type: 'input' | 'llm' | 'tool' | 'conditional' | 'agent' | 'output' | 'notebook_generator' | 'microsite_generator';
+  type: 'input' | 'llm' | 'tool' | 'conditional' | 'agent' | 'output' | 'notebook_generator' | 'microsite_generator' | 'api';
   config: {
     // LLM config
     model_name?: string;

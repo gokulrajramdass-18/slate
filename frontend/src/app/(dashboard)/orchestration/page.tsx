@@ -17,7 +17,7 @@ import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
-import { Play, Loader2, RefreshCw, Trash2, Database, FileText, Search, Filter, Calendar, Clock, Settings } from 'lucide-react';
+import { Play, Loader2, RefreshCw, Trash2, Database, FileText, Search, Filter, Calendar, Clock, Settings, Sparkles } from 'lucide-react';
 import { AgentCollaborationGraph } from '@/components/orchestration/AgentCollaborationGraph';
 import { OrchestrationProgress } from '@/components/orchestration/OrchestrationProgress';
 import { ScheduleActions } from '@/components/orchestration/ScheduleActions';
@@ -606,24 +606,28 @@ export default function OrchestrationPage() {
   };
 
   return (
-    <div className="p-6 h-full overflow-auto">
-      <div className="space-y-6 max-w-7xl mx-auto">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight bg-gradient-to-r from-blue-600 via-purple-600 to-pink-600 bg-clip-text text-transparent">
+    <div className="p-6 space-y-6 bg-background min-h-screen">
+      {/* Hero Section */}
+      <div className="relative overflow-hidden rounded-2xl bg-gradient-to-r from-orange-100 via-amber-100 to-yellow-100 dark:from-orange-900/30 dark:via-amber-900/30 dark:to-yellow-900/30 p-8 shadow-lg border border-orange-200 dark:border-orange-800 animate-fade-in-up">
+        <div className="absolute inset-0 bg-[url('/grid.svg')] opacity-10" />
+        <div className="relative z-10">
+          <h1 className="text-4xl font-bold mb-2 flex items-center gap-3 text-gray-800 dark:text-gray-100">
+            <Sparkles className="h-10 w-10 text-orange-600 dark:text-orange-400" />
             Autonomous Orchestration
           </h1>
-          <p className="text-gray-500 dark:text-gray-400 mt-2">
+          <p className="text-gray-700 dark:text-gray-300 text-lg">
             Trigger complex multi-agent workflows for sophisticated tasks
           </p>
         </div>
+      </div>
 
       <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as 'new' | 'progress' | 'history' | 'scheduled' | 'schedule-template')} className="space-y-6">
-        <TabsList>
-          <TabsTrigger value="new">New Orchestration</TabsTrigger>
-          <TabsTrigger value="progress">Progress</TabsTrigger>
-          <TabsTrigger value="schedule-template">Schedule Template</TabsTrigger>
-          <TabsTrigger value="scheduled">Scheduled</TabsTrigger>
-          <TabsTrigger value="history">History</TabsTrigger>
+        <TabsList className="grid w-full grid-cols-5 lg:w-[900px] h-12">
+          <TabsTrigger value="new" className="text-sm font-semibold">New Orchestration</TabsTrigger>
+          <TabsTrigger value="progress" className="text-sm font-semibold">Progress</TabsTrigger>
+          <TabsTrigger value="schedule-template" className="text-sm font-semibold">Schedule Template</TabsTrigger>
+          <TabsTrigger value="scheduled" className="text-sm font-semibold">Scheduled</TabsTrigger>
+          <TabsTrigger value="history" className="text-sm font-semibold">History</TabsTrigger>
         </TabsList>
 
         {/* New Orchestration Tab */}
@@ -810,7 +814,11 @@ export default function OrchestrationPage() {
                     )}
 
                     {/* Execute/Schedule Button */}
-                    <Button onClick={handleExecute} disabled={isExecuting} className="w-full h-9 mt-3">
+                    <Button
+                      onClick={handleExecute}
+                      disabled={isExecuting}
+                      className="w-full h-9 mt-3 bg-gradient-to-r from-gray-500 to-slate-500 hover:from-gray-600 hover:to-slate-600 text-white font-semibold shadow-md hover:shadow-lg transition-all duration-200"
+                    >
                       {isExecuting ? (
                         <>
                           <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
@@ -1363,35 +1371,34 @@ export default function OrchestrationPage() {
             ))}
           </div>
         </TabsContent>
-        </Tabs>
+      </Tabs>
 
-        {/* Actions Configuration Dialog */}
-        <Dialog open={isActionsDialogOpen} onOpenChange={setIsActionsDialogOpen}>
-          <DialogContent className="max-w-4xl max-h-[80vh] overflow-y-auto">
-            <DialogHeader>
-              <DialogTitle>Configure Schedule Actions</DialogTitle>
-              <DialogDescription>
-                Manage actions that execute when this schedule runs
-              </DialogDescription>
-            </DialogHeader>
-            {selectedScheduleId && (
-              <ScheduleActions scheduleId={selectedScheduleId} />
-            )}
-          </DialogContent>
-        </Dialog>
+      {/* Actions Configuration Dialog */}
+      <Dialog open={isActionsDialogOpen} onOpenChange={setIsActionsDialogOpen}>
+        <DialogContent className="max-w-4xl max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Configure Schedule Actions</DialogTitle>
+            <DialogDescription>
+              Manage actions that execute when this schedule runs
+            </DialogDescription>
+          </DialogHeader>
+          {selectedScheduleId && (
+            <ScheduleActions scheduleId={selectedScheduleId} />
+          )}
+        </DialogContent>
+      </Dialog>
 
-        {/* Schedule Template Dialog */}
-        <ScheduleTemplateForm
-          open={isScheduleTemplateDialogOpen}
-          onOpenChange={(open) => {
-            setIsScheduleTemplateDialogOpen(open);
-            if (!open) {
-              // Refresh schedules when dialog closes
-              loadSchedules();
-            }
-          }}
-        />
-      </div>
+      {/* Schedule Template Dialog */}
+      <ScheduleTemplateForm
+        open={isScheduleTemplateDialogOpen}
+        onOpenChange={(open) => {
+          setIsScheduleTemplateDialogOpen(open);
+          if (!open) {
+            // Refresh schedules when dialog closes
+            loadSchedules();
+          }
+        }}
+      />
     </div>
   );
 }

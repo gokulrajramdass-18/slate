@@ -18,10 +18,20 @@ import {
   FileText,
   PlayCircle,
   UserCircle,
-  Shield
+  Shield,
+  Newspaper
 } from "lucide-react";
 
 const settingsCards = [
+  {
+    href: "/settings/daily-brief",
+    title: "Daily Brief",
+    description: "Configure daily brief feature and AI summaries",
+    icon: Newspaper,
+    color: "text-indigo-600",
+    bgColor: "bg-indigo-50 dark:bg-indigo-950",
+    badge: "Admin"
+  },
   {
     href: "/settings/actions",
     title: "Actions",

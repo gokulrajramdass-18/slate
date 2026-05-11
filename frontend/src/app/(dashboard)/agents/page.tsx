@@ -889,20 +889,20 @@ export default function AgentsSettingsPage() {
       </div>
 
       <Tabs value={activeTab} onValueChange={setActiveTab} className="animate-fade-in-up animation-delay-200">
-        <TabsList>
-          <TabsTrigger value="teams">
+        <TabsList className="h-12">
+          <TabsTrigger value="teams" className="text-sm font-semibold">
             <Users className="h-4 w-4 mr-1.5" />
             Teams
           </TabsTrigger>
-          <TabsTrigger value="standalone">
+          <TabsTrigger value="standalone" className="text-sm font-semibold">
             <Bot className="h-4 w-4 mr-1.5" />
             Standalone
           </TabsTrigger>
-          <TabsTrigger value="memory">
+          <TabsTrigger value="memory" className="text-sm font-semibold">
             <Brain className="h-4 w-4 mr-1.5" />
             Memory
           </TabsTrigger>
-          <TabsTrigger value="prompts">
+          <TabsTrigger value="prompts" className="text-sm font-semibold">
             <MessageSquare className="h-4 w-4 mr-1.5" />
             Prompts
           </TabsTrigger>

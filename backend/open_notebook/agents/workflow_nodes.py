@@ -1117,6 +1117,261 @@ class WebhookNodeExecutor(BaseNodeExecutor):
 
 
 # ============================================================================
+# API Node Executor
+# ============================================================================
+
+class APINodeExecutor(BaseNodeExecutor):
+    """
+    Execute API node - fetch data from REST API with optional snapshots.
+
+    Features:
+    - HTTP requests (GET, POST, PUT, DELETE)
+    - Authentication (bearer, API key, basic)
+    - JSONPath extraction from responses
+    - Automatic snapshot creation
+    - Context-aware comparison support
+    """
+
+    async def execute(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute HTTP API call and optionally create snapshot."""
+        import httpx
+        from jsonpath_ng import parse as jsonpath_parse
+        from datetime import datetime
+
+        print(f"[APINodeExecutor] Executing API node")
+
+        # Check if using API connection or raw config
+        api_connection_id = self.config.api_connection_id
+
+        if api_connection_id:
+            # Load API connection from database
+            print(f"[APINodeExecutor] Loading API connection: {api_connection_id}")
+            from open_notebook.database.repository import repo_query
+            import json
+
+            connection_sql = "SELECT * FROM api_connections WHERE id = :id"
+            connection_rows = await repo_query(connection_sql, {"id": api_connection_id})
+
+            if not connection_rows:
+                raise ValueError(f"API connection not found: {api_connection_id}")
+
+            conn = connection_rows[0]
+
+            # Parse JSON fields from TEXT columns
+            headers = json.loads(conn.get("headers") or "{}") if isinstance(conn.get("headers"), str) else (conn.get("headers") or {})
+            query_params = json.loads(conn.get("query_params") or "{}") if isinstance(conn.get("query_params"), str) else (conn.get("query_params") or {})
+            request_body = json.loads(conn.get("request_body")) if conn.get("request_body") and isinstance(conn.get("request_body"), str) else conn.get("request_body")
+            auth_config_encrypted = conn.get("auth_config_encrypted")
+
+            # Decrypt auth_config if encrypted
+            if auth_config_encrypted:
+                from api.routers.api_connections import decrypt_auth_config
+                auth_config = decrypt_auth_config(auth_config_encrypted)
+            else:
+                auth_config = {}
+
+            # Use connection settings
+            endpoint = conn.get("endpoint")
+            method = (conn.get("method") or "GET").upper()
+            data_path = conn.get("data_path") or "$"
+            auth_type = conn.get("auth_type") or "none"
+            timeout = 30
+
+            # Append custom path if provided
+            api_path = self.config.api_path
+            if api_path:
+                # Ensure proper URL joining
+                endpoint = endpoint.rstrip('/') + '/' + api_path.lstrip('/')
+                print(f"[APINodeExecutor] Appended path: {api_path}")
+
+            print(f"[APINodeExecutor] Using connection '{conn.get('name')}': {method} {endpoint}")
+        else:
+            # Use raw configuration (legacy/fallback)
+            endpoint = self.config.api_endpoint
+            if not endpoint:
+                raise ValueError("api_endpoint or api_connection_id is required")
+
+            method = (self.config.api_method or "GET").upper()
+            headers = dict(self.config.api_headers or {})
+            query_params = dict(self.config.api_query_params or {})
+            request_body = self.config.api_request_body
+            timeout = self.config.api_timeout or 30
+            data_path = self.config.api_response_data_path or "$"
+            auth_type = self.config.api_auth_type or "none"
+            auth_config = {"token": self.config.api_auth_token} if self.config.api_auth_token else {}
+
+            print(f"[APINodeExecutor] Using raw config: {method} {endpoint}")
+
+        # Handle authentication
+        auth = None
+        if auth_type == "bearer":
+            token = auth_config.get("token") or auth_config.get("bearer_token")
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+        elif auth_type == "api_key":
+            token = auth_config.get("token") or auth_config.get("api_key")
+            if token:
+                headers["X-API-Key"] = token
+        elif auth_type == "basic":
+            username = auth_config.get("username", "")
+            password = auth_config.get("password", "")
+            if username and password:
+                auth = (username, password)
+
+        try:
+            # Make HTTP request
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                if method == "GET":
+                    response = await client.get(endpoint, headers=headers, params=query_params, auth=auth)
+                elif method == "POST":
+                    response = await client.post(endpoint, headers=headers, params=query_params, json=request_body, auth=auth)
+                elif method == "PUT":
+                    response = await client.put(endpoint, headers=headers, params=query_params, json=request_body, auth=auth)
+                elif method == "DELETE":
+                    response = await client.delete(endpoint, headers=headers, params=query_params, auth=auth)
+                else:
+                    raise ValueError(f"Unsupported HTTP method: {method}")
+
+                response.raise_for_status()
+                response_json = response.json()
+
+            # Extract array from response using JSONPath
+            jsonpath_expr = jsonpath_parse(data_path)
+            matches = jsonpath_expr.find(response_json)
+
+            if not matches:
+                raise ValueError(f"No data found at JSONPath: {data_path}")
+
+            data = matches[0].value
+
+            # Ensure data is a list of dicts (required for snapshots)
+            if not isinstance(data, list):
+                if isinstance(data, dict):
+                    data = [data]
+                else:
+                    raise ValueError(f"Extracted data must be array or object, got {type(data)}")
+
+            # Build output
+            output = {
+                "status": "success",
+                "data": data,
+                "row_count": len(data),
+                "columns": list(data[0].keys()) if data and isinstance(data[0], dict) else [],
+                "endpoint": endpoint,
+                "query_params": query_params,
+                "status_code": response.status_code,
+                "response_time_ms": int(response.elapsed.total_seconds() * 1000)
+            }
+
+            # Create snapshot if enabled
+            if self.config.enable_snapshots:
+                from open_notebook.domain.workflow_snapshot import WorkflowSnapshot, SnapshotContext
+
+                try:
+                    # Build snapshot context with API params
+                    context = SnapshotContext.from_workflow_state(state)
+                    context.query_params.update({
+                        "endpoint": endpoint,
+                        "method": method,
+                        "query_params": query_params,
+                        "data_path": data_path
+                    })
+
+                    print(f"[APINodeExecutor] Creating snapshot with context: {context.calculate_hash()}")
+
+                    # Create snapshot
+                    snapshot = await WorkflowSnapshot.create_from_data(
+                        workflow_id=state.get("workflow_id"),
+                        node_id=state["current_node_id"],
+                        execution_id=state.get("execution_id"),
+                        context=context,
+                        data=data,
+                        snapshot_label=self.config.snapshot_label,
+                        retention_days=self.config.retention_days or 30
+                    )
+
+                    output["snapshot_id"] = snapshot.id
+                    output["snapshot_created"] = True
+                    output["snapshot_date"] = snapshot.snapshot_date.isoformat()
+
+                    print(f"[APINodeExecutor] Snapshot created: {snapshot.id}")
+
+                    # Cleanup old snapshots (keep only 2 most recent)
+                    await self._cleanup_old_snapshots(
+                        state.get("workflow_id"),
+                        state["current_node_id"],
+                        snapshot.id
+                    )
+
+                except Exception as e:
+                    print(f"[APINodeExecutor] Snapshot creation failed (non-fatal): {e}")
+                    import traceback
+                    traceback.print_exc()
+                    output["snapshot_error"] = str(e)
+
+            return {
+                **state,
+                "node_outputs": {
+                    **state.get("node_outputs", {}),
+                    state["current_node_id"]: output
+                }
+            }
+
+        except httpx.HTTPStatusError as e:
+            print(f"[APINodeExecutor] HTTP error: {e.response.status_code}")
+            return {
+                **state,
+                "node_outputs": {
+                    **state.get("node_outputs", {}),
+                    state["current_node_id"]: {
+                        "status": "error",
+                        "error": f"HTTP {e.response.status_code}: {e.response.text}",
+                        "status_code": e.response.status_code,
+                        "endpoint": endpoint
+                    }
+                }
+            }
+        except Exception as e:
+            print(f"[APINodeExecutor] Error: {e}")
+            import traceback
+            traceback.print_exc()
+            return {
+                **state,
+                "node_outputs": {
+                    **state.get("node_outputs", {}),
+                    state["current_node_id"]: {
+                        "status": "error",
+                        "error": str(e),
+                        "endpoint": endpoint
+                    }
+                }
+            }
+
+    async def _cleanup_old_snapshots(self, workflow_id, node_id, current_snapshot_id):
+        """Keep only 2 most recent snapshots for this node."""
+        from open_notebook.domain.workflow_snapshot import WorkflowSnapshot
+
+        try:
+            # Get all snapshots for this workflow+node
+            snapshots = await WorkflowSnapshot.find_all_for_node(workflow_id, node_id)
+
+            # Sort by date (newest first)
+            snapshots_sorted = sorted(snapshots, key=lambda s: s.snapshot_date, reverse=True)
+
+            # Keep current + 1 previous (total 2)
+            to_delete = [s for s in snapshots_sorted[2:] if s.id != current_snapshot_id]
+
+            for snapshot in to_delete:
+                print(f"[APINodeExecutor] Deleting old snapshot: {snapshot.id}")
+                await snapshot.delete()
+
+            if to_delete:
+                print(f"[APINodeExecutor] Cleaned up {len(to_delete)} old snapshots")
+        except Exception as e:
+            print(f"[APINodeExecutor] Snapshot cleanup failed (non-fatal): {e}")
+
+
+# ============================================================================
 # Snapshot Node Executor
 # ============================================================================
 
@@ -1806,6 +2061,7 @@ def create_node_executor(node_type: NodeType, config: NodeConfig) -> BaseNodeExe
         NodeType.TEMPLATE: TemplateNodeExecutor,
         NodeType.DELAY: DelayNodeExecutor,
         NodeType.WEBHOOK: WebhookNodeExecutor,
+        NodeType.API: APINodeExecutor,
         NodeType.SNAPSHOT: SnapshotNodeExecutor,
         NodeType.COMPARE: CompareNodeExecutor,
         NodeType.HANA_TABLE: HANATableNodeExecutor,

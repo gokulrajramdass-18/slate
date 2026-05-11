@@ -17,7 +17,7 @@ from fastapi.exceptions import RequestValidationError
 
 from api.middleware import OAuthRateLimitMiddleware, OAuthAuditMiddleware
 from api.models import ErrorResponse, HealthCheckResponse
-from api.routers import notebooks, sources, database, dashboard, chat, chat_settings, source_chat, auth, models, embedding, credentials, microsites, microsite_chat, smtp, notes, search, hana_connections, api_connections, deep_research, charts, files, tools, agents, agent_memory, agent_tools, agent_skills, mcp_servers, agent_prompts, system_prompts, user_query_prompts, standalone_agents, workflows, bookmarks, graph, mcp_oauth, workspace_guided, workspace_tasks, folders, a2a, a2a_remote, users, roles, resource_shares, entities, entity_relationships, communities, autonomous_orchestration, actions, orchestration_actions, oauth, workspace_templates, orchestration_schedules, workflow_templates, workflow_approvals, template_executions, notifications, external_notifications, api_keys, presentations, workflow_snapshots
+from api.routers import notebooks, sources, database, dashboard, chat, chat_settings, source_chat, auth, models, embedding, credentials, microsites, microsite_chat, smtp, notes, search, hana_connections, api_connections, deep_research, charts, files, tools, agents, agent_memory, agent_tools, agent_skills, mcp_servers, agent_prompts, system_prompts, user_query_prompts, standalone_agents, workflows, bookmarks, graph, mcp_oauth, workspace_guided, workspace_tasks, folders, a2a, a2a_remote, users, roles, resource_shares, entities, entity_relationships, communities, autonomous_orchestration, actions, orchestration_actions, oauth, workspace_templates, orchestration_schedules, workflow_templates, workflow_approvals, template_executions, notifications, external_notifications, api_keys, presentations, workflow_snapshots, documents, daily_brief
 from api.services.database_service import get_database_service
 from open_notebook.database.interface import ConnectionConfig, DatabaseError
 from open_notebook.database.repository import init_database
@@ -466,8 +466,10 @@ app.include_router(api_connections.router)
 app.include_router(mcp_servers.router)  # MCP server connections
 app.include_router(mcp_oauth.router)  # MCP OAuth endpoints
 app.include_router(notes.router)
+app.include_router(documents.router)  # Unified documents API (notes + presentations + files)
 app.include_router(database.router)
 app.include_router(dashboard.router)  # Analytics dashboard
+app.include_router(daily_brief.router)  # Daily brief with AI summaries
 app.include_router(chat.router)
 app.include_router(chat_settings.router)
 app.include_router(deep_research.router)  # Deep research mode

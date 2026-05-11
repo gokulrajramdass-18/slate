@@ -20,7 +20,7 @@ import {
   Wrench,
   GitBranch,
   FileStack,
-  CheckCircle,
+  Inbox,
   Home,
 } from "lucide-react";
 import { useAuthStore } from "@/lib/stores/auth-store";
@@ -33,16 +33,15 @@ interface AppSidebarProps {
 
 const navItems = [
   { href: "/dashboard", label: "Home", icon: Home, resource: "workspace", action: "read" },
-  { href: "/approvals", label: "Approvals", icon: CheckCircle, resource: "workflow", action: "read" },
+  { href: "/approvals", label: "Inbox", icon: Inbox, resource: "workflow", action: "read" },
+  { href: "/workflows", label: "Workflows", icon: Workflow, resource: "workflow", action: "read" },
   { href: "/workspaces", label: "Workspaces", icon: BookOpen, resource: "workspace", action: "read" },
   { href: "/sources", label: "Sources", icon: FileText, resource: "source", action: "read" },
   { href: "/bookmarks", label: "Bookmarks", icon: Star, resource: "bookmark", action: "read" },
-  { href: "/microsites", label: "Microsites", icon: Globe, resource: "microsite", action: "read" },
-  { href: "/workflows", label: "Workflows", icon: Workflow, resource: "workflow", action: "read" },
-  { href: "/orchestration", label: "Orchestration", icon: Wrench, resource: "workspace", action: "read" },
-  { href: "/search", label: "Search", icon: Search, resource: "search", action: "execute" },
+  { href: "/search", label: "Search", icon: Search, resource: "query_prompt", action: "execute" },
   { href: "/graph", label: "Graph", icon: Network, resource: "workspace", action: "read" },
   { href: "/agents", label: "Agents", icon: Users, resource: "agent", action: "read" },
+  { href: "/orchestration", label: "Orchestration", icon: Wrench, resource: "workflow", action: "execute" },
 ];
 
 const settingsItems = [
@@ -53,17 +52,21 @@ export function AppSidebar({ open, onClose }: AppSidebarProps) {
   const pathname = usePathname();
   const user = useAuthStore((state) => state.user);
   const isSuperadmin = useIsSuperadmin();
+  const hasPermission = useAuthStore((state) => state.hasPermission);
 
   const canAccessItem = (item: any): boolean => {
+    // Always show items marked as alwaysShow
     if (item.alwaysShow) return true;
-    if (item.adminOnly) return isSuperadmin;
+
+    // Superadmins can access everything
+    if (isSuperadmin) return true;
+
+    // Check permission using the auth store
     if (item.resource && item.action) {
-      if (isSuperadmin) return true;
-      // Check permission (for now, always show - backend will enforce)
-      // TODO: Implement client-side permission check
-      return true;
+      return hasPermission(item.resource, item.action);
     }
-    return true;
+
+    return false;
   };
 
   const visibleNavItems = navItems.filter(canAccessItem);

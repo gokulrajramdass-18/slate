@@ -21,6 +21,7 @@ import type { SourceCreate } from "@/lib/types";
 import { MicrositeCreateDialog } from "@/components/microsites/microsite-create-dialog";
 import { NoteEditor } from "@/components/notes/note-editor";
 import { NoteCard } from "@/components/notes/note-card";
+import { PresentationCard } from "@/components/notes/presentation-card";
 import { FileUploadForm } from "@/components/sources/file-upload-form";
 import { WorkspaceTasks } from "@/components/workspaces/workspace-tasks";
 import { WorkspaceTagManager } from "@/components/workspaces/workspace-tag-manager";
@@ -203,10 +204,25 @@ export default function NotebookDetailPage() {
 
   const fetchNotes = async () => {
     try {
-      const { data } = await apiClient.get(`/notes?notebook_id=${notebookId}`);
-      setNotes(data);
+      // Fetch from new documents API that includes both notes and presentations
+      const { data } = await apiClient.get(`/documents/workspace/${notebookId}`);
+
+      // The API returns { documents: [], total: number, has_more: boolean }
+      // Filter to separate notes and presentations
+      const allDocuments = data.documents || [];
+
+      // For now, keep notes in the notes state for existing note functionality
+      // Presentations will be shown alongside notes
+      setNotes(allDocuments);
     } catch (error) {
-      console.error("Failed to fetch notes:", error);
+      console.error("Failed to fetch documents:", error);
+      // Fallback to old API if new one fails
+      try {
+        const { data } = await apiClient.get(`/notes?notebook_id=${notebookId}`);
+        setNotes(data);
+      } catch (fallbackError) {
+        console.error("Fallback to notes API also failed:", fallbackError);
+      }
     }
   };
 
@@ -332,6 +348,16 @@ export default function NotebookDetailPage() {
       fetchNotes();
     } catch (error) {
       toast.error("Failed to delete note");
+    }
+  };
+
+  const handleDeleteDocument = async (documentId: string) => {
+    try {
+      await apiClient.delete(`/documents/${documentId}`);
+      toast.success("Document deleted");
+      fetchNotes(); // This will refresh all documents
+    } catch (error) {
+      toast.error("Failed to delete document");
     }
   };
 
@@ -668,13 +694,13 @@ export default function NotebookDetailPage() {
 
         <Card className="shadow-sm hover:shadow-md transition-shadow">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-1.5 pt-3">
-            <CardTitle className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Notes</CardTitle>
+            <CardTitle className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Documents</CardTitle>
             <FileText className="h-3.5 w-3.5 text-muted-foreground/70" />
           </CardHeader>
           <CardContent className="pb-3">
             <div className="text-2xl font-bold">{notebook.note_count || 0}</div>
             <p className="text-[11px] text-muted-foreground mt-0.5">
-              Notes and insights
+              Documents and presentations
             </p>
           </CardContent>
         </Card>
@@ -1257,7 +1283,7 @@ export default function NotebookDetailPage() {
 
       <Card className="shadow-sm">
         <CardHeader className="flex flex-row items-center justify-between pb-3 border-b">
-          <CardTitle className="text-base font-semibold">Notes</CardTitle>
+          <CardTitle className="text-base font-semibold">Documents</CardTitle>
           <Button
             size="sm"
             onClick={() => {
@@ -1274,7 +1300,7 @@ export default function NotebookDetailPage() {
           {notes.length === 0 ? (
             <div className="text-center py-6 px-4">
               <p className="text-sm text-muted-foreground">
-                No notes yet. Click "Add Note" to create your first note with rich text formatting!
+                No documents yet. Click "Add Note" to create your first note with rich text formatting!
               </p>
             </div>
           ) : (
@@ -1363,16 +1389,23 @@ export default function NotebookDetailPage() {
                               const bIsFinal = b.title.includes("🎯 FINAL DELIVERABLE");
                               if (aIsFinal && !bIsFinal) return -1;
                               if (!aIsFinal && bIsFinal) return 1;
-                              return new Date(b.created).getTime() - new Date(a.created).getTime();
+                              return new Date(b.created || b.created_at).getTime() - new Date(a.created || a.created_at).getTime();
                             })
-                            .map((note) => (
-                              <div key={note.id} style={{ paddingLeft: `${(level + 1) * 16}px` }}>
-                                <NoteCard
-                                  note={note}
-                                  onEdit={handleEditNote}
-                                  onDelete={handleDeleteNote}
-                                  onNoteClick={handleNoteClick}
-                                />
+                            .map((doc) => (
+                              <div key={doc.id} style={{ paddingLeft: `${(level + 1) * 16}px` }}>
+                                {doc.document_type === 'presentation' ? (
+                                  <PresentationCard
+                                    document={doc}
+                                    onDelete={handleDeleteDocument}
+                                  />
+                                ) : (
+                                  <NoteCard
+                                    note={doc}
+                                    onEdit={handleEditNote}
+                                    onDelete={handleDeleteNote}
+                                    onNoteClick={handleNoteClick}
+                                  />
+                                )}
                               </div>
                             ))}
                         </div>
@@ -1400,16 +1433,24 @@ export default function NotebookDetailPage() {
                           const bIsFinal = b.title.includes("🎯 FINAL DELIVERABLE");
                           if (aIsFinal && !bIsFinal) return -1;
                           if (!aIsFinal && bIsFinal) return 1;
-                          return new Date(b.created).getTime() - new Date(a.created).getTime();
+                          return new Date(b.created || b.created_at).getTime() - new Date(a.created || a.created_at).getTime();
                         })
-                        .map((note) => (
-                          <NoteCard
-                            key={note.id}
-                            note={note}
-                            onEdit={handleEditNote}
-                            onDelete={handleDeleteNote}
-                            onNoteClick={handleNoteClick}
-                          />
+                        .map((doc) => (
+                          doc.document_type === 'presentation' ? (
+                            <PresentationCard
+                              key={doc.id}
+                              document={doc}
+                              onDelete={handleDeleteDocument}
+                            />
+                          ) : (
+                            <NoteCard
+                              key={doc.id}
+                              note={doc}
+                              onEdit={handleEditNote}
+                              onDelete={handleDeleteNote}
+                              onNoteClick={handleNoteClick}
+                            />
+                          )
                         ))}
                     </div>
                   );

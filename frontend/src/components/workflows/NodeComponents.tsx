@@ -892,6 +892,72 @@ export function HanaTableNode({ data, selected }: any) {
 }
 
 // ============================================================================
+// API Node
+// ============================================================================
+
+export function APINode({ data, selected }: any) {
+  const connectionId = data.config.api_connection_id;
+  const endpoint = data.config.api_endpoint; // Legacy/fallback
+  const apiPath = data.config.api_path;
+  const enableSnapshots = data.config.enable_snapshots;
+
+  return (
+    <>
+      <Handle type="target" position={Position.Left} className="!bg-violet-500" style={handleStyle} />
+
+      <Card className={cn(
+        "min-w-[220px] transition-all duration-200",
+        "bg-gradient-to-br from-violet-50 to-purple-50 dark:from-violet-950 dark:to-purple-950",
+        "border",
+        selected ? "ring-2 ring-violet-500/50 border-violet-500 shadow-lg" : "border-violet-200 dark:border-violet-800 hover:border-violet-400 shadow"
+      )}>
+        <CardHeader className="pb-2 pt-2 px-3">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 min-w-0">
+              <div className="p-1.5 rounded bg-violet-500 text-white shadow-sm flex-shrink-0">
+                <Globe className="h-3.5 w-3.5" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <CardTitle className="text-sm font-semibold truncate">{data.label}</CardTitle>
+                <p className="text-[10px] text-muted-foreground truncate">REST API Endpoint</p>
+              </div>
+            </div>
+            {getStatusBadge(data.status)}
+          </div>
+        </CardHeader>
+
+        <CardContent className="pt-0 pb-2 px-3 space-y-1">
+          {(connectionId || endpoint) ? (
+            <>
+              <div className="text-[10px] bg-white/50 dark:bg-black/20 p-1.5 rounded">
+                <div className="font-mono font-semibold truncate">
+                  {connectionId ? (
+                    apiPath ? `...${apiPath}` : 'Connection configured'
+                  ) : endpoint}
+                </div>
+              </div>
+              {enableSnapshots && (
+                <div className="text-[10px] text-muted-foreground flex items-center gap-1">
+                  <CheckCircle className="h-2.5 w-2.5 text-green-500" />
+                  Snapshots enabled
+                </div>
+              )}
+            </>
+          ) : (
+            <div className="text-[10px] text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/30 p-1.5 rounded flex items-center gap-1">
+              <XCircle className="h-3 w-3" />
+              Endpoint not configured
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Handle type="source" position={Position.Right} className="!bg-violet-500" style={handleStyle} />
+    </>
+  );
+}
+
+// ============================================================================
 // Snapshot Node
 // ============================================================================
 
@@ -1042,6 +1108,7 @@ export const nodeTypes = {
   template: TemplateNode,
   delay: DelayNode,
   webhook: WebhookNode,
+  api: APINode,
   hana_table: HanaTableNode,
   snapshot: SnapshotNode,
   compare: CompareNode,

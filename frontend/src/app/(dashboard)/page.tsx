@@ -1,6 +1,7 @@
 "use client";
 
 import { useDashboardStats } from "@/lib/hooks/use-dashboard-stats";
+import { DailyBriefCard } from "@/components/daily-brief/DailyBriefCard";
 import { HeroStatCard } from "@/components/dashboard/HeroStatCard";
 import { SectionCard } from "@/components/dashboard/SectionCard";
 import { MiniChart } from "@/components/dashboard/MiniChart";
@@ -41,9 +42,22 @@ import {
 export default function DashboardPage() {
   const { data: stats, isLoading, error, isConnectedLive } = useDashboardStats();
 
+  console.log("🏠 Dashboard Page Rendering");
+
+  // Daily Brief - always show it first, independent of dashboard stats
+  const dailyBriefSection = (
+    <div className="animate-fade-in-up" style={{ animationDelay: "0ms" }}>
+      <div className="mb-6 p-4 bg-blue-100 border-2 border-blue-500 rounded">
+        <p className="text-lg font-bold">TEST: Daily Brief Should Appear Here</p>
+      </div>
+      <DailyBriefCard />
+    </div>
+  );
+
   if (isLoading) {
     return (
       <div className="space-y-8 p-6 md:p-8">
+        {dailyBriefSection}
         <div className="flex items-center justify-between">
           <Skeleton className="h-10 w-48" />
           <Skeleton className="h-6 w-24" />
@@ -64,12 +78,15 @@ export default function DashboardPage() {
 
   if (error || !stats) {
     return (
-      <div className="flex items-center justify-center h-96 p-6 md:p-8">
-        <div className="text-center">
-          <p className="text-lg font-semibold text-red-600">Failed to load dashboard</p>
-          <p className="text-sm text-muted-foreground mt-2">
-            {error instanceof Error ? error.message : "Unknown error"}
-          </p>
+      <div className="space-y-8 p-6 md:p-8">
+        {dailyBriefSection}
+        <div className="flex items-center justify-center h-96">
+          <div className="text-center">
+            <p className="text-lg font-semibold text-red-600">Failed to load dashboard</p>
+            <p className="text-sm text-muted-foreground mt-2">
+              {error instanceof Error ? error.message : "Unknown error"}
+            </p>
+          </div>
         </div>
       </div>
     );
@@ -115,6 +132,9 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-8 pb-12 p-6 md:p-8">
+      {/* Daily Brief */}
+      {dailyBriefSection}
+
       {/* Header with Live Indicator */}
       <div className="animate-fade-in-up">
         <div className="flex items-center justify-between">

@@ -37,6 +37,7 @@ class NodeType(str, Enum):
     SNAPSHOT = "snapshot"       # Store data snapshot
     COMPARE = "compare"         # Compare two snapshots
     HANA_TABLE = "hana_table"   # HANA table data source
+    API = "api"                 # REST API endpoint with snapshots
 
 
 class ExecutionStatus(str, Enum):
@@ -207,6 +208,19 @@ class NodeConfig(BaseModel):
     hana_limit: Optional[int] = 100  # Row limit
     hana_columns: Optional[List[str]] = None  # Specific columns to select
     conditions: Optional[List[Dict[str, Any]]] = None  # Filter conditions: [{column: str, operator: str, value: str}]
+
+    # API node config
+    api_endpoint: Optional[str] = None  # Full URL
+    api_method: Optional[Literal["GET", "POST", "PUT", "DELETE"]] = "GET"
+    api_headers: Optional[Dict[str, str]] = None  # HTTP headers
+    api_query_params: Optional[Dict[str, Any]] = None  # URL query parameters
+    api_request_body: Optional[Dict[str, Any]] = None  # Request body (JSON)
+    api_auth_type: Optional[Literal["none", "bearer", "api_key", "basic"]] = "none"
+    api_auth_token: Optional[str] = None  # Auth token/key
+    api_response_data_path: Optional[str] = None  # JSONPath to extract array (e.g., "$.data")
+    api_timeout: Optional[int] = 30  # Request timeout in seconds
+    api_connection_id: Optional[str] = None  # Reference to api_connections table (optional)
+    api_path: Optional[str] = None  # Path to append to connection endpoint (e.g., "/users", "/todos")
 
 
 class WorkflowNode(BaseModel):

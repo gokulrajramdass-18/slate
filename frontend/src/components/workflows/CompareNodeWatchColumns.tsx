@@ -51,12 +51,12 @@ export function CompareNodeWatchColumns({ selectedNode, handleUpdate }: CompareN
         return;
       }
 
-      // Check if source is HANA node with snapshots enabled
-      if (sourceNode.data.type === 'hana_table' && (sourceNode.data.config as any)?.enable_snapshots) {
-        console.log('[CompareNodeWatchColumns] Found HANA source:', sourceNode.id);
+      // Check if source has snapshots enabled (any node type)
+      if ((sourceNode.data.config as any)?.enable_snapshots) {
+        console.log('[CompareNodeWatchColumns] Found source with snapshots:', sourceNode.id, sourceNode.data.type);
         setSourceHanaNode(sourceNode);
       } else {
-        console.log('[CompareNodeWatchColumns] Source is not HANA with snapshots:', sourceNode.data.type);
+        console.log('[CompareNodeWatchColumns] Source does not have snapshots enabled:', sourceNode.data.type);
         setSourceHanaNode(null);
       }
     };
@@ -64,30 +64,42 @@ export function CompareNodeWatchColumns({ selectedNode, handleUpdate }: CompareN
     detectSourceNode();
   }, [selectedNode.id]);
 
-  // Fetch table columns from HANA connection
+  // Fetch table columns from source node
   const { data: columns, isLoading, error } = useQuery({
-    queryKey: ['hana-table-columns', sourceHanaNode?.data.config.hana_connection_id, sourceHanaNode?.data.config.hana_table_name],
+    queryKey: ['source-node-columns', sourceHanaNode?.id, sourceHanaNode?.data.type, sourceHanaNode?.data.config.hana_connection_id, sourceHanaNode?.data.config.hana_table_name],
     queryFn: async () => {
-      const connectionId = sourceHanaNode.data.config.hana_connection_id;
-      const tableName = sourceHanaNode.data.config.hana_table_name;
+      // For HANA nodes, fetch columns from connection
+      if (sourceHanaNode.data.type === 'hana_table') {
+        const connectionId = sourceHanaNode.data.config.hana_connection_id;
+        const tableName = sourceHanaNode.data.config.hana_table_name;
 
-      if (!connectionId || !tableName) {
-        throw new Error('Connection ID or table name not configured');
+        if (!connectionId || !tableName) {
+          throw new Error('Connection ID or table name not configured');
+        }
+
+        // Parse schema and table
+        const parts = tableName.split('.');
+        const schema = parts.length > 1 ? parts[0] : undefined;
+        const table = parts.length > 1 ? parts[1] : parts[0];
+
+        const { data } = await apiClient.get(
+          `/hana-connections/${connectionId}/tables/${table}/columns`,
+          { params: schema ? { schema } : {} }
+        );
+
+        return data as string[];
+      } else if (sourceHanaNode.data.type === 'api') {
+        // For API nodes, return empty array (columns will be detected at runtime)
+        // User can manually add columns
+        return [] as string[];
       }
 
-      // Parse schema and table
-      const parts = tableName.split('.');
-      const schema = parts.length > 1 ? parts[0] : undefined;
-      const table = parts.length > 1 ? parts[1] : parts[0];
-
-      const { data } = await apiClient.get(
-        `/hana-connections/${connectionId}/tables/${table}/columns`,
-        { params: schema ? { schema } : {} }
-      );
-
-      return data as string[];
+      return [] as string[];
     },
-    enabled: !!sourceHanaNode?.data.config.hana_connection_id && !!sourceHanaNode?.data.config.hana_table_name,
+    enabled: !!sourceHanaNode && (
+      (sourceHanaNode.data.type === 'hana_table' && !!sourceHanaNode.data.config.hana_connection_id && !!sourceHanaNode.data.config.hana_table_name) ||
+      (sourceHanaNode.data.type === 'api')
+    ),
   });
 
   // Update parent when watchColumns changes
@@ -134,7 +146,7 @@ export function CompareNodeWatchColumns({ selectedNode, handleUpdate }: CompareN
           <div className="flex items-start gap-2 text-sm text-muted-foreground">
             <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
             <p>
-              Connect this node to a HANA Table node with "Enable Snapshots" checked
+              Connect this node to a HANA Table or API node with "Enable Snapshots" checked
               to configure which columns to watch for changes.
             </p>
           </div>
@@ -184,7 +196,13 @@ export function CompareNodeWatchColumns({ selectedNode, handleUpdate }: CompareN
         <CardContent>
           <div className="flex items-start gap-2 text-sm text-muted-foreground">
             <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
-            <p>No columns found in the selected table.</p>
+            {sourceHanaNode.data.type === 'api' ? (
+              <p>
+                For API nodes, columns are detected at runtime. You can manually add watch columns after the first execution.
+              </p>
+            ) : (
+              <p>No columns found in the selected table.</p>
+            )}
           </div>
         </CardContent>
       </Card>
@@ -211,7 +229,16 @@ export function CompareNodeWatchColumns({ selectedNode, handleUpdate }: CompareN
         <div className="text-xs bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 p-2 rounded">
           <strong>Source:</strong> {sourceHanaNode.data.label || sourceHanaNode.id}
           <br />
-          <strong>Table:</strong> {sourceHanaNode.data.config.hana_table_name}
+          {sourceHanaNode.data.type === 'hana_table' && (
+            <>
+              <strong>Table:</strong> {sourceHanaNode.data.config.hana_table_name}
+            </>
+          )}
+          {sourceHanaNode.data.type === 'api' && (
+            <>
+              <strong>Endpoint:</strong> {sourceHanaNode.data.config.api_endpoint}
+            </>
+          )}
         </div>
 
         <div className="space-y-2 max-h-96 overflow-y-auto">

@@ -186,3 +186,66 @@ async def set_chat_preferences(
             "boolean",
             "Include context from notebook sources by default"
         )
+
+
+async def get_daily_brief_config() -> dict:
+    """
+    Get daily brief configuration from database.
+
+    Returns:
+        Dictionary with daily brief settings
+    """
+    return {
+        "enabled": await get_setting("daily_brief_enabled", True),
+        "ai_enabled": await get_setting("daily_brief_ai_enabled", True),
+        "sources": await get_setting(
+            "daily_brief_sources",
+            ["executions", "approvals", "schedules", "notifications", "orchestrations"]
+        ),
+        "max_items": await get_setting("daily_brief_max_items", 5),
+    }
+
+
+async def set_daily_brief_config(
+    enabled: Optional[bool] = None,
+    ai_enabled: Optional[bool] = None,
+    sources: Optional[list] = None,
+    max_items: Optional[int] = None
+) -> None:
+    """
+    Set daily brief configuration in database.
+
+    Args:
+        enabled: Enable daily brief feature
+        ai_enabled: Enable AI-powered summaries
+        sources: List of enabled data sources
+        max_items: Maximum items to show per section
+    """
+    if enabled is not None:
+        await set_setting(
+            "daily_brief_enabled",
+            enabled,
+            "boolean",
+            "Enable daily brief feature"
+        )
+    if ai_enabled is not None:
+        await set_setting(
+            "daily_brief_ai_enabled",
+            ai_enabled,
+            "boolean",
+            "Enable AI-powered summaries in daily brief"
+        )
+    if sources is not None:
+        await set_setting(
+            "daily_brief_sources",
+            sources,
+            "json",
+            "Enabled data sources for daily brief generation"
+        )
+    if max_items is not None:
+        await set_setting(
+            "daily_brief_max_items",
+            max_items,
+            "integer",
+            "Maximum items to show per section in daily brief"
+        )

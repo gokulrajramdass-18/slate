@@ -1,6 +1,7 @@
 "use client";
 
 import { useDashboardStats } from "@/lib/hooks/use-dashboard-stats";
+import { DailyBriefCard } from "@/components/daily-brief/DailyBriefCard";
 import { HeroStatCard } from "@/components/dashboard/HeroStatCard";
 import { SectionCard } from "@/components/dashboard/SectionCard";
 import { MiniChart } from "@/components/dashboard/MiniChart";
@@ -115,6 +116,11 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-8 pb-12 p-6 md:p-8">
+      {/* Daily Brief */}
+      <div className="animate-fade-in-up" style={{ animationDelay: "0ms" }}>
+        <DailyBriefCard />
+      </div>
+
       {/* Header with Live Indicator */}
       <div className="animate-fade-in-up">
         <div className="flex items-center justify-between">
