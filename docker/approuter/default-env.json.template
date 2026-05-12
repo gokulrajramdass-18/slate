@@ -1,0 +1,21 @@
+{
+  "VCAP_SERVICES": {
+    "xsuaa": [
+      {
+        "label": "xsuaa",
+        "plan": "application",
+        "name": "your-xsuaa-service-name",
+        "tags": ["xsuaa"],
+        "credentials": {
+          "clientid": "your-client-id",
+          "clientsecret": "your-client-secret",
+          "url": "https://your-subdomain.authentication.region.hana.ondemand.com",
+          "uaadomain": "authentication.region.hana.ondemand.com",
+          "xsappname": "your-xsappname",
+          "identityzone": "your-zone",
+          "tenantmode": "dedicated"
+        }
+      }
+    ]
+  }
+}
