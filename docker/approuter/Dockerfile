@@ -12,10 +12,10 @@ RUN npm install --production
 COPY xs-app.json default-env.json ./
 
 # Expose port
-EXPOSE 5000
+EXPOSE 5001
 
 # Set environment
-ENV PORT=5000
+ENV PORT=5001
 
 # Start AppRouter
 CMD ["node", "node_modules/@sap/approuter/approuter.js"]

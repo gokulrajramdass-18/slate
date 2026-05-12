@@ -20,7 +20,7 @@ services:
       - MOCK_XSUAA_SECRET=${MOCK_XSUAA_SECRET:-local-dev-secret-key-change-me}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
-      - LOG_LEVEL=DEBUG
+      - LOG_LEVEL=INFO
     volumes:
       - ../../backend/data:/app/data
     networks:
@@ -49,18 +49,17 @@ services:
     depends_on:
       - backend
 
-  # AppRouter
+  # AppRouter - Changed port to 5001 (5000 is used by MLflow)
   approuter:
     build:
       context: ../approuter
       dockerfile: Dockerfile
     container_name: slate-approuter
     ports:
-      - "5000:5000"
+      - "5001:5001"
     environment:
-      - PORT=5000
+      - PORT=5001
       - PLATFORM_COOKIE_NAME=SLATE_SESSION_ID
-      - DEBUG=*
     volumes:
       - ../approuter/xs-app.json:/app/xs-app.json:ro
       - ../approuter/default-env.json:/app/default-env.json:ro
@@ -74,7 +73,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:5000/"]
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:5001/"]
       interval: 10s
       timeout: 5s
       retries: 3

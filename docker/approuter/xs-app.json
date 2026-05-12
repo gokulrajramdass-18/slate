@@ -3,11 +3,35 @@
   "sessionTimeout": 480,
   "routes": [
     {
+      "source": "^/login/callback(.*)",
+      "target": "/xsuaa-check.html",
+      "destination": "frontend",
+      "authenticationType": "xsuaa"
+    },
+    {
       "source": "^/api/(.*)$",
       "target": "/api/$1",
       "destination": "backend",
       "authenticationType": "xsuaa",
       "csrfProtection": false
+    },
+    {
+      "source": "^/xsuaa-check\\.html$",
+      "target": "/xsuaa-check.html",
+      "destination": "frontend",
+      "authenticationType": "none"
+    },
+    {
+      "source": "^/$",
+      "target": "/",
+      "destination": "frontend",
+      "authenticationType": "xsuaa"
+    },
+    {
+      "source": "^/_next/(.*)$",
+      "target": "/_next/$1",
+      "destination": "frontend",
+      "authenticationType": "none"
     },
     {
       "source": "^/(.*)$",

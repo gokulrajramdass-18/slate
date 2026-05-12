@@ -34,13 +34,82 @@ export function AuthGuard({
 }: AuthGuardProps) {
   const router = useRouter();
   const pathname = usePathname();
-  const { isAuthenticated, token, loadPermissions } = useAuthStore();
+  const { isAuthenticated, token, loadPermissions, checkXsuaaSession } = useAuthStore();
   const [isHydrated, setIsHydrated] = useState(false);
+  const [isCheckingXsuaa, setIsCheckingXsuaa] = useState(false);
+  const [xsuaaChecked, setXsuaaChecked] = useState(false);
+
+  // Check if XSUAA is enabled
+  const isAppRouter = typeof window !== "undefined" && window.location.port === "5001";
+  const isXsuaaEnabled = typeof window !== "undefined" && process.env.NEXT_PUBLIC_XSUAA_ENABLED === "true";
 
   // Wait for Zustand to hydrate from localStorage
   useEffect(() => {
     setIsHydrated(true);
   }, []);
+
+  // Check for XSUAA session on mount if XSUAA is enabled
+  useEffect(() => {
+    if (!isHydrated) return;
+    if (!(isAppRouter || isXsuaaEnabled)) return;
+    if (isCheckingXsuaa || xsuaaChecked) return;
+
+    console.log("[AuthGuard] XSUAA enabled - checking session...");
+    setIsCheckingXsuaa(true);
+
+    checkXsuaaSession()
+      .then((hasSession) => {
+        console.log("[AuthGuard] XSUAA session check result:", hasSession);
+        setXsuaaChecked(true);
+      })
+      .catch((error) => {
+        console.error("[AuthGuard] XSUAA session check error:", error);
+        setXsuaaChecked(true);
+      })
+      .finally(() => {
+        setIsCheckingXsuaa(false);
+      });
+  }, [isHydrated, isAppRouter, isXsuaaEnabled, checkXsuaaSession, isCheckingXsuaa, xsuaaChecked]);
+
+  // Show loading while checking XSUAA
+  if ((isAppRouter || isXsuaaEnabled) && !xsuaaChecked) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto"></div>
+          <p className="mt-4 text-muted-foreground">Loading...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // If XSUAA is enabled and session is checked, render children
+  if ((isAppRouter || isXsuaaEnabled) && xsuaaChecked) {
+    console.log("[AuthGuard] XSUAA session checked - rendering app");
+    return <>{children}</>;
+  }
+
+  // Check for XSUAA session if accessed through AppRouter and not authenticated
+  useEffect(() => {
+    if (!isHydrated) return;
+
+    const isAppRouter = typeof window !== "undefined" && window.location.port === "5001";
+
+    if (isAppRouter && !isAuthenticated && requireAuth && !isCheckingXsuaa) {
+      setIsCheckingXsuaa(true);
+      checkXsuaaSession()
+        .then((hasSession) => {
+          console.log("[AuthGuard] XSUAA session check:", hasSession);
+          if (!hasSession) {
+            // No XSUAA session, will redirect to login
+            console.log("[AuthGuard] No XSUAA session, redirecting to login");
+          }
+        })
+        .finally(() => {
+          setIsCheckingXsuaa(false);
+        });
+    }
+  }, [isHydrated, isAuthenticated, requireAuth, checkXsuaaSession, isCheckingXsuaa]);
 
   // Load permissions when authenticated
   useEffect(() => {

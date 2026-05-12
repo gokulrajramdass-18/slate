@@ -37,6 +37,7 @@ interface AuthState {
   refreshAccessToken: () => Promise<void>;
   setUser: (user: User) => void;
   loadPermissions: () => Promise<void>;
+  checkXsuaaSession: () => Promise<boolean>;
   hasRole: (roleName: string) => boolean;
   hasPermission: (resource: string, action: string) => boolean;
 }
@@ -175,6 +176,55 @@ export const useAuthStore = create<AuthState>()(
         } catch (error) {
           console.error("Error loading permissions:", error);
           set({ permissions: [] });
+        }
+      },
+
+      checkXsuaaSession: async () => {
+        try {
+          console.log("[AUTH] Checking XSUAA session...");
+
+          // Check if user is authenticated via XSUAA session
+          // When accessing through AppRouter (localhost:5001), it forwards JWT to backend
+          // Make request to /api/auth/me - AppRouter will add Authorization header
+          const response = await fetch("/api/auth/me", {
+            method: "GET",
+            credentials: "include", // Include cookies for XSUAA session
+          });
+
+          console.log("[AUTH] Response status:", response.status);
+          console.log("[AUTH] Response OK:", response.ok);
+
+          if (!response.ok) {
+            console.log("[AUTH] No XSUAA session - not authenticated");
+            return false;
+          }
+
+          // Check if response is JSON (authenticated) or HTML (redirect to XSUAA)
+          const contentType = response.headers.get("content-type");
+          console.log("[AUTH] Content-Type:", contentType);
+
+          if (!contentType || !contentType.includes("application/json")) {
+            // Not JSON - likely HTML redirect page from AppRouter
+            console.log("[AUTH] Response is not JSON - no XSUAA session");
+            return false;
+          }
+
+          // Parse JSON response
+          const userData = await response.json();
+          console.log("[AUTH] User data received:", userData.username);
+
+          set({
+            user: userData,
+            isAuthenticated: true,
+            token: "xsuaa", // Mark as XSUAA authenticated (no token stored client-side)
+            refreshToken: null,
+          });
+
+          console.log("[AUTH] XSUAA session validated");
+          return true;
+        } catch (error) {
+          console.error("[AUTH] XSUAA session check error:", error);
+          return false;
         }
       },
 

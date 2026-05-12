@@ -45,3 +45,7 @@ Thumbs.db
 *.tmp
 *.bak
 *.backup
+
+# XSUAA credentials
+**/default-env.json
+default-env.json

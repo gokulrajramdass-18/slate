@@ -1,3 +1,4 @@
+-- Tables
 CREATE TABLE _migrations (
     id TEXT PRIMARY KEY,
     version INTEGER UNIQUE NOT NULL,
@@ -1435,10 +1436,6 @@ CREATE VIRTUAL TABLE sources_fts USING fts5(
     content='sources',
     content_rowid='rowid'
 );
-CREATE TABLE 'sources_fts_config'(k PRIMARY KEY, v) WITHOUT ROWID;
-CREATE TABLE 'sources_fts_data'(id INTEGER PRIMARY KEY, block BLOB);
-CREATE TABLE 'sources_fts_docsize'(id INTEGER PRIMARY KEY, sz BLOB);
-CREATE TABLE 'sources_fts_idx'(segid, term, pgno, PRIMARY KEY(segid, term)) WITHOUT ROWID;
 CREATE TABLE standalone_agent_executions (
     id TEXT PRIMARY KEY,
     agent_id TEXT NOT NULL,
@@ -1871,6 +1868,8 @@ CREATE TABLE "workspace_templates" (
 
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
+
+-- Indexes
 CREATE INDEX idx_a2a_agents_card_url ON a2a_agent_registry(card_url);
 CREATE INDEX idx_a2a_agents_enabled ON a2a_agent_registry(enabled);
 CREATE INDEX idx_a2a_agents_last_synced ON a2a_agent_registry(last_synced);
@@ -2228,3 +2227,53 @@ CREATE INDEX idx_workspace_templates_public ON workspace_templates(is_public);
 CREATE INDEX idx_workspace_templates_source_workspace ON workspace_templates(source_workspace_id);
 CREATE INDEX idx_workspace_templates_times_used ON workspace_templates(times_used DESC);
 CREATE INDEX idx_workspace_templates_user_id ON workspace_templates(user_id);
+
+-- Other objects
+CREATE VIEW snapshot_storage_stats AS
+SELECT
+    storage_type,
+    COUNT(*) as snapshot_count,
+    SUM(total_size_bytes) as total_bytes,
+    ROUND(SUM(total_size_bytes) / 1024.0 / 1024.0 / 1024.0, 2) as total_gb,
+    AVG(total_size_bytes) as avg_bytes,
+    MIN(total_size_bytes) as min_bytes,
+    MAX(total_size_bytes) as max_bytes
+FROM workflow_snapshots
+GROUP BY storage_type;
+CREATE TRIGGER sources_fts_delete AFTER DELETE ON sources BEGIN
+    DELETE FROM sources_fts WHERE id = old.id;
+END;
+CREATE TRIGGER sources_fts_insert AFTER INSERT ON sources BEGIN
+    INSERT INTO sources_fts(id, title, full_text)
+    VALUES (new.id, new.title, new.full_text);
+END;
+CREATE TRIGGER sources_fts_update AFTER UPDATE ON sources BEGIN
+    UPDATE sources_fts SET title = new.title, full_text = new.full_text
+    WHERE id = old.id;
+END;
+CREATE VIEW user_snapshot_summary AS
+SELECT
+    s.id,
+    s.workflow_id,
+    w.name as workflow_name,
+    s.node_id,
+    s.user_id,
+    u.username,
+    s.snapshot_date,
+    s.snapshot_label,
+    s.storage_type,
+    s.row_count,
+    s.total_size_bytes,
+    ROUND(s.total_size_bytes / 1024.0 / 1024.0, 2) as size_mb,
+    json_extract(s.query_context, '$.query_params') as query_params,
+    s.created_at,
+    s.expires_at,
+    CASE
+        WHEN s.expires_at IS NULL THEN 'permanent'
+        WHEN datetime(s.expires_at) < datetime('now') THEN 'expired'
+        ELSE 'active'
+    END as status
+FROM workflow_snapshots s
+JOIN workflows w ON s.workflow_id = w.id
+JOIN users u ON s.user_id = u.id
+ORDER BY s.created_at DESC;

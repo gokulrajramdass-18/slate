@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
@@ -8,14 +8,54 @@ import { useAuthStore } from "@/lib/stores/auth-store";
 
 export default function Home() {
   const router = useRouter();
+  const [isCheckingAuth, setIsCheckingAuth] = useState(true);
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
+  const checkXsuaaSession = useAuthStore((state) => state.checkXsuaaSession);
 
-  // Redirect authenticated users to dashboard
+  // Check for authentication on mount
   useEffect(() => {
-    if (isAuthenticated) {
-      router.replace("/dashboard");
-    }
-  }, [isAuthenticated, router]);
+    const checkAuth = async () => {
+      // If already authenticated from localStorage, redirect
+      if (isAuthenticated) {
+        router.replace("/dashboard");
+        return;
+      }
+
+      // Check for XSUAA session (accessed through AppRouter or XSUAA enabled)
+      const isAppRouter = typeof window !== "undefined" && window.location.port === "5001";
+      const isXsuaaEnabled = process.env.NEXT_PUBLIC_XSUAA_ENABLED === "true";
+
+      if (isAppRouter || isXsuaaEnabled) {
+        try {
+          const hasSession = await checkXsuaaSession();
+          if (hasSession) {
+            // XSUAA session found, redirect to dashboard
+            router.replace("/dashboard");
+            return;
+          }
+        } catch (error) {
+          console.error("XSUAA session check failed:", error);
+        }
+      }
+
+      // No auth found, show landing page
+      setIsCheckingAuth(false);
+    };
+
+    checkAuth();
+  }, [isAuthenticated, router, checkXsuaaSession]);
+
+  // Show loading while checking auth
+  if (isCheckingAuth) {
+    return (
+      <div className="flex min-h-screen items-center justify-center">
+        <div className="text-center">
+          <div className="inline-block h-8 w-8 animate-spin rounded-full border-4 border-solid border-current border-r-transparent"></div>
+          <p className="mt-4 text-muted-foreground">Loading...</p>
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="flex min-h-screen flex-col items-center justify-center p-4 relative overflow-hidden">
       {/* Animated background gradient */}
