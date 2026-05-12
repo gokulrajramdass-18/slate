@@ -1,0 +1,211 @@
+# Slate Deployment Values for grtest-ns namespace
+# SAP BTP Kyma Runtime - sapit-sales-dev-camel
+
+# Namespace
+namespace: grtest-ns
+
+# Global settings
+global:
+  imageRegistry: ""
+  imagePullSecrets: []
+
+# Backend configuration
+backend:
+  replicaCount: 1
+
+  image:
+    repository: gokulraj18/slate-backend
+    tag: final-160649
+    pullPolicy: Always
+
+  service:
+    type: ClusterIP
+    port: 5055
+
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu: "250m"
+    limits:
+      memory: "2Gi"
+      cpu: "1000m"
+
+  # Database configuration
+  database:
+    type: sqlite
+    path: /app/data/database.db
+
+  # Persistent storage
+  persistence:
+    enabled: false
+    storageClass: ""
+    accessMode: ReadWriteOnce
+    size: 5Gi
+
+  # Environment variables
+  env:
+    apiHost: "0.0.0.0"
+    apiPort: "5055"
+    logLevel: "INFO"
+    xsuaaEnabled: "true"  # Enable XSUAA authentication
+
+# Frontend configuration
+frontend:
+  replicaCount: 2
+
+  image:
+    repository: gokulraj18/slate-frontend
+    tag: xsuaa-v4
+    pullPolicy: Always
+
+  service:
+    type: ClusterIP
+    port: 3000
+
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "100m"
+    limits:
+      memory: "1Gi"
+      cpu: "500m"
+
+  env:
+    nodeEnv: production
+    nextTelemetryDisabled: "1"
+    xsuaaEnabled: "true"  # Disable built-in auth, use XSUAA
+
+# AppRouter configuration
+approuter:
+  enabled: true
+  replicaCount: 2
+
+  image:
+    repository: sapse/approuter
+    tag: "19.0.0"
+    pullPolicy: IfNotPresent
+
+  service:
+    type: ClusterIP
+    port: 5000
+
+  resources:
+    requests:
+      memory: "128Mi"
+      cpu: "50m"
+    limits:
+      memory: "512Mi"
+      cpu: "250m"
+
+  sessionAffinity:
+    enabled: true
+    cookieName: SLATE_SESSION_ID
+
+# XSUAA Service configuration
+xsuaa:
+  enabled: true
+  serviceOfferingName: xsuaa
+  servicePlanName: application
+
+  # Application name (will generate unique xsappname)
+  xsappname: slate-grtest
+  tenantMode: dedicated
+
+  # Scopes
+  scopes:
+    - name: "$XSAPPNAME.User"
+      description: "Slate user"
+    - name: "$XSAPPNAME.Admin"
+      description: "Slate administrator"
+
+  # Role templates
+  roleTemplates:
+    - name: User
+      description: "Slate User"
+      scopeReferences:
+        - "$XSAPPNAME.User"
+    - name: Admin
+      description: "Slate Administrator"
+      scopeReferences:
+        - "$XSAPPNAME.User"
+        - "$XSAPPNAME.Admin"
+
+  # OAuth redirect URIs (will be auto-configured based on host)
+  oauth2Configuration:
+    redirectUris:
+      - "https://slate-grtest.*.kyma.ondemand.com/**"
+      - "https://slate-grtest.*.kyma.sap.com/**"
+
+# API Rule configuration (Kyma Ingress)
+apiRule:
+  enabled: true
+  gateway: kyma-system/kyma-gateway
+  host: slate-grtest  # Will be: slate-grtest.<cluster-domain>
+
+  # TLS configuration
+  tls:
+    enabled: true
+    secretName: ""  # Will use default Kyma TLS certificate
+
+# Secrets configuration
+# IMPORTANT: Fill these in before deployment
+secrets:
+  # Encryption key for database
+  # Generate with: python -c "import secrets; print(secrets.token_urlsafe(32))"
+  encryptionKey: "xK3mP9vL2nQ8jR4wT6yU1zH5sF7gD0bN9cM4xA2vB8e"  # Generated encryption key
+
+  # AI Provider API Keys (optional)
+  openaiApiKey: ""  # TODO: Add if using OpenAI
+  anthropicApiKey: ""  # TODO: Add if using Anthropic
+
+# Destinations configuration
+destinations:
+  backend:
+    name: slate-backend
+    url: http://slate-backend:5055
+    forwardAuthToken: true  # Forward JWT to backend
+    timeout: 600000
+
+  frontend:
+    name: slate-frontend
+    url: http://slate-frontend:3000
+    forwardAuthToken: false  # Don't forward JWT to frontend
+    timeout: 60000
+
+# xs-app.json routing configuration
+xsApp:
+  authenticationMethod: route
+  sessionTimeout: 480
+  welcomeFile: ""  # Empty to avoid redirect loop with XSUAA
+
+  routes:
+    # API routes - require XSUAA authentication, preserve /api prefix
+    - source: "^/api/(.*)$"
+      target: "/api/$1"
+      destination: slate-backend
+      authenticationType: xsuaa
+      csrfProtection: false
+
+    # Block /login - redirect to workspaces with XSUAA auth
+    - source: "^/login.*$"
+      target: "/workspaces"
+      destination: slate-frontend
+      authenticationType: xsuaa
+
+    # Next.js static assets - preserve full path including _next
+    - source: "^/_next/(.*)$"
+      target: "/_next/$1"
+      destination: slate-frontend
+      authenticationType: none
+
+    # Static assets by extension - preserve full path
+    - source: "^/(.*\\.(js|css|map|ico|png|jpg|jpeg|svg|woff|woff2|ttf|eot))$"
+      target: "/$1"
+      destination: slate-frontend
+      authenticationType: none
+
+    # All other routes - require XSUAA authentication
+    - source: "^/(.*)$"
+      target: "/$1"
+      destination: slate-frontend
+      authenticationType: xsuaa

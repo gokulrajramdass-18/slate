@@ -10,6 +10,9 @@ data:
   DATABASE_TYPE: {{ .Values.backend.database.type | quote }}
   SQLITE_DB_PATH: {{ .Values.backend.database.path | quote }}
   LOG_LEVEL: {{ .Values.backend.env.logLevel | quote }}
+  {{- if .Values.xsuaa.enabled }}
+  XSUAA_ENABLED: {{ .Values.backend.env.xsuaaEnabled | default "true" | quote }}
+  {{- end }}
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -41,7 +44,12 @@ metadata:
 data:
   xs-app.json: |
     {
-      "authenticationMethod": "{{ .Values.xsApp.authenticationMethod }}",
-      "welcomeFile": "{{ .Values.xsApp.welcomeFile }}",
+      "authenticationMethod": "{{ .Values.xsApp.authenticationMethod }}"
+      {{- if .Values.xsApp.welcomeFile }},
+      "welcomeFile": "{{ .Values.xsApp.welcomeFile }}"
+      {{- end }}
+      {{- if .Values.xsApp.sessionTimeout }},
+      "sessionTimeout": {{ .Values.xsApp.sessionTimeout }}
+      {{- end }},
       "routes": {{ .Values.xsApp.routes | toJson }}
     }

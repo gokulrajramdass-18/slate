@@ -1,0 +1,50 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: fix-microsites-schema
+  namespace: grtest-ns
+spec:
+  template:
+    spec:
+      containers:
+      - name: fix
+        image: gokulraj18/slate-backend:latest
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            cd /app
+            python3 << 'EOF'
+            import aiosqlite
+            import asyncio
+
+            async def fix_schema():
+                db_path = "/app/data/database.db"
+                async with aiosqlite.connect(db_path) as db:
+                    # Check if microsites table exists
+                    cursor = await db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='microsites'")
+                    table = await cursor.fetchone()
+
+                    if table:
+                        print("Microsites table exists, dropping it...")
+                        await db.execute("DROP TABLE IF EXISTS microsites")
+                        await db.commit()
+                        print("Table dropped")
+                    else:
+                        print("Microsites table does not exist")
+
+                    print("Schema fix complete")
+
+            asyncio.run(fix_schema())
+            EOF
+        volumeMounts:
+        - name: data
+          mountPath: /app/data
+        env:
+        - name: PYTHONUNBUFFERED
+          value: "1"
+      restartPolicy: Never
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: slate-backend-data
+  backoffLimit: 1

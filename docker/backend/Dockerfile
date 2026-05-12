@@ -52,7 +52,7 @@ ENV PYTHONUNBUFFERED=1 \
     API_HOST=0.0.0.0 \
     API_PORT=5055
 
-# Run migrations, seed default admin user, and start server
-CMD python -m open_notebook.database.async_migrate migrate && \
+# Run clean init (bypasses migrations), seed default roles, and start server
+CMD python -m open_notebook.database.init_clean_db && \
     python -m open_notebook.database.seeds.default_roles && \
     uvicorn api.main:app --host 0.0.0.0 --port 5055

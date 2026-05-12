@@ -53,6 +53,13 @@ spec:
             configMapKeyRef:
               name: {{ include "slate.fullname" . }}-config
               key: LOG_LEVEL
+        {{- if .Values.xsuaa.enabled }}
+        - name: XSUAA_ENABLED
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "slate.fullname" . }}-config
+              key: XSUAA_ENABLED
+        {{- end }}
         - name: OPENAI_API_KEY
           valueFrom:
             secretKeyRef:

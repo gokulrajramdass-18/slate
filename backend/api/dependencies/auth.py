@@ -4,6 +4,7 @@ Authentication Dependencies
 FastAPI dependency injection for authentication and authorization.
 """
 
+import os
 from typing import Optional
 
 from fastapi import Depends, HTTPException, Header, status
@@ -20,6 +21,9 @@ security = HTTPBearer()
 # JWT Configuration (will be set by auth router)
 SECRET_KEY = None
 ALGORITHM = "HS256"
+
+# XSUAA Configuration
+XSUAA_ENABLED = os.getenv("XSUAA_ENABLED", "false").lower() == "true"
 
 
 def set_jwt_config(secret_key: str, algorithm: str = "HS256"):
@@ -71,6 +75,10 @@ async def get_current_user(
     """
     Get current authenticated user from Bearer token.
 
+    Supports both:
+    - Local JWT tokens (username/password login)
+    - XSUAA tokens (from AppRouter)
+
     Dependency for FastAPI routes requiring authentication.
 
     Returns:
@@ -80,6 +88,13 @@ async def get_current_user(
         HTTPException: 401 if not authenticated
     """
     token = credentials.credentials
+
+    # If XSUAA is enabled, handle XSUAA tokens
+    if XSUAA_ENABLED:
+        from api.services.xsuaa_auth_service import get_current_user_from_xsuaa_token
+        return await get_current_user_from_xsuaa_token(token)
+
+    # Otherwise, use standard JWT validation
     return await get_current_user_from_token(token)
 
 

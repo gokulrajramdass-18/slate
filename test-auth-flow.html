@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test XSUAA Auth Flow</title>
+</head>
+<body>
+    <h1>Test XSUAA Auth Flow</h1>
+    <button onclick="testAuthMe()">Test /api/auth/me</button>
+    <pre id="result"></pre>
+
+    <script>
+        async function testAuthMe() {
+            const result = document.getElementById('result');
+            result.textContent = 'Testing...';
+
+            try {
+                const response = await fetch('/api/auth/me', {
+                    method: 'GET',
+                    credentials: 'include',
+                    redirect: 'manual'
+                });
+
+                result.textContent = `Response type: ${response.type}\n`;
+                result.textContent += `Status: ${response.status}\n`;
+                result.textContent += `OK: ${response.ok}\n`;
+
+                if (response.ok) {
+                    const data = await response.json();
+                    result.textContent += `\nData: ${JSON.stringify(data, null, 2)}`;
+                } else {
+                    result.textContent += `\nNo XSUAA session - redirect needed`;
+                }
+            } catch (error) {
+                result.textContent = `Error: ${error.message}`;
+            }
+        }
+    </script>
+</body>
+</html>

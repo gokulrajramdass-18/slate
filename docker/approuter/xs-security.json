@@ -1,0 +1,45 @@
+{
+  "xsappname": "slate",
+  "tenant-mode": "dedicated",
+  "description": "Slate",
+  "foreign-scope-references": [
+    "$ACCEPT_GRANTED_SCOPES"
+  ],
+  "scopes": [
+    {
+      "name": "uaa.user",
+      "description": "UAA"
+    }
+    
+  ],
+  "role-templates": [
+    {
+      "name": "Token_Exchange",
+      "description": "UAA",
+      "scope-references": [
+        "uaa.user"
+      ]
+    }
+    ],
+  "oauth2-configuration": {
+    "token-validity": 7200,
+    "refresh-token-validity": 86400,
+    "redirect-uris": [
+      "https://*.authentication.eu10.hana.ondemand.com/login/**",
+      "https://*.cfapps.sap.hana.ondemand.com/login/**",
+      "https://*.cfapps.eu10-004.hana.ondemand.com/login/callback/**",
+      "https:/**.cf.eu10-004.hana.ondemand.com",
+      "https://**.hana.ondemand.com/**",
+      "https://**.applicationstudio.cloud.sap/**",
+      "https://*.eu10.applicationstudio.cloud.sap/**",
+      "http://localhost:*/**"
+    ],
+    "grant-types": [
+      "authorization_code",
+      "refresh_token",
+      "client_credentials",
+      "urn:ietf:params:oauth:grant-type:jwt-bearer"
+    ],
+    "autoapprove": true
+  }
+}

@@ -8,7 +8,7 @@ import os
 from datetime import datetime, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from jose import jwt
 from pydantic import BaseModel, Field
 
@@ -292,12 +292,50 @@ async def logout(current_user: User = Depends(get_current_user)):
 
 
 @router.get("/me")
-async def get_current_user_info(current_user: User = Depends(get_current_active_user)):
+async def get_current_user_info(request: Request):
     """
     Get current authenticated user info.
 
     Returns user with roles and permissions.
+
+    Supports both:
+    - JWT Bearer token (Authorization header)
+    - XSUAA session via AppRouter (cookie-based, JWT in Authorization header from AppRouter)
     """
+    from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+
+    # Check for Authorization header (works for both JWT and XSUAA)
+    auth_header = request.headers.get("Authorization")
+
+    if not auth_header:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # Extract token from Bearer header
+    if not auth_header.startswith("Bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication scheme",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    token = auth_header[7:]  # Remove "Bearer " prefix
+
+    # Use get_current_user_from_token which handles both JWT and XSUAA
+    from api.dependencies.auth import get_current_user_from_token
+
+    # Check if XSUAA is enabled
+    xsuaa_enabled = os.getenv("XSUAA_ENABLED", "false").lower() == "true"
+
+    if xsuaa_enabled:
+        from api.services.xsuaa_auth_service import get_current_user_from_xsuaa_token
+        current_user = await get_current_user_from_xsuaa_token(token)
+    else:
+        current_user = await get_current_user_from_token(token)
+
     user_data = await get_user_response_data(current_user)
     return user_data
 

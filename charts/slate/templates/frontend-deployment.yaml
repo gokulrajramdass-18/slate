@@ -32,6 +32,10 @@ spec:
           value: {{ .Values.frontend.env.nodeEnv | quote }}
         - name: NEXT_TELEMETRY_DISABLED
           value: {{ .Values.frontend.env.nextTelemetryDisabled | quote }}
+        {{- if .Values.frontend.env.xsuaaEnabled }}
+        - name: NEXT_PUBLIC_XSUAA_ENABLED
+          value: {{ .Values.frontend.env.xsuaaEnabled | quote }}
+        {{- end }}
         - name: NEXT_PUBLIC_API_URL
           value: "http://{{ include "slate.fullname" . }}-backend:{{ .Values.backend.service.port }}"
         resources:
