@@ -217,7 +217,7 @@ function SnapshotsSection({ workflowId }: { workflowId: string }) {
   const [snapshotToDelete, setSnapshotToDelete] = React.useState<string | null>(null);
 
   // Fetch snapshots for this workflow
-  const { data: snapshots, isLoading } = useQuery({
+  const { data: snapshots, isLoading, isFetching } = useQuery({
     queryKey: ['snapshots', workflowId],
     queryFn: async () => {
       const { data } = await apiClient.get('/snapshots/', {
@@ -225,7 +225,18 @@ function SnapshotsSection({ workflowId }: { workflowId: string }) {
       });
       return data;
     },
+    refetchInterval: 5000, // Auto-refresh every 5 seconds
   });
+
+  // Check if there are any recent executions (within last 30 seconds)
+  const hasRecentExecution = React.useMemo(() => {
+    if (!snapshots || snapshots.length === 0) return false;
+    const latestSnapshot = snapshots[0];
+    const snapshotDate = new Date(latestSnapshot.snapshot_date);
+    const now = new Date();
+    const diffSeconds = (now.getTime() - snapshotDate.getTime()) / 1000;
+    return diffSeconds < 30;
+  }, [snapshots]);
 
   // Delete mutation
   const deleteMutation = useMutation({
@@ -254,22 +265,86 @@ function SnapshotsSection({ workflowId }: { workflowId: string }) {
     }
   };
 
+  const handleRefresh = () => {
+    queryClient.invalidateQueries({ queryKey: ['snapshots', workflowId] });
+  };
+
   return (
     <div className="space-y-4">
-      <div>
-        <h2 className="text-xl font-semibold flex items-center gap-2">
-          <Database className="h-5 w-5" />
-          Snapshots
-        </h2>
-        <p className="text-sm text-muted-foreground mt-1">
-          Data snapshots captured during workflow executions
-        </p>
+      <div className="flex items-start justify-between">
+        <div>
+          <h2 className="text-xl font-semibold flex items-center gap-2">
+            <Database className="h-5 w-5" />
+            Snapshots
+          </h2>
+          <p className="text-sm text-muted-foreground mt-1">
+            Data snapshots captured during workflow executions
+          </p>
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={handleRefresh}
+          disabled={isLoading || isFetching}
+          className="flex items-center gap-2"
+        >
+          {(isLoading || isFetching) ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              className={isFetching ? 'animate-spin' : ''}
+            >
+              <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2" />
+            </svg>
+          )}
+          Refresh
+        </Button>
       </div>
 
-      {isLoading ? (
-        <div className="flex items-center justify-center p-8">
-          <Loader2 className="h-6 w-6 animate-spin" />
+      {/* Status indicator */}
+      {isFetching && !isLoading && (
+        <div className="flex items-center gap-2 px-3 py-2 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg text-sm text-blue-900 dark:text-blue-100">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          <span>Checking for new snapshots...</span>
         </div>
+      )}
+
+      {hasRecentExecution && !isFetching && (
+        <div className="flex items-center gap-2 px-3 py-2 bg-green-50 dark:bg-green-950 border border-green-200 dark:border-green-800 rounded-lg text-sm text-green-900 dark:text-green-100">
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className="h-4 w-4"
+          >
+            <polyline points="20 6 9 17 4 12" />
+          </svg>
+          <span>New snapshot generated recently</span>
+        </div>
+      )}
+
+      {isLoading ? (
+        <Card>
+          <CardContent className="flex flex-col items-center justify-center p-8 space-y-3">
+            <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+            <p className="text-sm text-muted-foreground">Loading snapshots...</p>
+          </CardContent>
+        </Card>
       ) : snapshots && snapshots.length > 0 ? (
         <div className="space-y-2">
           <div className="flex items-center justify-between px-2 text-sm text-muted-foreground">
@@ -355,7 +430,10 @@ function SnapshotsSection({ workflowId }: { workflowId: string }) {
             <div>
               <h3 className="font-semibold">No snapshots yet</h3>
               <p className="text-sm text-muted-foreground">
-                Snapshots will appear here after workflow executions with HANA nodes that have snapshots enabled
+                Snapshots will appear here after executing workflows with HANA Table or API nodes that have "Enable Snapshots" checked
+              </p>
+              <p className="text-xs text-muted-foreground mt-2">
+                Enable snapshots on HANA/API nodes to track data changes over time
               </p>
             </div>
           </div>

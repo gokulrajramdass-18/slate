@@ -16,6 +16,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
+import { Separator } from '@/components/ui/separator';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Trash2, X, Sparkles, Code, List } from 'lucide-react';
 import { useGraphStore, useSelectedNode } from '@/lib/stores/graph-store';
 import { agentsApi } from '@/lib/api/agents';
@@ -26,6 +28,7 @@ import { InputFieldAutoSuggestions } from './InputFieldAutoSuggestions';
 import { NotebookGeneratorProperties } from './NotebookGeneratorProperties';
 import { MicrositeGeneratorProperties } from './MicrositeGeneratorProperties';
 import { HanaTablePropertyPanel } from './HanaTablePropertyPanel';
+import { APINodePropertyPanel } from './APINodePropertyPanel';
 import { CompareNodeWatchColumns } from './CompareNodeWatchColumns';
 import { getCurrentGraphState } from './GraphEditor';
 
@@ -832,6 +835,11 @@ export function PropertyPanel() {
           />
         )}
 
+        {/* API Node */}
+        {selectedNode.data.type === 'api' && (
+          <APINodePropertyPanel selectedNode={selectedNode} handleUpdate={handleUpdate} />
+        )}
+
         {/* Snapshot Node */}
         {selectedNode.data.type === 'snapshot' && (
           <>
@@ -896,7 +904,7 @@ export function PropertyPanel() {
                   Automatic Snapshot Comparison
                 </p>
                 <p className="text-xs text-muted-foreground">
-                  This node automatically detects snapshots from the connected HANA node.
+                  This node automatically detects snapshots from the connected source node (HANA, API, etc.).
                   It compares the baseline (first run) with the current data and returns changed rows.
                 </p>
                 <div className="text-xs bg-white/50 dark:bg-black/20 p-2 rounded space-y-1">
@@ -910,7 +918,7 @@ export function PropertyPanel() {
                   </ul>
                 </div>
                 <p className="text-xs text-amber-600 dark:text-amber-400">
-                  <strong>Note:</strong> Connect this node to a HANA node with "Enable Snapshots" checked.
+                  <strong>Note:</strong> Connect this node to a source node (HANA, API, etc.) with "Enable Snapshots" checked.
                   Run the workflow at least twice to generate comparison data.
                 </p>
               </CardContent>

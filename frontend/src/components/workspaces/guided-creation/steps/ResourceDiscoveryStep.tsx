@@ -15,6 +15,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Checkbox } from '@/components/ui/checkbox';
 import { Database, Wrench, Bot, Users, CheckCircle, Sparkles, Plus, Link as LinkIcon, X } from 'lucide-react';
 import { ResourceSelectionModal } from '../ResourceSelectionModal';
+import { apiClient } from '@/lib/api/client';
 
 type ResourceType = 'sources' | 'tools' | 'agents' | 'teams';
 
@@ -57,14 +58,12 @@ export function ResourceDiscoveryStep({ resourceType }: ResourceDiscoveryStepPro
     // Fetch sources
     if (selectedResources.source_ids.length > 0) {
       try {
-        const response = await fetch('/api/sources');
-        if (response.ok) {
-          const allSources = await response.json();
-          newManual.sources = allSources.filter((s: any) =>
-            selectedResources.source_ids.includes(s.id) &&
-            !discoveredResources.sources.find((d) => d.id === s.id)
-          );
-        }
+        const response = await apiClient.get('/sources');
+        const allSources = response.data;
+        newManual.sources = allSources.filter((s: any) =>
+          selectedResources.source_ids.includes(s.id) &&
+          !discoveredResources.sources.find((d) => d.id === s.id)
+        );
       } catch (error) {
         console.error('Failed to fetch sources:', error);
       }
@@ -74,19 +73,16 @@ export function ResourceDiscoveryStep({ resourceType }: ResourceDiscoveryStepPro
     if (selectedResources.tool_ids.length > 0) {
       try {
         const [regResponse, mcpResponse] = await Promise.all([
-          fetch('/api/tools/registry'),
-          fetch('/api/tools/mcp'),
+          apiClient.get('/tools/registry'),
+          apiClient.get('/tools/mcp'),
         ]);
 
         const allTools = [];
-        if (regResponse.ok) {
-          const reg = await regResponse.json();
-          allTools.push(...reg.tools.map((t: any) => ({ ...t, id: `registry:${t.id}` })));
-        }
-        if (mcpResponse.ok) {
-          const mcp = await mcpResponse.json();
-          allTools.push(...mcp.tools.map((t: any) => ({ ...t, id: `mcp:${t.id}` })));
-        }
+        const reg = regResponse.data;
+        allTools.push(...reg.tools.map((t: any) => ({ ...t, id: `registry:${t.id}` })));
+
+        const mcp = mcpResponse.data;
+        allTools.push(...mcp.tools.map((t: any) => ({ ...t, id: `mcp:${t.id}` })));
 
         newManual.tools = allTools.filter((t: any) =>
           selectedResources.tool_ids.includes(t.id) &&

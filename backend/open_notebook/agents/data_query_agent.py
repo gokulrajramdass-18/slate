@@ -55,7 +55,7 @@ class DataQueryAgent:
         session_id: Optional[str] = None,
         system_message: Optional[str] = None,
         capture_tool_results: bool = False,
-        langfuse_trace_id: Optional[str] = None,
+        trace_ids: Optional[Dict[str, str]] = None,
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         task_description: Optional[str] = None,
@@ -71,7 +71,8 @@ class DataQueryAgent:
             session_id: Optional chat session ID for tracing
             system_message: Optional system message with context
             capture_tool_results: If True, capture tool results for generative UI
-            langfuse_trace_id: Optional Langfuse trace ID for observability
+            trace_ids: Optional dict with trace IDs from multiple observability providers
+                      (e.g., {"langfuse_trace_id": "...", "mlflow_run_id": "..."})
             api_key: Optional API key for LiteLLM/model provider
             base_url: Optional base URL for LiteLLM proxy (e.g., http://localhost:6655/litellm/v1)
             task_description: Optional task description for tool filtering
@@ -82,7 +83,8 @@ class DataQueryAgent:
         self.session_id = session_id
         self.system_message = system_message
         self.capture_tool_results = capture_tool_results
-        self.langfuse_trace_id = langfuse_trace_id
+        self.trace_ids = trace_ids or {}
+        self.langfuse_trace_id = self.trace_ids.get("langfuse_trace_id")  # Extract for easy access
         self.api_key = api_key
         self.base_url = base_url
         self.task_description = task_description or "General data query task"
@@ -369,6 +371,13 @@ class DataQueryAgent:
             matching_step["metadata"]["duration_ms"] = round(elapsed_ms, 2)
             matching_step["metadata"]["result_type"] = result_type
 
+            # Add full output to metadata (truncate if too large)
+            output_str = str(result) if not isinstance(result, str) else result
+            if len(output_str) > 5000:
+                matching_step["metadata"]["output"] = output_str[:5000] + "... (truncated)"
+            else:
+                matching_step["metadata"]["output"] = output_str
+
             # Add result preview to metadata for UI display
             if result_type == "table" and isinstance(result, dict):
                 # For table results, show row count
@@ -408,6 +417,13 @@ class DataQueryAgent:
                 "duration_ms": round(elapsed_ms, 2),
                 "result_type": result_type,
             }
+
+            # Add full output
+            output_str = str(result) if not isinstance(result, str) else result
+            if len(output_str) > 5000:
+                step_metadata["output"] = output_str[:5000] + "... (truncated)"
+            else:
+                step_metadata["output"] = output_str
 
             if result_type == "error" and isinstance(result, dict):
                 if "error" in result:
@@ -576,11 +592,15 @@ class DataQueryAgent:
             # Record tool call steps
             for tool_call in response.tool_calls:
                 tool_name = tool_call.get("name", "unknown")
+                tool_args = tool_call.get("args", {})
                 self._record_step(
                     step_type="tool_call",
                     content=f"Executing: {tool_name}",
                     status="running",
-                    metadata={"tool_name": tool_name},
+                    metadata={
+                        "tool_name": tool_name,
+                        "args": tool_args,
+                    },
                 )
         else:
             # No tools, mark thinking as completed

@@ -46,6 +46,9 @@ import { apiClient } from '@/lib/api/client';
 import { useToast } from '@/hooks/use-toast';
 import { useAuthStore } from '@/lib/stores/auth-store';
 import type { Workflow } from '@/lib/api/workflows';
+import { PublicGallery } from '@/components/workflows/PublicGallery';
+import { MyWorkflows } from '@/components/workflows/MyWorkflows';
+import { MyTemplates } from '@/components/workflows/MyTemplates';
 
 // ============================================================================
 // Types
@@ -503,28 +506,37 @@ function TemplateCard({ template, onViewDetails }: { template: WorkflowTemplate;
   };
 
   const handleScheduleClick = async (type: "daily" | "weekly" | "monthly" | "custom") => {
-    const details = await workflowTemplatesApi.get(template.id);
-
     try {
-      if (details.graph_json) {
-        (details as any).graph = JSON.parse(details.graph_json);
+      const details = await workflowTemplatesApi.get(template.id);
+
+      try {
+        if (details.graph_json) {
+          (details as any).graph = JSON.parse(details.graph_json);
+        }
+      } catch (e) {
+        console.error("Failed to parse graph JSON:", e);
       }
-    } catch (e) {
-      console.error("Failed to parse graph JSON:", e);
+
+      setSelectedTemplate(details as any);
+
+      // Initialize parameter values with defaults
+      const defaults: Record<string, any> = {};
+      (details.parameters || []).forEach((param: TemplateParameter) => {
+        if (param.default_value !== undefined) {
+          defaults[param.name] = param.default_value;
+        }
+      });
+      setParameterValues(defaults);
+      setScheduleType(type);
+      setShowScheduleDialog(true);
+    } catch (error) {
+      console.error("Failed to load template details:", error);
+      toast({
+        title: "Error",
+        description: "Failed to load template details",
+        variant: "destructive",
+      });
     }
-
-    setSelectedTemplate(details as any);
-
-    // Initialize parameter values with defaults
-    const defaults: Record<string, any> = {};
-    (details.parameters || []).forEach((param: TemplateParameter) => {
-      if (param.default_value !== undefined) {
-        defaults[param.name] = param.default_value;
-      }
-    });
-    setParameterValues(defaults);
-    setScheduleType(type);
-    setShowScheduleDialog(true);
   };
 
   const handleCreateSchedule = async () => {
@@ -918,9 +930,10 @@ function TemplateCard({ template, onViewDetails }: { template: WorkflowTemplate;
 export default function WorkflowsPage() {
   const router = useRouter();
   const { toast } = useToast();
+  const queryClient = useQueryClient();
   const user = useAuthStore((state) => state.user);
   const userId = user?.id || user?.username || "test-user";
-  const [activeTab, setActiveTab] = useState("my-workflows");
+  const [activeTab, setActiveTab] = useState("public-gallery");
   const [selectedTemplate, setSelectedTemplate] = useState<WorkflowTemplate | null>(null);
 
   // Fetch workflows
@@ -974,6 +987,114 @@ export default function WorkflowsPage() {
     setSelectedTemplate(template);
   };
 
+  const handleScheduleTemplate = async (template: WorkflowTemplate) => {
+    try {
+      // Get template details
+      const details = await workflowTemplatesApi.get(template.id);
+
+      try {
+        if (details.graph_json) {
+          (details as any).graph = JSON.parse(details.graph_json);
+        }
+      } catch (e) {
+        console.error("Failed to parse graph JSON:", e);
+      }
+
+      setSelectedTemplate(details as any);
+
+      // Initialize parameter values with defaults
+      const defaults: Record<string, any> = {};
+      (details.parameters || []).forEach((param: any) => {
+        if (param.default_value !== undefined) {
+          defaults[param.name] = param.default_value;
+        }
+      });
+      setParameterValues(defaults);
+
+      // Show schedule dialog
+      setScheduleType("daily");
+      setShowScheduleDialog(true);
+    } catch (error) {
+      console.error("Failed to load template details:", error);
+      toast({
+        title: "Error",
+        description: "Failed to load template details",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleExecuteTemplate = async (template: WorkflowTemplate) => {
+    try {
+      const details = await workflowTemplatesApi.get(template.id);
+      const result = await workflowTemplatesApi.execute(template.id, {
+        parameters: {},
+        input_data: {}
+      });
+
+      toast({
+        title: "Success",
+        description: "Workflow executed from template",
+      });
+
+      router.push(`/workflows/${result.workflow_id}/executions/${result.execution_id}`);
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "Failed to execute template",
+        variant: "destructive",
+      });
+    }
+  };
+
+  // Workflow handlers
+  const handleEditWorkflow = (id: string) => {
+    router.push(`/workflows/${id}`);
+  };
+
+  const handleExecuteWorkflow = async (id: string) => {
+    try {
+      await workflowsApi.execute(id);
+      router.push(`/workflows/${id}/executions`);
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "Failed to execute workflow",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleScheduleWorkflow = (id: string) => {
+    router.push(`/workflows/${id}/schedules`);
+  };
+
+  const handleSaveAsTemplate = (id: string) => {
+    // This will be handled by WorkflowCard's dialog
+    toast({
+      title: "Info",
+      description: "Use the workflow card's action menu to save as template",
+    });
+  };
+
+  const handleDeleteWorkflow = async (id: string) => {
+    try {
+      await workflowsApi.delete(id);
+      toast({
+        title: "Success",
+        description: "Workflow deleted",
+      });
+      // Invalidate and refetch workflows without page reload
+      queryClient.invalidateQueries({ queryKey: ['workflows'] });
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "Failed to delete workflow",
+        variant: "destructive",
+      });
+    }
+  };
+
   return (
     <div className="p-6 space-y-6 bg-background min-h-screen">
       {/* Header */}
@@ -995,117 +1116,47 @@ export default function WorkflowsPage() {
 
       {/* Tabs */}
       <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
-        <TabsList className="grid w-full grid-cols-4 lg:w-[800px]">
-          <TabsTrigger value="my-workflows">My Workflows</TabsTrigger>
-          <TabsTrigger value="my-templates">My Templates</TabsTrigger>
-          <TabsTrigger value="public-gallery">Public Gallery</TabsTrigger>
-          <TabsTrigger value="schedules">Schedules</TabsTrigger>
+        <TabsList className="grid w-full grid-cols-4 lg:w-[800px] h-12">
+          <TabsTrigger value="public-gallery" className="text-sm font-semibold">Public Gallery</TabsTrigger>
+          <TabsTrigger value="my-workflows" className="text-sm font-semibold">My Workflows</TabsTrigger>
+          <TabsTrigger value="my-templates" className="text-sm font-semibold">My Templates</TabsTrigger>
+          <TabsTrigger value="schedules" className="text-sm font-semibold">Schedules</TabsTrigger>
         </TabsList>
+
+        {/* Public Gallery Tab */}
+        <TabsContent value="public-gallery" className="space-y-4">
+          <PublicGallery
+            templates={publicTemplates}
+            isLoading={publicTemplatesLoading}
+            onExecute={handleExecuteTemplate}
+            onView={handleViewTemplateDetails}
+            onSchedule={handleScheduleTemplate}
+          />
+        </TabsContent>
 
         {/* My Workflows Tab */}
         <TabsContent value="my-workflows" className="space-y-4">
-          {workflowsLoading ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {[...Array(6)].map((_, i) => (
-                <Card key={i} className="h-48 animate-pulse">
-                  <CardHeader>
-                    <div className="h-6 bg-muted rounded w-3/4" />
-                    <div className="h-4 bg-muted rounded w-full mt-2" />
-                  </CardHeader>
-                </Card>
-              ))}
-            </div>
-          ) : workflows && workflows.length > 0 ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {workflows.map((workflow) => (
-                <WorkflowCard key={workflow.id} workflow={workflow} />
-              ))}
-            </div>
-          ) : (
-            <Card className="p-12 text-center">
-              <div className="flex flex-col items-center gap-4">
-                <div className="rounded-full bg-muted p-4">
-                  <Play className="h-8 w-8 text-muted-foreground" />
-                </div>
-                <div>
-                  <h3 className="text-lg font-semibold">No workflows yet</h3>
-                  <p className="text-muted-foreground mt-1">Create your first workflow to get started</p>
-                </div>
-                <Button onClick={handleCreateNew}>
-                  <Plus className="mr-2 h-4 w-4" />
-                  Create Workflow
-                </Button>
-              </div>
-            </Card>
-          )}
+          <MyWorkflows
+            workflows={workflows || []}
+            isLoading={workflowsLoading}
+            onEdit={handleEditWorkflow}
+            onExecute={handleExecuteWorkflow}
+            onSchedule={handleScheduleWorkflow}
+            onSaveAsTemplate={handleSaveAsTemplate}
+            onDelete={handleDeleteWorkflow}
+            onCreateNew={handleCreateNew}
+          />
         </TabsContent>
 
         {/* My Templates Tab */}
         <TabsContent value="my-templates" className="space-y-4">
-          {myTemplatesLoading ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {[...Array(6)].map((_, i) => (
-                <Card key={i} className="h-64 animate-pulse">
-                  <CardHeader>
-                    <div className="h-6 bg-muted rounded w-3/4" />
-                    <div className="h-4 bg-muted rounded w-full mt-2" />
-                  </CardHeader>
-                </Card>
-              ))}
-            </div>
-          ) : myTemplates.length > 0 ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {myTemplates.map((template) => (
-                <TemplateCard key={template.id} template={template} onViewDetails={handleViewTemplateDetails} />
-              ))}
-            </div>
-          ) : (
-            <Card className="p-12 text-center">
-              <div className="flex flex-col items-center gap-4">
-                <div className="rounded-full bg-muted p-4">
-                  <WorkflowIcon className="h-8 w-8 text-muted-foreground" />
-                </div>
-                <div>
-                  <h3 className="text-lg font-semibold">No templates found</h3>
-                  <p className="text-muted-foreground mt-1">Create workflows and save them as templates</p>
-                </div>
-              </div>
-            </Card>
-          )}
-        </TabsContent>
-
-        {/* Public Gallery Tab */}
-        <TabsContent value="public-gallery" className="space-y-4">
-          {publicTemplatesLoading ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {[...Array(6)].map((_, i) => (
-                <Card key={i} className="h-64 animate-pulse">
-                  <CardHeader>
-                    <div className="h-6 bg-muted rounded w-3/4" />
-                    <div className="h-4 bg-muted rounded w-full mt-2" />
-                  </CardHeader>
-                </Card>
-              ))}
-            </div>
-          ) : publicTemplates.length > 0 ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {publicTemplates.map((template) => (
-                <TemplateCard key={template.id} template={template} onViewDetails={handleViewTemplateDetails} />
-              ))}
-            </div>
-          ) : (
-            <Card className="p-12 text-center">
-              <div className="flex flex-col items-center gap-4">
-                <div className="rounded-full bg-muted p-4">
-                  <WorkflowIcon className="h-8 w-8 text-muted-foreground" />
-                </div>
-                <div>
-                  <h3 className="text-lg font-semibold">No public templates available</h3>
-                  <p className="text-muted-foreground mt-1">Check back later for community templates</p>
-                </div>
-              </div>
-            </Card>
-          )}
+          <MyTemplates
+            templates={myTemplates}
+            isLoading={myTemplatesLoading}
+            onExecute={handleExecuteTemplate}
+            onView={handleViewTemplateDetails}
+            onSchedule={handleScheduleTemplate}
+          />
         </TabsContent>
 
         {/* Schedules Tab */}

@@ -2643,3 +2643,105 @@ class ResourceShareResponse(BaseModel):
     expires_at: Optional[datetime]
     created: datetime
     updated: datetime
+
+
+# ============================================================================
+# Agent Evaluation Models
+# ============================================================================
+
+class EvaluationDatasetCreate(BaseModel):
+    """Request model for creating an evaluation dataset"""
+    name: str = Field(..., min_length=1, max_length=255, description="Dataset name")
+    description: Optional[str] = Field(None, description="Dataset description")
+    agent_id: Optional[str] = Field(None, description="Optional linked agent")
+    criteria: Optional[List[str]] = Field(
+        default=["accuracy", "relevance", "completeness"],
+        description="Evaluation criteria"
+    )
+    scoring_method: str = Field(
+        default="llm_judge",
+        description="Scoring method: llm_judge, exact_match, semantic_similarity"
+    )
+
+
+class EvaluationTestCaseUpload(BaseModel):
+    """Model for uploading test cases"""
+    dataset_id: str = Field(..., description="Dataset ID to add test cases to")
+    test_cases: List[Dict[str, Any]] = Field(..., description="Test cases to upload")
+
+
+class EvaluationDatasetResponse(BaseModel):
+    """Response model for evaluation dataset"""
+    id: str
+    name: str
+    description: Optional[str]
+    agent_id: Optional[str]
+    test_case_count: int
+    file_name: Optional[str]
+    file_format: Optional[str]
+    criteria: List[str]
+    scoring_method: str
+    created: str
+    updated: str
+    created_by: Optional[str]
+
+
+class EvaluationRunCreate(BaseModel):
+    """Request model for creating an evaluation run"""
+    dataset_id: str = Field(..., description="Dataset to evaluate against")
+    agent_id: str = Field(..., description="Agent to evaluate")
+    run_name: Optional[str] = Field(None, description="Optional run name")
+    model_override: Optional[str] = Field(None, description="Override agent's model")
+    config_override: Optional[Dict[str, Any]] = Field(None, description="Override agent config")
+
+
+class EvaluationRunResponse(BaseModel):
+    """Response model for evaluation run"""
+    id: str
+    dataset_id: str
+    agent_id: str
+    dataset_name: Optional[str]
+    agent_name: Optional[str]
+    run_name: Optional[str]
+    model_override: Optional[str]
+    status: str  # pending, running, completed, failed
+    progress: int  # 0-100
+    total_cases: int
+    passed_cases: int
+    failed_cases: int
+    avg_score: Optional[float]
+    avg_latency_ms: Optional[float]
+    started_at: Optional[str]
+    completed_at: Optional[str]
+    error_message: Optional[str]
+    created: str
+    created_by: Optional[str]
+
+
+class EvaluationResultResponse(BaseModel):
+    """Response model for individual evaluation result"""
+    id: str
+    run_id: str
+    test_case_id: str
+    input_prompt: str
+    expected_output: Optional[str]
+    agent_output: str
+    execution_time_ms: float
+    passed: bool
+    overall_score: Optional[float]
+    criteria_scores: Optional[Dict[str, float]]
+    similarity_score: Optional[float]
+    exact_match: Optional[bool]
+    feedback: Optional[str]
+    judge_reasoning: Optional[str]
+    error_occurred: bool
+    error_message: Optional[str]
+    category: Optional[str]
+    tags: Optional[List[str]]
+    created: str
+
+
+class EvaluationRunListResponse(BaseModel):
+    """Response model for list of evaluation runs"""
+    runs: List[EvaluationRunResponse]
+    total: int = 0

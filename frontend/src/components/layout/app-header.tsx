@@ -46,7 +46,9 @@ export function AppHeader({ sidebarOpen, toggleSidebar }: AppHeaderProps) {
             <span className="text-lg font-bold leading-tight bg-gradient-to-r from-blue-600 via-purple-600 to-pink-600 bg-clip-text text-transparent animate-gradient-shift">
               Slate
             </span>
-            <span className="text-xs text-gray-500 dark:text-gray-400 font-normal leading-tight truncate">redefine everything</span>
+            <span className="text-xs text-gray-500 dark:text-gray-400 font-normal leading-tight truncate animate-pulse-subtle">
+              Do Nothing, Redefine Everything
+            </span>
           </div>
         </div>
 

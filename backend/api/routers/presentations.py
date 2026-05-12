@@ -21,10 +21,113 @@ from open_notebook.domain.presentation import (
 )
 from api.services.presentation_generation_service import PresentationGenerationService
 from api.services.pptx_export_service import PPTXExportService
+from api.services.s3_service import S3Service
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/presentations", tags=["presentations"])
+
+
+# Helper function to upload presentation to S3
+async def _upload_presentation_to_s3(
+    db: aiosqlite.Connection,
+    presentation_id: str,
+    notebook_id: str
+):
+    """Upload generated presentation to S3 and create document record"""
+    import uuid
+
+    # Fetch presentation
+    pres_query = "SELECT * FROM presentations WHERE id = ?"
+    async with db.execute(pres_query, (presentation_id,)) as cursor:
+        pres_row = await cursor.fetchone()
+
+    if not pres_row:
+        raise ValueError("Presentation not found")
+
+    presentation = Presentation.from_db(dict(pres_row))
+
+    # Fetch slides
+    slides_query = """
+        SELECT * FROM presentation_content
+        WHERE presentation_id = ?
+        ORDER BY slide_number
+    """
+    async with db.execute(slides_query, (presentation_id,)) as cursor:
+        slide_rows = await cursor.fetchall()
+
+    # Parse JSON fields
+    slides = []
+    for row in slide_rows:
+        slide_dict = dict(row)
+        if isinstance(slide_dict.get("content_json"), str):
+            slide_dict["content_json"] = json.loads(slide_dict["content_json"])
+        slides.append(slide_dict)
+
+    # Fetch template
+    template_query = "SELECT * FROM presentation_templates WHERE id = ?"
+    async with db.execute(template_query, (presentation.template_id,)) as cursor:
+        template_row = await cursor.fetchone()
+
+    if not template_row:
+        raise ValueError("Template not found")
+
+    template = PresentationTemplate.from_db(dict(template_row))
+
+    # Generate PPTX
+    export_service = PPTXExportService()
+    pptx_bytes = export_service.export_to_pptx(
+        slides=slides,
+        theme=template.theme_json,
+        title=presentation.title
+    )
+
+    # Upload to S3
+    s3_service = S3Service()
+    if not s3_service.client:
+        raise RuntimeError("S3 service not available")
+
+    # Create S3 key
+    s3_key = f"presentations/{notebook_id}/{presentation_id}.pptx"
+
+    # Upload
+    file_url = s3_service.upload_file(
+        file_obj=io.BytesIO(pptx_bytes),
+        object_name=s3_key,
+        content_type="application/vnd.openxmlformats-officedocument.presentationml.presentation"
+    )
+
+    # Create document record
+    doc_id = str(uuid.uuid4())
+    doc_query = """
+        INSERT INTO workspace_documents (
+            id, notebook_id, title, description, document_type,
+            file_url, file_size, s3_key, mime_type, metadata, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    """
+
+    metadata = json.dumps({
+        "presentation_id": presentation_id,
+        "slide_count": len(slides),
+        "template_id": presentation.template_id
+    })
+
+    await db.execute(doc_query, (
+        doc_id,
+        notebook_id,
+        presentation.title,
+        f"Generated presentation with {len(slides)} slides",
+        "presentation",
+        file_url,
+        len(pptx_bytes),
+        s3_key,
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        metadata
+    ))
+    await db.commit()
+
+    logger.info(f"Created document record {doc_id} for presentation {presentation_id}")
+    return doc_id
 
 
 # Request/Response Models
@@ -99,6 +202,7 @@ async def generate_presentation(
     Two-phase generation:
     1. AI creates slide outline
     2. AI generates detailed content per slide
+    3. Upload PPTX to S3 and create document record
     """
     try:
         service = PresentationGenerationService(db)
@@ -110,6 +214,18 @@ async def generate_presentation(
             user_prompt=request.user_prompt,
             target_slide_count=request.target_slide_count
         )
+
+        # Upload PPTX to S3 and create document record
+        if request.notebook_id:
+            try:
+                await _upload_presentation_to_s3(
+                    db=db,
+                    presentation_id=presentation_id,
+                    notebook_id=request.notebook_id
+                )
+                logger.info(f"Uploaded presentation {presentation_id} to S3")
+            except Exception as e:
+                logger.warning(f"Failed to upload to S3: {e}. Presentation still available for download.")
 
         return {
             "success": True,

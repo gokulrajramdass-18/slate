@@ -19,11 +19,13 @@ import {
   type Node,
   type Edge,
   BackgroundVariant,
+  useReactFlow,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
+import dagre from 'dagre';
 
 import { Button } from '@/components/ui/button';
-import { Plus } from 'lucide-react';
+import { Plus, Network } from 'lucide-react';
 import { nodeTypes } from './NodeComponents';
 import { ExecutionOverlay } from './ExecutionOverlay';
 import { useGraphStore } from '@/lib/stores/graph-store';
@@ -42,6 +44,45 @@ let currentGraphState: {
 export function getCurrentGraphState() {
   return currentGraphState;
 }
+
+// ============================================================================
+// Auto Layout Function using Dagre
+// ============================================================================
+
+const getLayoutedElements = (nodes: Node[], edges: Edge[], direction = 'TB') => {
+  const dagreGraph = new dagre.graphlib.Graph();
+  dagreGraph.setDefaultEdgeLabel(() => ({}));
+
+  const nodeWidth = 250;
+  const nodeHeight = 150;
+
+  const isHorizontal = direction === 'LR';
+  dagreGraph.setGraph({ rankdir: direction, nodesep: 100, ranksep: 150 });
+
+  nodes.forEach((node) => {
+    dagreGraph.setNode(node.id, { width: nodeWidth, height: nodeHeight });
+  });
+
+  edges.forEach((edge) => {
+    dagreGraph.setEdge(edge.source, edge.target);
+  });
+
+  dagre.layout(dagreGraph);
+
+  const layoutedNodes = nodes.map((node) => {
+    const nodeWithPosition = dagreGraph.node(node.id);
+
+    return {
+      ...node,
+      position: {
+        x: nodeWithPosition.x - nodeWidth / 2,
+        y: nodeWithPosition.y - nodeHeight / 2,
+      },
+    };
+  });
+
+  return { nodes: layoutedNodes, edges };
+};
 
 // ============================================================================
 // Graph Editor Component
@@ -166,6 +207,31 @@ export function GraphEditor({
     [setNodes]
   );
 
+  // Auto-layout nodes
+  const handleAutoLayout = useCallback(() => {
+    const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(
+      nodes,
+      edges,
+      'TB' // Top to Bottom layout
+    );
+
+    setNodes([...layoutedNodes]);
+    setEdges([...layoutedEdges]);
+
+    // Update Zustand store
+    requestAnimationFrame(() => {
+      useGraphStore.getState().setNodes(layoutedNodes);
+      useGraphStore.getState().setEdges(layoutedEdges);
+    });
+
+    // Fit view after layout
+    if (reactFlowInstance) {
+      setTimeout(() => {
+        reactFlowInstance.fitView({ padding: 0.2, duration: 300 });
+      }, 50);
+    }
+  }, [nodes, edges, setNodes, setEdges, reactFlowInstance]);
+
   // Expose handleAddNode via callback prop or window reference
   React.useEffect(() => {
     // Always expose to window for toolbar access
@@ -226,6 +292,22 @@ export function GraphEditor({
       >
         <Background variant={BackgroundVariant.Dots} gap={16} size={1} />
         <Controls />
+
+        {/* Auto Layout Button */}
+        {nodes.length > 0 && (
+          <div className="absolute top-4 right-4 z-10">
+            <Button
+              onClick={handleAutoLayout}
+              variant="outline"
+              size="sm"
+              className="bg-background shadow-lg hover:bg-accent"
+            >
+              <Network className="h-4 w-4 mr-2" />
+              Auto Layout
+            </Button>
+          </div>
+        )}
+
         <MiniMap
           nodeColor={(node) => {
             const colors: Record<string, string> = {

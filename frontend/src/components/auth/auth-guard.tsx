@@ -34,13 +34,22 @@ export function AuthGuard({
 }: AuthGuardProps) {
   const router = useRouter();
   const pathname = usePathname();
-  const { isAuthenticated, token } = useAuthStore();
+  const { isAuthenticated, token, loadPermissions } = useAuthStore();
   const [isHydrated, setIsHydrated] = useState(false);
 
   // Wait for Zustand to hydrate from localStorage
   useEffect(() => {
     setIsHydrated(true);
   }, []);
+
+  // Load permissions when authenticated
+  useEffect(() => {
+    if (isHydrated && isAuthenticated && token) {
+      loadPermissions().catch((error) => {
+        console.error("Failed to load permissions:", error);
+      });
+    }
+  }, [isHydrated, isAuthenticated, token, loadPermissions]);
 
   useEffect(() => {
     // Only run on client side and after hydration
@@ -55,7 +64,7 @@ export function AuthGuard({
       router.replace(`${redirectTo}${returnUrl}`);
     } else if (!requireAuth && isAuthed && pathname === "/login") {
       // If user is authenticated and on login page, redirect to dashboard
-      router.replace("/workspaces");
+      router.replace("/dashboard");
     }
   }, [isAuthenticated, token, requireAuth, redirectTo, pathname, router, isHydrated]);
 

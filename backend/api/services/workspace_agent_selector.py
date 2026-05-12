@@ -106,8 +106,8 @@ class WorkspaceAgentSelector:
         """
         Select the best agent to handle a chat message.
 
-        For now, this returns the first assigned agent.
-        Future: Implement intelligent routing based on message content and agent roles.
+        Intelligently routes messages to agents only when they need specialized capabilities.
+        Simple conversational messages are handled by regular chat flow.
 
         Args:
             workspace_id: Workspace/notebook ID
@@ -115,7 +115,7 @@ class WorkspaceAgentSelector:
             context: Optional context information
 
         Returns:
-            Selected agent dict or None if no agents assigned
+            Selected agent dict or None if no agents assigned or message is conversational
         """
         agents = await self.get_workspace_agents(workspace_id)
 
@@ -123,12 +123,43 @@ class WorkspaceAgentSelector:
             logger.info(f"No agents assigned to workspace {workspace_id}")
             return None
 
-        # For now, return the first agent
-        # TODO: Implement intelligent routing based on:
-        #  - Message content analysis
-        #  - Agent role matching
-        #  - Agent skills/tools
-        #  - Current task context
+        # Smart routing: Skip agent for simple conversational messages
+        # This prevents unnecessary tool calling overhead for greetings and simple chat
+        message_lower = message.lower().strip()
+
+        # Define conversational patterns that don't need agents
+        simple_greetings = [
+            "hi", "hello", "hey", "greetings", "good morning", "good afternoon",
+            "good evening", "howdy", "hiya", "sup", "yo"
+        ]
+        simple_responses = [
+            "thanks", "thank you", "ok", "okay", "sure", "yes", "no",
+            "bye", "goodbye", "see you", "later", "cool", "great", "awesome"
+        ]
+
+        # Check if message is a simple conversational phrase (without punctuation)
+        message_clean = message_lower.strip(".,!?")
+
+        if message_clean in simple_greetings or message_clean in simple_responses:
+            logger.info(f"Skipping agent for conversational message: '{message}'")
+            return None
+
+        # Check if message is very short and likely conversational (< 20 chars, no question mark)
+        if len(message.strip()) < 20 and '?' not in message:
+            # Allow short commands/queries through if they contain keywords
+            task_keywords = [
+                "query", "search", "find", "get", "show", "list", "create",
+                "update", "delete", "analyze", "calculate", "compare", "fetch"
+            ]
+            if not any(keyword in message_lower for keyword in task_keywords):
+                logger.info(f"Skipping agent for short conversational message: '{message}'")
+                return None
+
+        # Message needs agent capabilities - select the first agent
+        # TODO: Future intelligent routing based on:
+        #  - Agent role matching with message intent
+        #  - Agent skills/tools availability
+        #  - Task complexity assessment
         selected = agents[0]
 
         logger.info(

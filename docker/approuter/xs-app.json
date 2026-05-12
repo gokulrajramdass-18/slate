@@ -1,0 +1,23 @@
+{
+  "authenticationMethod": "route",
+  "sessionTimeout": 480,
+  "routes": [
+    {
+      "source": "^/api/(.*)$",
+      "target": "/api/$1",
+      "destination": "backend",
+      "authenticationType": "xsuaa",
+      "csrfProtection": false
+    },
+    {
+      "source": "^/(.*)$",
+      "target": "/$1",
+      "destination": "frontend",
+      "authenticationType": "xsuaa"
+    }
+  ],
+  "logout": {
+    "logoutEndpoint": "/logout",
+    "logoutPage": "/"
+  }
+}

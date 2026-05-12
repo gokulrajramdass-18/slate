@@ -10,6 +10,7 @@
 import { useState, useEffect } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useGuidedCreationStore } from '@/lib/stores/guided-creation-store';
+import { useAuthStore } from '@/lib/stores/auth-store';
 import {
   analyzeGoal,
   submitClarification,
@@ -98,6 +99,7 @@ export function GuidedWorkspaceWizard() {
   const resumeSession = async (id: string) => {
     try {
       setIsResuming(true);
+      setError(null); // Clear any existing errors
       console.log('🔄 Resuming session:', id);
       const session = await getSession(id);
       console.log('✅ Session fetched:', session);
@@ -255,11 +257,23 @@ export function GuidedWorkspaceWizard() {
 
       toast.success('Draft workspace resumed');
       console.log('✅ Resume complete');
-    } catch (error) {
+    } catch (error: any) {
       console.error('❌ Failed to resume session:', error);
-      toast.error('Failed to resume draft workspace');
-      // Start fresh if resume fails
-      resetWizard();
+
+      // Check if it's a 404 (session not found) or 410 (session expired)
+      const status = error.response?.status;
+      if (status === 404 || status === 410) {
+        // Session not found or expired - start fresh without showing error
+        console.log('Session not found or expired, starting fresh');
+        toast.info('Starting a new workspace setup');
+        resetWizard();
+        // Remove session parameter from URL
+        router.replace('/workspaces/create/guided');
+      } else {
+        // Other errors - show error message
+        toast.error('Failed to resume draft workspace');
+        resetWizard();
+      }
     } finally {
       setIsResuming(false);
     }
@@ -355,11 +369,16 @@ export function GuidedWorkspaceWizard() {
   };
 
   const handleDiscoverResources = async () => {
-    if (!sessionId) return;
+    if (!sessionId) {
+      console.error('❌ No session ID available for resource discovery');
+      setError('Session expired. Please start over.');
+      return;
+    }
 
     try {
       setLoading(true);
       setError(null);
+      console.log('🔍 Discovering resources for session:', sessionId);
 
       const response = await discoverResources({
         session_id: sessionId,
@@ -434,7 +453,13 @@ export function GuidedWorkspaceWizard() {
 
       goToNextStep();
     } catch (err: any) {
-      setError(err.response?.data?.detail || 'Failed to discover resources');
+      console.error('❌ Failed to discover resources:', err);
+      console.error('Session ID:', sessionId);
+      console.error('Error response:', err.response?.data);
+
+      const errorMessage = err.response?.data?.detail || 'Failed to discover resources';
+      console.log('Displaying error:', errorMessage);
+      setError(errorMessage);
     } finally {
       setLoading(false);
     }
@@ -446,6 +471,13 @@ export function GuidedWorkspaceWizard() {
     try {
       setLoading(true);
       setError(null);
+
+      console.log('[handleGeneratePlan] Auth state check:', {
+        isAuthenticated: useAuthStore.getState().isAuthenticated,
+        hasToken: !!useAuthStore.getState().token,
+        userId: useAuthStore.getState().user?.id,
+        sessionId
+      });
 
       const response = await generatePlan({
         session_id: sessionId,
@@ -472,7 +504,14 @@ export function GuidedWorkspaceWizard() {
 
       goToNextStep();
     } catch (err: any) {
-      setError(err.response?.data?.detail || 'Failed to generate plan');
+      console.error('❌ Failed to generate plan:', err);
+
+      // Check if it's an auth error
+      if (err.response?.status === 401) {
+        setError('Authentication required. Please log in to use the guided workspace wizard.');
+      } else {
+        setError(err.response?.data?.detail || 'Failed to generate plan');
+      }
     } finally {
       setLoading(false);
     }

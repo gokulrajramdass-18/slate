@@ -46,37 +46,24 @@ export function ChatMessage({ message, isStreaming = false, notebookId }: ChatMe
   const contentRef = useRef<HTMLDivElement>(null);
   const router = useRouter();
 
+  // Memoize presentation intent detection to avoid re-computing on every render
+  const presentationIntent = useMemo(() => {
+    if (!isUser || isStreaming) return { isMatch: false };
+    return detectPresentationIntent(message.content);
+  }, [isUser, isStreaming, message.content]);
+
   // Determine effective render mode
   const renderMode = message.render_mode ?? "markdown";
 
-  // Debug logging
-  console.log("[ChatMessage] Render mode:", renderMode);
-  console.log("[ChatMessage] Has content:", !!message.content);
-  console.log("[ChatMessage] Has UI components:", !!message.ui_components);
-  console.log("[ChatMessage] Has tool results:", !!message.tool_results);
-
   // Parse JSON fields safely
   const parsedUIComponents = useMemo((): UIComponentData[] | undefined => {
-    console.log("[ChatMessage] ===== PARSING UI COMPONENTS =====");
-    console.log("[ChatMessage] Raw ui_components:", message.ui_components);
-    console.log("[ChatMessage] Type:", typeof message.ui_components);
-
     if (!message.ui_components) return undefined;
     try {
       const parsed = typeof message.ui_components === "string"
         ? JSON.parse(message.ui_components)
         : message.ui_components;
-
-      console.log("[ChatMessage] Parsed ui_components:", parsed);
-      console.log("[ChatMessage] Parsed is array:", Array.isArray(parsed));
-      console.log("[ChatMessage] Parsed length:", parsed?.length);
-      console.log("[ChatMessage] First parsed component:", parsed?.[0]);
-      console.log("[ChatMessage] First component props:", parsed?.[0]?.props);
-      console.log("[ChatMessage] First component columns:", parsed?.[0]?.props?.columns);
-
       return parsed;
     } catch (e) {
-      console.error("[ChatMessage] Failed to parse ui_components:", e);
       return undefined;
     }
   }, [message.ui_components]);
@@ -161,14 +148,16 @@ export function ChatMessage({ message, isStreaming = false, notebookId }: ChatMe
     const handleCitationClick = (e: MouseEvent) => {
       const target = e.target as HTMLElement;
       if (target.classList.contains('citation-link')) {
+        e.preventDefault();
+        e.stopPropagation();
         const sourceIndex = target.getAttribute('data-source');
         if (sourceIndex) {
           const badge = document.querySelector(`[data-source-index="${sourceIndex}"]`);
           if (badge) {
             badge.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-            badge.classList.add('ring-2', 'ring-primary-500');
+            badge.classList.add('ring-2', 'ring-blue-500', 'ring-offset-2');
             setTimeout(() => {
-              badge.classList.remove('ring-2', 'ring-primary-500');
+              badge.classList.remove('ring-2', 'ring-blue-500', 'ring-offset-2');
             }, 2000);
           }
         }
@@ -182,17 +171,36 @@ export function ChatMessage({ message, isStreaming = false, notebookId }: ChatMe
   }, [message.content, isUser]);
 
   // Process message content to make citations clickable
-  const processedContent = message.content.replace(
-    /\[(\d+)\]/g,
-    '<sup class="citation-link cursor-pointer text-primary-600 dark:text-primary-400 hover:underline font-semibold" data-source="$1">[$1]</sup>'
-  );
+  const processedContent = useMemo(() => {
+    if (!message.sources || message.sources.length === 0) {
+      return message.content;
+    }
+
+    return message.content.replace(
+      /\[(\d+)\]/g,
+      (match, num) => {
+        const sourceIndex = parseInt(num);
+        const source = message.sources?.[sourceIndex - 1];
+        const sourceName = source?.source_name || 'Source';
+        return `<sup class="citation-link cursor-pointer text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-200 hover:underline font-bold transition-colors" data-source="${num}" title="${sourceName}">[${num}]</sup>`;
+      }
+    );
+  }, [message.content, message.sources]);
 
   const renderMarkdownContent = () => (
-    <div ref={contentRef} className="prose prose-sm dark:prose-invert max-w-none leading-7 prose-pre:max-w-full prose-pre:overflow-x-auto prose-table:max-w-full prose-table:overflow-x-auto prose-p:my-3 prose-headings:mb-3 prose-headings:mt-4">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        rehypePlugins={[rehypeHighlight, rehypeRaw]}
-        components={{
+    <div ref={contentRef} data-streaming={isStreaming} className="prose prose-sm dark:prose-invert max-w-full leading-7 prose-pre:max-w-full prose-pre:overflow-x-auto prose-table:max-w-full prose-table:overflow-x-auto prose-p:my-3 prose-p:break-words prose-headings:mb-3 prose-headings:mt-4 overflow-hidden">
+      {isStreaming ? (
+        // During streaming, show raw text with basic formatting to avoid expensive markdown parsing
+        <pre className="whitespace-pre-wrap font-sans text-[15px] leading-7">
+          {processedContent}
+          <span className="inline-block w-2 h-4 ml-1 bg-current animate-pulse" />
+        </pre>
+      ) : (
+        // After streaming completes, render full markdown
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          rehypePlugins={[rehypeHighlight, rehypeRaw]}
+          components={{
           pre: ({ children, ...props }: any) => (
             <pre
               className="overflow-x-auto max-w-full bg-gray-900 text-gray-100 p-4 rounded-lg my-4"
@@ -302,12 +310,14 @@ export function ChatMessage({ message, isStreaming = false, notebookId }: ChatMe
               {children}
             </h3>
           ),
+          sup: ({ children, ...props }: any) => {
+            // Preserve citation link styling from processedContent
+            return <sup {...props}>{children}</sup>;
+          },
         }}
       >
         {processedContent}
       </ReactMarkdown>
-      {isStreaming && (
-        <span className="inline-block w-2 h-4 ml-1 bg-current animate-pulse" />
       )}
     </div>
   );
@@ -405,7 +415,7 @@ export function ChatMessage({ message, isStreaming = false, notebookId }: ChatMe
           /* Normal rendering for non-hybrid modes */
           <div
             className={cn(
-              "rounded-2xl px-6 py-4 shadow-sm transition-all",
+              "rounded-2xl px-6 py-4 shadow-sm transition-all break-words overflow-hidden",
               isUser
                 ? "bg-gradient-to-br from-blue-500 to-blue-600 text-white max-w-[85%] shadow-md"
                 : "bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 border border-gray-200 dark:border-gray-700 max-w-full hover:shadow-md",
@@ -420,7 +430,7 @@ export function ChatMessage({ message, isStreaming = false, notebookId }: ChatMe
         )}
 
         {/* Presentation Intent Detection - Show after user messages */}
-        {isUser && detectPresentationIntent(message.content).isMatch && (
+        {presentationIntent.isMatch && (
           <div className="w-full max-w-2xl mt-4">
             <PresentationChatCommands
               message={message.content}

@@ -108,6 +108,7 @@ async def get_user_response_data(user: User) -> dict:
         "avatar_url": user.avatar_url,
         "is_superadmin": user.is_superadmin,
         "status": user.status,
+        "last_login": user.last_login.isoformat() if user.last_login else None,
         "roles": [
             {"id": r.id, "name": r.name, "display_name": r.display_name}
             for r in roles
@@ -299,6 +300,39 @@ async def get_current_user_info(current_user: User = Depends(get_current_active_
     """
     user_data = await get_user_response_data(current_user)
     return user_data
+
+
+@router.get("/me/permissions")
+async def get_current_user_permissions(current_user: User = Depends(get_current_active_user)):
+    """
+    Get all permissions for current user (aggregated from all roles).
+
+    Returns a list of permissions with resource_type, action, and scope.
+    Superadmins get a special flag.
+    """
+    from open_notebook.domain.user import RolePermission
+
+    # Superadmins have all permissions
+    if current_user.is_superadmin:
+        return {
+            "is_superadmin": True,
+            "permissions": []  # No need to list all, frontend checks is_superadmin
+        }
+
+    # Get all permissions from user's roles
+    permissions = await RolePermission.get_for_user(current_user.id)
+
+    return {
+        "is_superadmin": False,
+        "permissions": [
+            {
+                "resource_type": p.resource_type,
+                "action": p.action,
+                "scope": p.scope,
+            }
+            for p in permissions
+        ]
+    }
 
 
 @router.get("/status")

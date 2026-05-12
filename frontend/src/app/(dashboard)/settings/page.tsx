@@ -18,10 +18,21 @@ import {
   FileText,
   PlayCircle,
   UserCircle,
-  Shield
+  Shield,
+  Newspaper,
+  Activity
 } from "lucide-react";
 
 const settingsCards = [
+  {
+    href: "/settings/daily-brief",
+    title: "Daily Brief",
+    description: "Configure daily brief feature and AI summaries",
+    icon: Newspaper,
+    color: "text-indigo-600",
+    bgColor: "bg-indigo-50 dark:bg-indigo-950",
+    badge: "Admin"
+  },
   {
     href: "/settings/actions",
     title: "Actions",
@@ -117,6 +128,15 @@ const settingsCards = [
     icon: Network,
     color: "text-indigo-600",
     bgColor: "bg-indigo-50 dark:bg-indigo-950"
+  },
+  {
+    href: "/settings/observability",
+    title: "Observability",
+    description: "Configure monitoring and tracing with Langfuse or MLFlow",
+    icon: Activity,
+    color: "text-purple-600",
+    bgColor: "bg-purple-50 dark:bg-purple-950",
+    badge: "Admin"
   },
   {
     href: "/settings/oauth-apps",

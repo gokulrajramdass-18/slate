@@ -8,6 +8,12 @@ interface Role {
   display_name: string;
 }
 
+interface Permission {
+  resource_type: string;
+  action: string;
+  scope: string;
+}
+
 interface User {
   id: string;
   username: string;
@@ -16,6 +22,7 @@ interface User {
   avatar_url?: string;
   is_superadmin: boolean;
   status: string;
+  last_login?: string;
   roles: Role[];
 }
 
@@ -23,11 +30,13 @@ interface AuthState {
   token: string | null;
   refreshToken: string | null;
   user: User | null;
+  permissions: Permission[];
   isAuthenticated: boolean;
   login: (username: string, password: string) => Promise<void>;
   logout: () => void;
   refreshAccessToken: () => Promise<void>;
   setUser: (user: User) => void;
+  loadPermissions: () => Promise<void>;
   hasRole: (roleName: string) => boolean;
   hasPermission: (resource: string, action: string) => boolean;
 }
@@ -38,6 +47,7 @@ export const useAuthStore = create<AuthState>()(
       token: null,
       refreshToken: null,
       user: null,
+      permissions: [],
       isAuthenticated: false,
 
       login: async (username: string, password: string) => {
@@ -62,6 +72,9 @@ export const useAuthStore = create<AuthState>()(
             user: data.user,
             isAuthenticated: true,
           });
+
+          // Load user permissions after login
+          await get().loadPermissions();
         } catch (error) {
           console.error("Login error:", error);
           throw error;
@@ -86,6 +99,7 @@ export const useAuthStore = create<AuthState>()(
           token: null,
           refreshToken: null,
           user: null,
+          permissions: [],
           isAuthenticated: false,
         });
       },
@@ -116,6 +130,9 @@ export const useAuthStore = create<AuthState>()(
             token: data.access_token,
             user: data.user,
           });
+
+          // Reload permissions after token refresh
+          await get().loadPermissions();
         } catch (error) {
           console.error("Token refresh error:", error);
           get().logout();
@@ -127,6 +144,40 @@ export const useAuthStore = create<AuthState>()(
         set({ user });
       },
 
+      loadPermissions: async () => {
+        const { token, user } = get();
+        if (!token || !user) {
+          set({ permissions: [] });
+          return;
+        }
+
+        // Superadmins don't need to load permissions
+        if (user.is_superadmin) {
+          set({ permissions: [] });
+          return;
+        }
+
+        try {
+          const response = await fetch(`${API_BASE_URL}/auth/me/permissions`, {
+            method: "GET",
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+          });
+
+          if (response.ok) {
+            const data = await response.json();
+            set({ permissions: data.permissions || [] });
+          } else {
+            console.error("Failed to load permissions");
+            set({ permissions: [] });
+          }
+        } catch (error) {
+          console.error("Error loading permissions:", error);
+          set({ permissions: [] });
+        }
+      },
+
       hasRole: (roleName: string) => {
         const { user } = get();
         if (!user) return false;
@@ -135,14 +186,16 @@ export const useAuthStore = create<AuthState>()(
       },
 
       hasPermission: (resource: string, action: string) => {
-        const { user } = get();
+        const { user, permissions } = get();
         if (!user) return false;
+
         // Superadmin has all permissions
         if (user.is_superadmin) return true;
 
-        // TODO: Implement client-side permission check
-        // For now, rely on backend enforcement
-        return true;
+        // Check if user has permission for this resource+action
+        return permissions.some(
+          (p) => p.resource_type === resource && p.action === action
+        );
       },
     }),
     {

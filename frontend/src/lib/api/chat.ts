@@ -56,16 +56,8 @@ export const chatApi = {
     onToolResults?: (results: any[]) => void,
     onAgentStep?: (step: AgentStep) => void
   ): Promise<ChatMessage> => {
-    console.log("[Chat API] sendMessage called with:", {
-      sessionId,
-      message,
-      hasOnChunk: !!onChunk,
-      hasOnAgentStep: !!onAgentStep
-    });
-
     if (onChunk) {
       // Streaming mode with SSE
-      console.log("[Chat API] Entering streaming mode...");
 
       // Get user ID from auth store
       const { user } = (await import("@/lib/stores/auth-store")).useAuthStore.getState();
@@ -89,7 +81,6 @@ export const chatApi = {
       // Handle page visibility change (refresh, tab switch)
       // Only abort if the page is being unloaded (refresh/close)
       const handleBeforeUnload = () => {
-        console.log("[Chat API] Page unloading - aborting stream");
         cleanup();
       };
 
@@ -101,17 +92,6 @@ export const chatApi = {
         const baseURL = apiClient.defaults.baseURL || 'http://127.0.0.1:5055/api';
         const url = `${baseURL}/chat/sessions/${sessionId}/messages`;
         const authHeader = apiClient.defaults.headers.Authorization as string;
-
-        console.log("[Chat API] Preparing request:", {
-          url,
-          baseURL,
-          originalBaseURL: apiClient.defaults.baseURL,
-          hasAuth: !!authHeader,
-          authHeaderValue: authHeader ? `${authHeader.substring(0, 20)}...` : 'none',
-          userId,
-          messageKeys: Object.keys(message),
-          sessionId
-        });
 
         let response;
         try {
@@ -130,37 +110,23 @@ export const chatApi = {
           const errorDetails = {
             name: fetchError instanceof Error ? fetchError.name : 'Unknown',
             message: fetchError instanceof Error ? fetchError.message : String(fetchError),
-            stack: fetchError instanceof Error ? fetchError.stack?.split('\n').slice(0, 3).join('\n') : undefined,
-            type: fetchError?.constructor?.name,
             isAbortError: (fetchError as any)?.name === 'AbortError',
-            isDOMException: fetchError instanceof DOMException,
-            isTypeError: fetchError instanceof TypeError,
-            url,
-            baseURL: apiClient.defaults.baseURL,
           };
-          console.error("[Chat API] Fetch failed:", errorDetails);
-          console.error("[Chat API] Full error object:", fetchError);
 
           // Throw with more context
           if (errorDetails.isAbortError) {
             throw new Error(`Request was aborted`);
           }
-          throw new Error(`Chat API fetch failed: ${errorDetails.message || 'Unknown error'} (URL: ${url})`);
+          throw new Error(`Chat API fetch failed: ${errorDetails.message || 'Unknown error'}`);
         }
-
-        console.log("[Chat API] Response status:", response.status);
-        console.log("[Chat API] Response headers:", Object.fromEntries(response.headers.entries()));
 
         if (!response.ok) {
           const errorText = await response.text();
-          console.error("[Chat API] Response not OK:", response.status, response.statusText);
-          console.error("[Chat API] Error body:", errorText);
           throw new Error(`Request failed: ${response.status} - ${errorText}`);
         }
 
         const reader = response.body?.getReader();
         if (!reader) {
-          console.error("[Chat API] No reader available from response body");
           throw new Error("No response body reader");
         }
 
@@ -174,31 +140,21 @@ export const chatApi = {
         let currentEvent = "";
         let dataBuffer = "";
 
-        console.log("[Chat API] Starting SSE stream...");
-
-        let iteration = 0;
         try {
           while (true) {
-            iteration++;
-            console.log(`[Chat API] Read iteration ${iteration}`);
-
             // Check if aborted
             if (abortController.signal.aborted) {
-              console.log("[Chat API] Stream aborted by client");
               reader.cancel();
               break;
             }
 
             const { done, value } = await reader.read();
-            console.log(`[Chat API] Read result - done: ${done}, value length: ${value?.length || 0}`);
 
             if (done) {
-              console.log("[Chat API] Stream ended (done=true)");
               break;
             }
 
           buffer += decoder.decode(value, { stream: true });
-          console.log(`[Chat API] Buffer size: ${buffer.length}, content preview: ${buffer.substring(0, 100)}`);
 
           const lines = buffer.split("\n");
 
@@ -216,7 +172,6 @@ export const chatApi = {
             if (trimmedLine.startsWith("event:")) {
               // New event - reset everything
               currentEvent = trimmedLine.slice(6).trim();
-              console.log(`[Chat API] Event: ${currentEvent}`);
               dataBuffer = "";
             } else if (trimmedLine.startsWith("data:")) {
               // Accumulate data lines (remove "data:" prefix)
@@ -224,51 +179,50 @@ export const chatApi = {
               // Only accumulate non-empty data
               if (dataChunk) {
                 dataBuffer += dataChunk;
-                console.log(`[Chat API] Accumulated data (length: ${dataBuffer.length}): ${dataBuffer.substring(0, 50)}...`);
-              } else {
-                console.log(`[Chat API] Skipped empty data line`);
               }
             } else if (trimmedLine === "") {
               // Blank line = end of SSE message
               // Only process if we have both event and data (and data is not empty)
               if (currentEvent && dataBuffer && dataBuffer.length > 0) {
-                console.log(`[Chat API] About to parse - event: "${currentEvent}", buffer length: ${dataBuffer.length}, buffer: "${dataBuffer}"`);
-
                 try {
                   const data = JSON.parse(dataBuffer);
-                  console.log(`[Chat API] Parsed data for ${currentEvent}:`, data);
 
                   // Skip empty objects - they're meaningless events
                   if (Object.keys(data).length === 0) {
-                    console.log(`[Chat API] Skipping empty object for event: ${currentEvent}`);
                     currentEvent = "";
                     dataBuffer = "";
                     continue;
                   }
 
-                  // Process events with error handling for each handler
+                  // Process events
                   if (currentEvent === "chunk") {
                     if (data.content) {
                       fullMessage += data.content;
-                      console.log(`[Chat API] Chunk received: +${data.content.length} chars, total: ${fullMessage.length}`);
+                      // Dispatch custom event for immediate DOM update
+                      console.log('[Chat API] Dispatching chunk event for session:', sessionId);
+                      window.dispatchEvent(new CustomEvent('streaming:chunk', {
+                        detail: { sessionId, content: data.content }
+                      }));
+                      // Also call callback for React state (will be batched)
                       onChunk(data.content);
                     }
                   } else if (currentEvent === "agent_step") {
-                    console.log(`[Chat API] Agent Step:`, data);
                     if (onAgentStep) {
+                      // Dispatch custom event for immediate DOM update
+                      console.log('[Chat API] Dispatching agent_step event for session:', sessionId);
+                      window.dispatchEvent(new CustomEvent('streaming:agent_step', {
+                        detail: { sessionId, step: data }
+                      }));
+                      // Also call callback for React state (will be batched)
                       onAgentStep(data);
                     }
                   } else if (currentEvent === "ui_components") {
-                    console.log(`[Chat API] UI Components:`, data);
                     uiComponents = data.components || [];
                     onUIComponents?.(uiComponents);
                   } else if (currentEvent === "tool_results") {
-                    console.log(`[Chat API] Tool Results:`, data);
                     toolResults = data.results || [];
                     onToolResults?.(toolResults);
                   } else if (currentEvent === "done") {
-                    console.log(`[Chat API] Stream complete. Message ID: ${data.message_id}, Final content length: ${fullMessage.length}`);
-                    console.log(`[Chat API] Final content preview:`, fullMessage.substring(0, 200));
                     // Stream complete - return with sources from done event
                     return {
                       id: data.message_id,
@@ -281,13 +235,18 @@ export const chatApi = {
                       tool_results: toolResults.length > 0 ? JSON.stringify(toolResults) : undefined,
                     };
                   } else if (currentEvent === "metadata") {
-                    // Handle metadata event
+                    // Handle metadata event - stream sources immediately to UI
                     if (data && typeof data === 'object' && data.context_info?.sources) {
                       sources = data.context_info.sources;
-                      console.log(`[Chat API] Metadata sources:`, sources);
-                    }
-                    // Always call metadata callback if provided
-                    if (onMetadata) {
+                      // Stream sources to the UI immediately via metadata callback
+                      if (onMetadata) {
+                        onMetadata({
+                          ...data,
+                          sources: sources // Ensure sources are in the metadata
+                        });
+                      }
+                    } else if (onMetadata) {
+                      // Always call metadata callback if provided
                       onMetadata(data);
                     }
                   } else if (currentEvent === "error") {
@@ -313,9 +272,6 @@ export const chatApi = {
                 }
               } else {
                 // Blank line with no pending data - just a separator, reset state
-                if (currentEvent || dataBuffer) {
-                  console.log(`[Chat API] Resetting incomplete SSE state (event: "${currentEvent}", dataLength: ${dataBuffer.length})`);
-                }
                 currentEvent = "";
                 dataBuffer = "";
               }
@@ -325,7 +281,6 @@ export const chatApi = {
         } catch (error) {
           // Handle abort errors gracefully
           if (error instanceof Error && error.name === 'AbortError') {
-            console.log("[Chat API] Stream aborted");
             throw new Error("Stream cancelled");
           }
           throw error;
@@ -333,8 +288,6 @@ export const chatApi = {
           // Cleanup
           window.removeEventListener('beforeunload', handleBeforeUnload);
         }
-
-        console.log("[Chat API] Stream ended without done event");
 
         // Fallback return
         return {
@@ -350,7 +303,6 @@ export const chatApi = {
       } catch (error) {
         // Handle abort errors gracefully - don't show to user
         if (error instanceof Error && (error.name === 'AbortError' || error.message === 'Stream cancelled')) {
-          console.log("[Chat API] Stream aborted gracefully");
           // Return empty result for aborted streams
           return {
             id: "",
@@ -360,7 +312,6 @@ export const chatApi = {
             created: new Date().toISOString(),
           };
         }
-        console.error("[Chat API] Stream error:", error);
         throw error;
       }
     }

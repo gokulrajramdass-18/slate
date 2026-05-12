@@ -65,7 +65,8 @@ export function AgentStepsViewer({ steps, isStreaming }: AgentStepsViewerProps) 
   };
 
   return (
-    <Card className="mb-2 p-2.5 bg-blue-50 dark:bg-blue-950 border-blue-200 dark:border-blue-800">
+    <div data-agent-steps="true" data-count={steps.length}>
+      <Card className="mb-2 p-2.5 bg-blue-50 dark:bg-blue-950 border-blue-200 dark:border-blue-800">
       {/* Header - Always visible with toggle button */}
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-1.5">
@@ -135,6 +136,32 @@ export function AgentStepsViewer({ steps, isStreaming }: AgentStepsViewerProps) 
                 {step.content}
               </p>
 
+              {/* Tool arguments (for tool_call steps) */}
+              {step.step_type === 'tool_call' && step.metadata?.args && (
+                <details className="text-xs mb-1.5">
+                  <summary className="cursor-pointer font-semibold text-purple-700 dark:text-purple-300 hover:text-purple-900 dark:hover:text-purple-100">
+                    📥 Tool Parameters
+                  </summary>
+                  <pre className="mt-1 p-2 bg-purple-50 dark:bg-purple-950 rounded border border-purple-200 dark:border-purple-800 overflow-x-auto text-[10px] text-purple-900 dark:text-purple-100">
+                    {JSON.stringify(step.metadata.args, null, 2)}
+                  </pre>
+                </details>
+              )}
+
+              {/* Tool output (for tool_result steps or if output is present) */}
+              {step.metadata?.output && (
+                <details className="text-xs mb-1.5">
+                  <summary className="cursor-pointer font-semibold text-green-700 dark:text-green-300 hover:text-green-900 dark:hover:text-green-100">
+                    📤 Tool Result
+                  </summary>
+                  <pre className="mt-1 p-2 bg-green-50 dark:bg-green-950 rounded border border-green-200 dark:border-green-800 overflow-x-auto text-[10px] text-green-900 dark:text-green-100 max-h-40 overflow-y-auto">
+                    {typeof step.metadata.output === 'string'
+                      ? step.metadata.output
+                      : JSON.stringify(step.metadata.output, null, 2)}
+                  </pre>
+                </details>
+              )}
+
               {/* Result summary (if available) */}
               {step.metadata?.result_summary && (
                 <div className="text-xs text-blue-700 dark:text-blue-300 mb-1.5 p-1.5 bg-blue-50 dark:bg-blue-950 rounded border border-blue-200 dark:border-blue-800">
@@ -177,7 +204,7 @@ export function AgentStepsViewer({ steps, isStreaming }: AgentStepsViewerProps) 
                   // Filter out internal fields and fields already displayed
                   const filteredMetadata = Object.fromEntries(
                     Object.entries(step.metadata).filter(([key]) =>
-                      !['tool_name', 'duration_ms', 'result_type', 'result_summary', 'error_message', 'started_at'].includes(key)
+                      !['tool_name', 'duration_ms', 'result_type', 'result_summary', 'error_message', 'started_at', 'args', 'output'].includes(key)
                     )
                   );
 
@@ -202,5 +229,6 @@ export function AgentStepsViewer({ steps, isStreaming }: AgentStepsViewerProps) 
       </div>
       )}
     </Card>
+    </div>
   );
 }

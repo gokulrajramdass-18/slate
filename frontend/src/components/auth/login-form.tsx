@@ -56,8 +56,8 @@ export function LoginForm() {
       toast.success("Login successful", {
         description: "Welcome back to Slate",
       });
-      // Redirect to workspaces after successful login
-      router.push("/workspaces");
+      // Redirect to dashboard after successful login
+      router.push("/dashboard");
     } catch (error) {
       toast.error("Login failed", {
         description: "Please check your username and password and try again.",

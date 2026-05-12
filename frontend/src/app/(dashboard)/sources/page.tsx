@@ -276,12 +276,12 @@ export default function SourcesPage() {
         </div>
       ) : (
         <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as SourceType | "all")}>
-          <TabsList className="w-full justify-start overflow-x-auto bg-gray-100 dark:bg-gray-900 p-1 rounded-lg">
-            <TabsTrigger value="all" className="flex items-center gap-2">
+          <TabsList className="w-full justify-start overflow-x-auto bg-gray-100 dark:bg-gray-900 p-1 rounded-lg h-12">
+            <TabsTrigger value="all" className="flex items-center gap-2 text-sm font-semibold">
               <FileText className="w-4 h-4" />
               All
               {sources.length > 0 && (
-                <span className="ml-1 inline-flex items-center justify-center rounded-full bg-blue-500 px-2 py-0.5 text-xs font-semibold text-white">
+                <span className="ml-1 inline-flex items-center justify-center rounded-full bg-gray-500 px-2 py-0.5 text-xs font-semibold text-white">
                   {sources.length}
                 </span>
               )}
@@ -293,16 +293,16 @@ export default function SourcesPage() {
 
               // Define badge colors for each source type
               const badgeColors: Record<string, string> = {
-                file: "bg-blue-500",
-                url: "bg-green-500",
-                text: "bg-purple-500",
-                youtube: "bg-red-500",
-                hana_table: "bg-orange-500",
-                api: "bg-cyan-500",
+                file: "bg-gray-500",
+                url: "bg-gray-500",
+                text: "bg-gray-500",
+                youtube: "bg-gray-500",
+                hana_table: "bg-gray-500",
+                api: "bg-gray-500",
               };
 
               return (
-                <TabsTrigger key={type} value={type} className="flex items-center gap-2">
+                <TabsTrigger key={type} value={type} className="flex items-center gap-2 text-sm font-semibold">
                   <Icon className={cn("w-4 h-4", config.color)} />
                   {config.label}
                   <span className={cn(

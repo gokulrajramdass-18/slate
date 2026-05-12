@@ -11,15 +11,27 @@ import { useParams, useRouter } from 'next/navigation';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { ArrowLeft, Save, Play, Settings, History, Loader2, Plus } from 'lucide-react';
+import { Checkbox } from '@/components/ui/checkbox';
+import { ArrowLeft, Save, Play, Settings, History, Loader2, Plus, FileText, Globe } from 'lucide-react';
 import { GraphEditor, getCurrentGraphState } from '@/components/workflows/GraphEditor';
 import { PropertyPanel } from '@/components/workflows/PropertyPanel';
 import { useGraphStore } from '@/lib/stores/graph-store';
 import { useSidebarStore } from '@/lib/stores/sidebar-store';
 import { useAuthStore } from '@/lib/stores/auth-store';
 import { workflowsApi } from '@/lib/api/workflows';
+import { workflowTemplatesApi } from '@/lib/api/workflow-templates';
 import type { WorkflowCreate, WorkflowUpdate } from '@/lib/api/workflows';
 import { toast } from 'sonner';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 
 // ============================================================================
 // Workflow Editor Page
@@ -192,6 +204,58 @@ export default function WorkflowEditorPage() {
 
   // Poll for execution status
   const [currentExecution, setCurrentExecution] = React.useState<any>(null);
+
+  // Template save dialog state
+  const [showTemplateDialog, setShowTemplateDialog] = React.useState(false);
+  const [templateName, setTemplateName] = React.useState('');
+  const [templateDescription, setTemplateDescription] = React.useState('');
+  const [templateCategory, setTemplateCategory] = React.useState('custom');
+  const [templateIsPublic, setTemplateIsPublic] = React.useState(false);
+
+  // Save as template mutation
+  const saveTemplateMutation = useMutation({
+    mutationFn: async () => {
+      // If this is a new workflow, we need to save it first
+      if (isNew) {
+        toast.error('Please save the workflow before creating a template');
+        throw new Error('Workflow must be saved first');
+      }
+
+      return workflowTemplatesApi.create({
+        workflow_id: workflowId,
+        name: templateName,
+        description: templateDescription,
+        category: templateCategory,
+        parameters: [], // Templates can define parameters if needed
+        is_public: templateIsPublic,
+      });
+    },
+    onSuccess: () => {
+      toast.success('Template created successfully');
+      setShowTemplateDialog(false);
+      setTemplateName('');
+      setTemplateDescription('');
+      setTemplateCategory('custom');
+    },
+    onError: (error: any) => {
+      toast.error(error.message || 'Failed to create template');
+    },
+  });
+
+  const handleSaveAsTemplate = () => {
+    // Pre-fill template name from workflow name
+    setTemplateName(metadata.name || 'Untitled Template');
+    setTemplateIsPublic(false);
+    setShowTemplateDialog(true);
+  };
+
+  const handleTemplateConfirm = () => {
+    if (!templateName.trim()) {
+      toast.error('Please enter a template name');
+      return;
+    }
+    saveTemplateMutation.mutate();
+  };
 
   // Track if workflow is executing (for UI blocking)
   const isExecuting = executeMutation.isPending || (currentExecution && currentExecution.status === 'running');
@@ -426,6 +490,16 @@ export default function WorkflowEditorPage() {
               <Button
                 size="sm"
                 variant="outline"
+                onClick={() => (window as any).__workflowAddNode?.('api')}
+                disabled={isExecuting}
+                className="h-7 px-2 text-xs shrink-0"
+              >
+                <Plus className="h-3 w-3 mr-1" />
+                API
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
                 onClick={() => (window as any).__workflowAddNode?.('compare')}
                 disabled={isExecuting}
                 className="h-7 px-2 text-xs shrink-0"
@@ -439,8 +513,24 @@ export default function WorkflowEditorPage() {
           <div className="h-6 w-px bg-border shrink-0" />
 
           <div className="flex items-center gap-1.5 ml-auto">
+            {isNew && (
+              <div className="text-xs text-muted-foreground bg-muted px-3 py-1.5 rounded-md mr-2">
+                💡 Save workflow first to access more features
+              </div>
+            )}
             {!isNew && (
               <>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleSaveAsTemplate}
+                  disabled={isExecuting || saveTemplateMutation.isPending}
+                  title="Save as Template"
+                  className="h-8 px-3"
+                >
+                  <FileText className="h-3.5 w-3.5 mr-1.5" />
+                  Save as Template
+                </Button>
                 <Button
                   variant="outline"
                   size="icon"
@@ -538,6 +628,93 @@ export default function WorkflowEditorPage() {
           </div>
         )}
       </div>
+
+      {/* Save as Template Dialog */}
+      <Dialog open={showTemplateDialog} onOpenChange={setShowTemplateDialog}>
+        <DialogContent className="sm:max-w-[500px]">
+          <DialogHeader>
+            <DialogTitle>Save as Template</DialogTitle>
+            <DialogDescription>
+              Create a reusable template from this workflow. Templates can be used to quickly create new workflows.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4 py-4">
+            <div className="grid gap-2">
+              <Label htmlFor="template-name">Template Name *</Label>
+              <Input
+                id="template-name"
+                value={templateName}
+                onChange={(e) => setTemplateName(e.target.value)}
+                placeholder="My Workflow Template"
+              />
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="template-description">Description</Label>
+              <Textarea
+                id="template-description"
+                value={templateDescription}
+                onChange={(e) => setTemplateDescription(e.target.value)}
+                placeholder="Describe what this template does..."
+                rows={3}
+              />
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="template-category">Category</Label>
+              <select
+                id="template-category"
+                value={templateCategory}
+                onChange={(e) => setTemplateCategory(e.target.value)}
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <option value="custom">Custom</option>
+                <option value="data_processing">Data Processing</option>
+                <option value="automation">Automation</option>
+                <option value="analytics">Analytics</option>
+                <option value="integration">Integration</option>
+                <option value="ai_ml">AI/ML</option>
+              </select>
+            </div>
+            <div className="flex items-center space-x-2 pt-2 pb-2 px-3 bg-muted/50 rounded-lg border border-dashed">
+              <Checkbox
+                id="template-public"
+                checked={templateIsPublic}
+                onCheckedChange={(checked) => setTemplateIsPublic(checked as boolean)}
+              />
+              <div className="flex-1">
+                <Label htmlFor="template-public" className="font-medium cursor-pointer flex items-center gap-2">
+                  <Globe className="h-4 w-4 text-blue-500" />
+                  Publish to Public Gallery
+                </Label>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Make this template available to all users in the template gallery
+                </p>
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setShowTemplateDialog(false)}
+              disabled={saveTemplateMutation.isPending}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleTemplateConfirm}
+              disabled={saveTemplateMutation.isPending || !templateName.trim()}
+            >
+              {saveTemplateMutation.isPending ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Creating...
+                </>
+              ) : (
+                'Create Template'
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
