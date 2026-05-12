@@ -114,6 +114,8 @@ API_PORT=${API_PORT:-5055}
 FRONTEND_PORT=${FRONTEND_PORT:-3000}
 HOSTING_PORT=${HOSTING_PORT:-5056}
 MINIO_PORT=${MINIO_PORT:-9000}
+MLFLOW_PORT=${MLFLOW_PORT:-5000}
+MLFLOW_ENABLED=${MLFLOW_ENABLED:-false}
 LANGFUSE_PORT=${LANGFUSE_PORT:-3001}
 LANGFUSE_ENABLED=${LANGFUSE_ENABLED:-false}
 
@@ -154,6 +156,20 @@ stop_docker_containers() {
         echo -e "${GREEN}✓ MinIO container stopped${NC}"
     fi
 
+    # Stop MLFlow container if running
+    if [ "$MLFLOW_ENABLED" = "true" ] || [ "$(docker ps -q -f name=slate-mlflow 2>/dev/null)" ]; then
+        echo -e "${YELLOW}Stopping MLFlow container...${NC}"
+        if [ -f "docker/compose/docker-compose.mlflow.yml" ]; then
+            docker-compose -f docker/compose/docker-compose.mlflow.yml down > /dev/null 2>&1 || true
+        else
+            # Fallback to stopping container directly
+            for container in $(docker ps -q -f name=slate-mlflow 2>/dev/null); do
+                docker stop $container > /dev/null 2>&1 || true
+            done
+        fi
+        echo -e "${GREEN}✓ MLFlow container stopped${NC}"
+    fi
+
     # Stop Langfuse containers if running
     if [ "$LANGFUSE_ENABLED" = "true" ] || [ "$(docker ps -q -f name=open-notebook-langfuse 2>/dev/null)" ]; then
         echo -e "${YELLOW}Stopping Langfuse containers...${NC}"
@@ -176,6 +192,7 @@ else
     check_and_kill_port $FRONTEND_PORT "Frontend"
     check_and_kill_port $HOSTING_PORT "Hosting"
     check_and_kill_port $MINIO_PORT "MinIO"
+    check_and_kill_port $MLFLOW_PORT "MLFlow"
 
     # Stop containers in local mode too
     stop_docker_containers

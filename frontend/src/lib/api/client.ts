@@ -15,6 +15,15 @@ apiClient.interceptors.request.use(
   (config) => {
     const token = useAuthStore.getState().token;
     const userId = useAuthStore.getState().user?.id;
+    const isAuthenticated = useAuthStore.getState().isAuthenticated;
+
+    console.log('[apiClient] Request interceptor:', {
+      url: config.url,
+      hasToken: !!token,
+      userId,
+      isAuthenticated,
+      tokenPreview: token ? `${token.substring(0, 20)}...` : 'none'
+    });
 
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
@@ -36,6 +45,13 @@ apiClient.interceptors.request.use(
 apiClient.interceptors.response.use(
   (response) => response,
   async (error: AxiosError) => {
+    console.log('[apiClient] Response error:', {
+      status: error.response?.status,
+      url: error.config?.url,
+      method: error.config?.method,
+      errorMessage: error.message
+    });
+
     // Log validation errors for debugging
     if (error.response?.status === 422) {
       console.error("Validation error:", error.response.data);
@@ -47,10 +63,12 @@ apiClient.interceptors.response.use(
 
     // Handle 401 - try to refresh token
     if (error.response?.status === 401) {
+      console.log('[apiClient] Got 401, attempting token refresh...');
       const originalRequest = error.config;
 
       // Avoid infinite loop - don't retry if this IS the refresh request
       if (originalRequest?.url?.includes("/auth/refresh")) {
+        console.log('[apiClient] Refresh request failed, logging out');
         useAuthStore.getState().logout();
         if (typeof window !== "undefined") {
           window.location.href = "/login";
@@ -60,6 +78,7 @@ apiClient.interceptors.response.use(
 
       // Avoid retry if already retried
       if ((originalRequest as any)._retry) {
+        console.log('[apiClient] Already retried, logging out');
         useAuthStore.getState().logout();
         if (typeof window !== "undefined") {
           window.location.href = "/login";
@@ -70,16 +89,19 @@ apiClient.interceptors.response.use(
       (originalRequest as any)._retry = true;
 
       try {
+        console.log('[apiClient] Refreshing token...');
         // Try to refresh the token
         await useAuthStore.getState().refreshAccessToken();
 
         // Retry the original request with new token
         const token = useAuthStore.getState().token;
+        console.log('[apiClient] Token refreshed, retrying request with new token');
         if (originalRequest && token) {
           originalRequest.headers.Authorization = `Bearer ${token}`;
           return apiClient(originalRequest);
         }
       } catch (refreshError) {
+        console.log('[apiClient] Token refresh failed, logging out');
         // Refresh failed, logout and redirect
         useAuthStore.getState().logout();
         if (typeof window !== "undefined") {

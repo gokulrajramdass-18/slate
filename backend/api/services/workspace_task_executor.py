@@ -255,15 +255,17 @@ class WorkspaceTaskExecutor:
             result = await self._run_task_logic(workspace_id, task)
             logger.info(f"✓ _run_task_logic returned: {result}")
 
-            # Mark as completed
+            # Mark as completed and save result
             await repo_execute("""
                 UPDATE workspace_plan_tasks
                 SET status = 'completed',
+                    result = :result,
                     completed_at = :completed_at,
                     updated = :updated
                 WHERE id = :task_id
             """, {
                 "task_id": task_id,
+                "result": result if result else None,
                 "completed_at": datetime.utcnow().isoformat(),
                 "updated": datetime.utcnow().isoformat()
             })
@@ -325,13 +327,14 @@ class WorkspaceTaskExecutor:
 
                 # Create error note
                 await repo_execute("""
-                    INSERT INTO notes (id, title, content, content_html, folder_id, created, updated)
-                    VALUES (:id, :title, :content, :content_html, :folder_id, :created, :updated)
+                    INSERT INTO notes (id, title, content, content_html, notebook_id, folder_id, created, updated)
+                    VALUES (:id, :title, :content, :content_html, :notebook_id, :folder_id, :created, :updated)
                 """, {
                     "id": error_note_id,
                     "title": f"❌ {task_name} (Failed)",
                     "content": error_note_content,
                     "content_html": error_note_content,
+                    "notebook_id": workspace_id,  # Set notebook_id for direct querying
                     "folder_id": execution_folder_id,  # Assign to execution folder
                     "created": datetime.utcnow().isoformat(),
                     "updated": datetime.utcnow().isoformat()
@@ -443,13 +446,14 @@ class WorkspaceTaskExecutor:
 
             # Create the note
             await repo_execute("""
-                INSERT INTO notes (id, title, content, content_html, folder_id, created, updated)
-                VALUES (:id, :title, :content, :content_html, :folder_id, :created, :updated)
+                INSERT INTO notes (id, title, content, content_html, notebook_id, folder_id, created, updated)
+                VALUES (:id, :title, :content, :content_html, :notebook_id, :folder_id, :created, :updated)
             """, {
                 "id": note_id,
                 "title": f"✅ {task_name}",
                 "content": note_content,  # HTML content
                 "content_html": note_content,  # Same HTML content
+                "notebook_id": workspace_id,  # Set notebook_id for direct querying
                 "folder_id": execution_folder_id,  # Assign to execution folder
                 "created": datetime.utcnow().isoformat(),
                 "updated": datetime.utcnow().isoformat()
@@ -969,13 +973,14 @@ Begin with an <h2>Executive Summary</h2> section, then proceed through all phase
 """
 
                     await repo_execute("""
-                        INSERT INTO notes (id, title, content, content_html, folder_id, created, updated)
-                        VALUES (:id, :title, :content, :content_html, :folder_id, :created, :updated)
+                        INSERT INTO notes (id, title, content, content_html, notebook_id, folder_id, created, updated)
+                        VALUES (:id, :title, :content, :content_html, :notebook_id, :folder_id, :created, :updated)
                     """, {
                         "id": note_id,
                         "title": "🎯 FINAL DELIVERABLE - Workspace Analysis",
                         "content": final_content,
                         "content_html": final_content,
+                        "notebook_id": workspace_id,  # Set notebook_id for direct querying
                         "folder_id": execution_folder_id,  # Assign to execution folder
                         "created": datetime.utcnow().isoformat(),
                         "updated": datetime.utcnow().isoformat()

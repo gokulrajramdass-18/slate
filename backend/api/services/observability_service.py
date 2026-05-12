@@ -1,28 +1,29 @@
 """
-Observability Service for Langfuse Integration
+Observability Service for Multi-Provider Integration
 
-This module provides centralized observability and tracing functionality using Langfuse.
-It handles LLM call tracing, tool execution monitoring, and agent step tracking.
+This module provides unified observability and tracing functionality supporting both
+Langfuse and MLFlow providers. Enables dual-mode operation for comparison/migration.
 
 Usage:
-    from api.services.observability_service import get_langfuse_service
+    from api.services.observability_service import get_observability_manager
 
-    service = get_langfuse_service()
-    trace_id = service.create_trace(session_id="...", notebook_id="...", metadata={})
+    manager = get_observability_manager()
+    trace_ids = manager.create_trace(session_id="...", notebook_id="...", metadata={})
 
-    # Use with LangChain
-    callback = service.get_langchain_callback_handler(trace_id)
+    # Get callbacks for all enabled providers
+    callbacks = manager.get_langchain_callbacks(trace_ids)
 """
 
 import os
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-# Singleton instance
+# Singleton instances
 _langfuse_service: Optional['LangfuseService'] = None
+_observability_manager: Optional['ObservabilityManager'] = None
 
 
 class LangfuseService:
@@ -290,3 +291,205 @@ def reset_langfuse_service():
     """
     global _langfuse_service
     _langfuse_service = None
+
+
+# ============================================================================
+# Unified Observability Manager
+# ============================================================================
+
+class ObservabilityManager:
+    """
+    Unified manager for multiple observability providers.
+
+    Supports running Langfuse and MLFlow simultaneously or independently.
+    Manages trace creation, callback aggregation, and lifecycle for all enabled providers.
+    """
+
+    def __init__(self):
+        """Initialize manager and load configuration from database."""
+        self.langfuse = get_langfuse_service()
+        self.config = {}
+        self._config_loaded = False
+
+    async def _ensure_config_loaded(self):
+        """Load configuration from database on first use."""
+        if self._config_loaded:
+            return
+
+        try:
+            from api.services.settings import get_observability_config
+            self.config = await get_observability_config()
+            self._config_loaded = True
+
+            # Reload services with database config if needed
+            await self._reload_services()
+
+        except Exception as e:
+            logger.error(f"Failed to load observability config from database: {e}")
+            # Fall back to environment variables
+            self.config = {
+                "provider": "none",
+                "langfuse": {"enabled": False},
+                "mlflow": {"enabled": False},
+                "options": {}
+            }
+            self._config_loaded = True
+
+    async def _reload_services(self):
+        """Reload services with database configuration."""
+        # Update environment variables from database config if settings override env
+        if self.config.get("langfuse", {}).get("enabled"):
+            langfuse_config = self.config["langfuse"]
+            if langfuse_config.get("public_key"):
+                os.environ["LANGFUSE_PUBLIC_KEY"] = langfuse_config["public_key"]
+            if langfuse_config.get("secret_key"):
+                os.environ["LANGFUSE_SECRET_KEY"] = langfuse_config["secret_key"]
+            if langfuse_config.get("host"):
+                os.environ["LANGFUSE_HOST"] = langfuse_config["host"]
+            os.environ["LANGFUSE_ENABLED"] = "true"
+
+            # Reload Langfuse service
+            global _langfuse_service
+            _langfuse_service = None
+            self.langfuse = get_langfuse_service()
+
+        if self.config.get("mlflow", {}).get("enabled"):
+            mlflow_config = self.config["mlflow"]
+            if mlflow_config.get("tracking_uri"):
+                os.environ["MLFLOW_TRACKING_URI"] = mlflow_config["tracking_uri"]
+            if mlflow_config.get("experiment_name"):
+                os.environ["MLFLOW_EXPERIMENT_NAME"] = mlflow_config["experiment_name"]
+            if mlflow_config.get("username"):
+                os.environ["MLFLOW_USERNAME"] = mlflow_config["username"]
+            if mlflow_config.get("password"):
+                os.environ["MLFLOW_PASSWORD"] = mlflow_config["password"]
+            os.environ["MLFLOW_ENABLED"] = "true"
+
+            # Reload MLFlow service
+            from api.services.mlflow_service import reset_mlflow_service, get_mlflow_service
+            reset_mlflow_service()
+            self.mlflow = get_mlflow_service()
+        else:
+            from api.services.mlflow_service import get_mlflow_service
+            self.mlflow = get_mlflow_service()
+
+    def create_trace(
+        self,
+        session_id: str,
+        notebook_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Optional[str]]:
+        """
+        Create traces in all enabled observability providers.
+
+        Args:
+            session_id: Chat session ID
+            notebook_id: Notebook ID for context
+            metadata: Additional metadata
+
+        Returns:
+            Dictionary with trace/run IDs from each provider:
+            {"langfuse_trace_id": "...", "mlflow_run_id": "..."}
+        """
+        # Note: Can't await in __init__, so we load config lazily
+        # For now, use environment-based services
+        result = {}
+
+        # Langfuse trace
+        if self.langfuse.is_enabled():
+            trace_id = self.langfuse.create_trace(session_id, notebook_id, metadata)
+            if trace_id:
+                result["langfuse_trace_id"] = trace_id
+
+        # MLFlow run
+        from api.services.mlflow_service import get_mlflow_service
+        mlflow = get_mlflow_service()
+
+        if mlflow.is_enabled():
+            run_name = f"chat_{session_id}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
+            tags = {
+                "session_id": session_id,
+                "notebook_id": notebook_id,
+                "type": "chat",
+                **(metadata or {})
+            }
+            run_id = mlflow.create_run(run_name=run_name, tags=tags)
+            if run_id:
+                result["mlflow_run_id"] = run_id
+
+        return result
+
+    def get_langchain_callbacks(self, trace_ids: Dict[str, str]) -> List[Any]:
+        """
+        Get LangChain callback handlers for all enabled providers.
+
+        Args:
+            trace_ids: Dictionary with trace/run IDs from create_trace()
+
+        Returns:
+            List of callback handlers (may be empty if all disabled)
+        """
+        callbacks = []
+
+        # Langfuse callback
+        if "langfuse_trace_id" in trace_ids and self.langfuse.is_enabled():
+            callback = self.langfuse.get_langchain_callback_handler(trace_ids["langfuse_trace_id"])
+            if callback:
+                callbacks.append(callback)
+
+        # MLFlow callback
+        if "mlflow_run_id" in trace_ids:
+            from api.services.mlflow_service import get_mlflow_service
+            mlflow = get_mlflow_service()
+
+            if mlflow.is_enabled():
+                callback = mlflow.get_langchain_callback_handler(trace_ids["mlflow_run_id"])
+                if callback:
+                    callbacks.append(callback)
+
+        return callbacks
+
+    def flush(self):
+        """Flush all enabled providers."""
+        if self.langfuse.is_enabled():
+            self.langfuse.flush()
+
+        from api.services.mlflow_service import get_mlflow_service
+        mlflow = get_mlflow_service()
+
+        if mlflow.is_enabled():
+            mlflow.flush()
+
+    def shutdown(self):
+        """Shutdown all providers."""
+        if self.langfuse.is_enabled():
+            self.langfuse.shutdown()
+
+        from api.services.mlflow_service import get_mlflow_service
+        mlflow = get_mlflow_service()
+
+        if mlflow.is_enabled():
+            mlflow.shutdown()
+
+
+def get_observability_manager() -> ObservabilityManager:
+    """
+    Get the singleton observability manager instance.
+
+    Returns:
+        Singleton ObservabilityManager instance
+    """
+    global _observability_manager
+
+    if _observability_manager is None:
+        _observability_manager = ObservabilityManager()
+
+    return _observability_manager
+
+
+def reset_observability_manager():
+    """
+    Reset the singleton instance (useful for testing).
+    """
+    global _observability_manager
+    _observability_manager = None

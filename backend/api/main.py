@@ -17,7 +17,7 @@ from fastapi.exceptions import RequestValidationError
 
 from api.middleware import OAuthRateLimitMiddleware, OAuthAuditMiddleware
 from api.models import ErrorResponse, HealthCheckResponse
-from api.routers import notebooks, sources, database, dashboard, chat, chat_settings, source_chat, auth, models, embedding, credentials, microsites, microsite_chat, smtp, notes, search, hana_connections, api_connections, deep_research, charts, files, tools, agents, agent_memory, agent_tools, agent_skills, mcp_servers, agent_prompts, system_prompts, user_query_prompts, standalone_agents, workflows, bookmarks, graph, mcp_oauth, workspace_guided, workspace_tasks, folders, a2a, a2a_remote, users, roles, resource_shares, entities, entity_relationships, communities, autonomous_orchestration, actions, orchestration_actions, oauth, workspace_templates, orchestration_schedules, workflow_templates, workflow_approvals, template_executions, notifications, external_notifications, api_keys, presentations, workflow_snapshots, documents, daily_brief
+from api.routers import notebooks, sources, database, dashboard, chat, chat_settings, source_chat, auth, models, embedding, credentials, microsites, microsite_chat, smtp, notes, search, hana_connections, api_connections, deep_research, charts, files, tools, agents, agent_memory, agent_tools, agent_skills, mcp_servers, agent_prompts, system_prompts, user_query_prompts, standalone_agents, workflows, bookmarks, graph, mcp_oauth, workspace_guided, workspace_tasks, folders, a2a, a2a_remote, users, roles, resource_shares, entities, entity_relationships, communities, autonomous_orchestration, actions, orchestration_actions, oauth, workspace_templates, orchestration_schedules, workflow_templates, workflow_approvals, template_executions, notifications, external_notifications, api_keys, presentations, workflow_snapshots, documents, daily_brief, agent_evaluations, workspace_documents, observability_settings
 from api.services.database_service import get_database_service
 from open_notebook.database.interface import ConnectionConfig, DatabaseError
 from open_notebook.database.repository import init_database
@@ -330,7 +330,9 @@ app = FastAPI(
 # ============================================================================
 
 # Gzip compression for responses over 1KB
-app.add_middleware(GZipMiddleware, minimum_size=1000)
+# GZip middleware - NOTE: Disabled for SSE streaming compatibility
+# GZip compression buffers responses which breaks real-time streaming
+# app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 # OAuth middleware (audit first, then rate limiting)
 app.add_middleware(OAuthAuditMiddleware)
@@ -458,6 +460,7 @@ app.include_router(auth.router)
 app.include_router(users.router)
 app.include_router(roles.router)
 app.include_router(resource_shares.router)
+app.include_router(workspace_guided.router)  # Guided workspace creation wizard - MUST be before notebooks.router
 app.include_router(notebooks.router)
 app.include_router(sources.router)
 app.include_router(folders.router)  # Folders and tags management
@@ -470,6 +473,7 @@ app.include_router(documents.router)  # Unified documents API (notes + presentat
 app.include_router(database.router)
 app.include_router(dashboard.router)  # Analytics dashboard
 app.include_router(daily_brief.router)  # Daily brief with AI summaries
+app.include_router(observability_settings.router)  # Observability configuration (admin)
 app.include_router(chat.router)
 app.include_router(chat_settings.router)
 app.include_router(deep_research.router)  # Deep research mode
@@ -501,7 +505,6 @@ app.include_router(graph.router, prefix="/api/graph", tags=["graph"])  # Graph v
 app.include_router(entities.router)  # LightRAG entities
 app.include_router(entity_relationships.router)  # LightRAG entity relationships
 app.include_router(communities.router)  # LightRAG entity communities
-app.include_router(workspace_guided.router)  # Guided workspace creation wizard
 app.include_router(workspace_tasks.router)  # Workspace task management
 app.include_router(a2a.router)  # A2A Protocol endpoints
 app.include_router(a2a_remote.router)  # A2A Remote agent management
@@ -517,6 +520,10 @@ app.include_router(api_keys.router)  # API key management
 app.include_router(external_notifications.router)  # External notification API
 app.include_router(presentations.router)  # PowerPoint presentation generation
 app.include_router(workflow_snapshots.router)  # Workflow snapshot management
+app.include_router(documents.router)  # Document generation
+app.include_router(workspace_documents.router)  # Workspace document uploads
+app.include_router(daily_brief.router)  # Daily brief generation
+app.include_router(agent_evaluations.router)  # Agent evaluation system
 
 # Mount public hosting router in development mode
 # (In production, a standalone hosting server handles this)

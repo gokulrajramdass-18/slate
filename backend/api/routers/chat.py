@@ -24,7 +24,7 @@ from api.models import (
     SuccessResponse
 )
 from api.services.context import get_context_service
-from api.services.observability_service import get_langfuse_service
+from api.services.observability_service import get_observability_manager
 from open_notebook.domain.chat import ChatSession, ChatMessage
 from open_notebook.domain.notebook import Notebook
 from open_notebook.agents.deep_research_agent import ResearchPhase
@@ -1287,184 +1287,156 @@ The data shown in the "LIVE DATA FROM SOURCES" section above was fetched in real
     except Exception as e:
         logger.warning(f"Failed to check workspace agents: {e}")
 
-    # Decide: Use workspace agent, DataQueryAgent with tools, or regular chat
+    # Prepare agent configuration based on workspace agent (if any)
+    agent_system_message = system_message
+    agent_model_override = None
+
     if workspace_agent:
-        # Use the workspace-assigned agent
-        from api.services.agent_task_executor import get_agent_task_executor
-
-        agent_executor = get_agent_task_executor()
-
+        # Use workspace-assigned agent's configuration
         print(f"🤖 Using workspace-assigned agent: {workspace_agent['name']}")
 
-        # Create a pseudo-task for the chat message
-        pseudo_task = {
-            "id": f"chat_{user_message.id}",
-            "name": f"Chat Response",
-            "description": request.message,
-            "phase_name": "Interactive Chat",
-            "assigned_agent_id": workspace_agent["id"]
+        # Use agent's custom system prompt if available
+        if workspace_agent.get("system_prompt"):
+            agent_system_message = workspace_agent["system_prompt"]
+
+        # Use agent's model if specified
+        if workspace_agent.get("model_name"):
+            agent_model_override = workspace_agent["model_name"]
+
+        # Load agent's tools from configuration
+        import json
+        tool_ids = json.loads(workspace_agent.get("tool_ids", "[]"))
+        if tool_ids:
+            # Filter tools to only those assigned to this agent
+            tools = [t for t in tools if t.name in tool_ids or any(tid in str(t) for tid in tool_ids)]
+            print(f"  Agent has {len(tool_ids)} assigned tools: {tool_ids}")
+
+    # Now use the unified DataQueryAgent path for all cases
+    # This ensures consistent streaming behavior whether using workspace agent or not
+    # UNIFIED AGENT APPROACH: Always use DataQueryAgent
+    # The agent automatically decides whether to use tools based on the conversation
+    # This matches Claude Code's pattern where tool invocation happens transparently
+
+    from api.services.settings import get_setting
+
+    # Get model name (use agent override if available, else session/global default)
+    language_model_id = await get_setting("language_model_id", "")
+    model_name = agent_model_override or session.model_override or language_model_id
+
+    if not model_name:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No language model configured. Please select a model in Settings."
+        )
+
+    # Get credential to extract actual model name
+    credential = get_model_credential(model_name)
+    if not credential:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Model credential not found. Please configure a model."
+        )
+
+    actual_model_name = credential["model_name"]
+
+    print(f"📋 Credential details:")
+    print(f"   model_name: {credential.get('model_name')}")
+    print(f"   base_url: {credential.get('base_url')}")
+    print(f"   api_key: {credential.get('api_key')[:20] if credential.get('api_key') else 'None'}...")
+    print(f"   provider: {credential.get('provider')}")
+    if workspace_agent:
+        print(f"   workspace_agent: {workspace_agent['name']} (using {'custom' if agent_model_override else 'default'} model)")
+
+    # Initialize observability manager and create traces
+    obs_manager = get_observability_manager()
+    trace_ids = obs_manager.create_trace(
+        session_id=session_id,
+        notebook_id=session.notebook_id,
+        metadata={
+            "user_message": request.message[:200],  # Truncate for metadata
+            "model": actual_model_name,
+            "notebook_title": notebook.name,
+            "tools_available": len(tools),
+            "include_context": request.include_context,
+            "enable_generative_ui": request.enable_generative_ui,
+            "workspace_agent": workspace_agent["name"] if workspace_agent else None,
         }
+    )
 
-        # Execute with assigned agent
-        execution_result = await agent_executor.execute_task_with_agent(
-            task=pseudo_task,
-            workspace_id=session.notebook_id,
-            agent_id=workspace_agent["id"]
-        )
+    # Use DataQueryAgent for ALL cases (with or without tools, with or without workspace agent)
+    # DataQueryAgent uses LangChain which handles all providers automatically:
+    # - Claude (via LiteLLM, SAP AI Core, or direct Anthropic API)
+    # - GPT-4 (via OpenAI or LiteLLM)
+    # - Gemini (via Google or LiteLLM)
+    # - Any other provider
+    #
+    # When tools=[], the agent simply responds conversationally
+    # When tools are available, the agent decides whether to use them based on the query
+    from open_notebook.agents.data_query_agent import DataQueryAgent
 
-        response_text = execution_result.get("result", "")
-        agent_steps = execution_result.get("agent_steps", [])
-        tool_results_data = execution_result.get("tool_results")
-
-        # Save assistant message
-        assistant_message = await session.add_message(
-            "assistant",
-            response_text,
-            agent_steps=agent_steps,
-            tool_results=tool_results_data
-        )
-
-        if request.stream:
-            # For streaming, return simple stream with the complete response
-            async def workspace_agent_stream():
-                yield f"data: {json.dumps({'type': 'metadata', 'agent_name': workspace_agent['name'], 'agent_type': workspace_agent['type']})}\n\n"
-
-                # Stream agent steps
-                for step in agent_steps:
-                    yield f"data: {json.dumps({'type': 'agent_step', 'step': step})}\n\n"
-
-                # Stream the response in chunks
-                chunk_size = 50
-                for i in range(0, len(response_text), chunk_size):
-                    chunk = response_text[i:i+chunk_size]
-                    yield f"data: {json.dumps({'type': 'chunk', 'content': chunk})}\n\n"
-                    await asyncio.sleep(0.01)
-
-                yield f"data: {json.dumps({'type': 'done', 'message_id': assistant_message.id})}\n\n"
-
-            return EventSourceResponse(workspace_agent_stream())
-        else:
-            return ChatResponse(
-                session_id=session.id,
-                user_message=ChatMessageResponse(
-                    id=user_message.id,
-                    session_id=user_message.session_id,
-                    role=user_message.role,
-                    content=user_message.content,
-                    created=user_message.created
-                ),
-                assistant_message=ChatMessageResponse(
-                    id=assistant_message.id,
-                    session_id=assistant_message.session_id,
-                    role=assistant_message.role,
-                    content=assistant_message.content,
-                    created=assistant_message.created,
-                    tool_results=tool_results_data,
-                ),
-                context_info=context_info
-            )
+    if tools:
+        print(f"🤖 Using DataQueryAgent (LangGraph) for {actual_model_name} with {len(tools)} tools")
     else:
-        # UNIFIED AGENT APPROACH: Always use DataQueryAgent
-        # The agent automatically decides whether to use tools based on the conversation
-        # This matches Claude Code's pattern where tool invocation happens transparently
+        print(f"🤖 Using DataQueryAgent (LangGraph) for {actual_model_name} in conversational mode (no tools)")
 
-        from api.services.settings import get_setting
+    agent = DataQueryAgent(
+        model_name=actual_model_name,
+        notebook_id=session.notebook_id,
+        tools=tools,  # Can be empty list [] - agent handles both cases
+        session_id=session_id,
+        system_message=agent_system_message,  # Use workspace agent's prompt if available
+        capture_tool_results=request.enable_generative_ui,
+        trace_ids=trace_ids,
+        api_key=credential.get("api_key"),
+        base_url=credential.get("base_url"),
+        enable_tool_filtering=True if tools else False,  # Only filter when tools exist
+        task_description=request.message,  # Use user query for filtering
+    )
 
-        # Get model name
-        language_model_id = await get_setting("language_model_id", "")
-        model_name = session.model_override or language_model_id
+    # Get chat history
+    chat_history = await session.get_messages()
+    # Convert to dict format (exclude last message which we just added)
+    history_dicts = [
+        {"role": msg.role, "content": msg.content}
+        for msg in chat_history[:-1]
+    ] if len(chat_history) > 1 else []
 
-        if not model_name:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="No language model configured. Please select a model in Settings."
-            )
+    # Handle streaming vs non-streaming
+    print(f"🔄 Request stream flag: {request.stream}")
+    if request.stream:
+        print("✅ Taking streaming path with EventSourceResponse")
 
-        # Get credential to extract actual model name
-        credential = get_model_credential(model_name)
-        if not credential:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Model credential not found. Please configure a model."
-            )
+        # Add workspace agent metadata to the stream if applicable
+        async def enhanced_stream():
+            # Send workspace agent metadata first
+            if workspace_agent:
+                yield {
+                    "event": "metadata",
+                    "data": json.dumps({
+                        "workspace_agent": {
+                            "name": workspace_agent["name"],
+                            "type": workspace_agent["type"],
+                            "id": workspace_agent["id"]
+                        }
+                    })
+                }
 
-        actual_model_name = credential["model_name"]
+            # Stream the actual agent response
+            async for event in _stream_agent_response(
+                agent=agent,
+                user_message=request.message,
+                chat_history=history_dicts,
+                session=session,
+                context_info=context_info,
+                enable_generative_ui=request.enable_generative_ui,
+            ):
+                yield event
 
-        print(f"📋 Credential details:")
-        print(f"   model_name: {credential.get('model_name')}")
-        print(f"   base_url: {credential.get('base_url')}")
-        print(f"   api_key: {credential.get('api_key')[:20] if credential.get('api_key') else 'None'}...")
-        print(f"   provider: {credential.get('provider')}")
-
-        # Initialize Langfuse service and create trace
-        langfuse_service = get_langfuse_service()
-        trace_id = langfuse_service.create_trace(
-            session_id=session_id,
-            notebook_id=session.notebook_id,
-            metadata={
-                "user_message": request.message[:200],  # Truncate for metadata
-                "model": actual_model_name,
-                "notebook_title": notebook.name,
-                "tools_available": len(tools),
-                "include_context": request.include_context,
-                "enable_generative_ui": request.enable_generative_ui,
-            }
+        return EventSourceResponse(
+            enhanced_stream(),
+            ping=5   # Send ping every 5 seconds to keep connection alive
         )
-
-        # Use DataQueryAgent for ALL cases (with or without tools)
-        # DataQueryAgent uses LangChain which handles all providers automatically:
-        # - Claude (via LiteLLM, SAP AI Core, or direct Anthropic API)
-        # - GPT-4 (via OpenAI or LiteLLM)
-        # - Gemini (via Google or LiteLLM)
-        # - Any other provider
-        #
-        # When tools=[], the agent simply responds conversationally
-        # When tools are available, the agent decides whether to use them based on the query
-        from open_notebook.agents.data_query_agent import DataQueryAgent
-
-        if tools:
-            print(f"🤖 Using DataQueryAgent (LangGraph) for {actual_model_name} with {len(tools)} tools")
-        else:
-            print(f"🤖 Using DataQueryAgent (LangGraph) for {actual_model_name} in conversational mode (no tools)")
-
-        agent = DataQueryAgent(
-            model_name=actual_model_name,
-            notebook_id=session.notebook_id,
-            tools=tools,  # Can be empty list [] - agent handles both cases
-            session_id=session_id,
-            system_message=system_message,
-            capture_tool_results=request.enable_generative_ui,
-            langfuse_trace_id=trace_id,
-            api_key=credential.get("api_key"),
-            base_url=credential.get("base_url"),
-            enable_tool_filtering=True if tools else False,  # Only filter when tools exist
-            task_description=request.message,  # Use user query for filtering
-        )
-
-        # Get chat history
-        chat_history = await session.get_messages()
-        # Convert to dict format (exclude last message which we just added)
-        history_dicts = [
-            {"role": msg.role, "content": msg.content}
-            for msg in chat_history[:-1]
-        ] if len(chat_history) > 1 else []
-
-        # Handle streaming vs non-streaming
-        print(f"🔄 Request stream flag: {request.stream}")
-        if request.stream:
-            print("✅ Taking streaming path with EventSourceResponse")
-            return EventSourceResponse(
-                _stream_agent_response(
-                    agent=agent,
-                    user_message=request.message,
-                    chat_history=history_dicts,
-                    session=session,
-                    context_info=context_info,
-                    enable_generative_ui=request.enable_generative_ui,
-                ),
-                ping=5   # Send ping every 5 seconds to keep connection alive
-            )
-        else:
+    else:
             # Non-streaming agent response
             response_text = await agent.invoke(request.message, history_dicts)
 
@@ -1509,11 +1481,11 @@ The data shown in the "LIVE DATA FROM SOURCES" section above was fetched in real
                 render_mode=render_mode,
                 tool_results=tool_results_data if not ui_components else None,
                 agent_steps=finalized_steps,
-                langfuse_trace_id=trace_id,
+                trace_ids=trace_ids,
             )
 
             # Flush Langfuse events
-            langfuse_service.flush()
+            obs_manager.flush()
 
             return ChatResponse(
                 session_id=session.id,
@@ -2084,17 +2056,20 @@ async def _stream_agent_response(
         # Stream agent execution
         print(f"🌊 Starting agent stream for message: {user_message[:30]}...")
         async for event in agent.stream_response(user_message, chat_history):
-            print(f"📨 Agent event: {list(event.keys())}")
+            print(f"📨 Agent event: {list(event.keys())}, content: {str(event)[:200]}")
             # Check event type
             if "agent" in event:
                 # Agent node executed (reasoning/response)
                 messages = event["agent"].get("messages", [])
+                print(f"📨 Agent messages count: {len(messages) if messages else 0}")
                 if messages:
                     last_message = messages[-1]
+                    print(f"📨 Last message type: {type(last_message)}, has_tool_calls: {hasattr(last_message, 'tool_calls')}, has_content: {hasattr(last_message, 'content')}")
 
                     # Check if agent is calling tools
                     if hasattr(last_message, "tool_calls") and last_message.tool_calls:
                         # Agent decided to use tools
+                        print(f"📨 Tool calls detected: {len(last_message.tool_calls)}")
                         yield {
                             "event": "agent_step",
                             "data": json.dumps({
@@ -2123,6 +2098,7 @@ async def _stream_agent_response(
                     elif hasattr(last_message, "content") and last_message.content:
                         # Agent response text
                         content = last_message.content
+                        print(f"📨 Message content: type={type(content)}, value={str(content)[:100]}")
                         if isinstance(content, str) and content:
                             print(f"✨ Yielding chunk: {content[:50]}...")
                             accumulated_text += content
@@ -2130,6 +2106,8 @@ async def _stream_agent_response(
                                 "event": "chunk",
                                 "data": json.dumps({"content": content})
                             }
+                        else:
+                            print(f"⚠️ Content is not a string or is empty")
 
             elif "tools" in event:
                 # Handle tool events from LangGraph
@@ -2357,9 +2335,9 @@ async def _stream_agent_response(
                 sources=sources_to_store,  # Only store actually-cited sources
             )
 
-        # Flush Langfuse events
-        langfuse_service = get_langfuse_service()
-        langfuse_service.flush()
+        # Flush observability events
+        obs_manager = get_observability_manager()
+        obs_manager.flush()
 
         # Send completion
         sources_to_send = context_info.get("sources", []) if context_info else []

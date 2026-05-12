@@ -506,28 +506,37 @@ function TemplateCard({ template, onViewDetails }: { template: WorkflowTemplate;
   };
 
   const handleScheduleClick = async (type: "daily" | "weekly" | "monthly" | "custom") => {
-    const details = await workflowTemplatesApi.get(template.id);
-
     try {
-      if (details.graph_json) {
-        (details as any).graph = JSON.parse(details.graph_json);
+      const details = await workflowTemplatesApi.get(template.id);
+
+      try {
+        if (details.graph_json) {
+          (details as any).graph = JSON.parse(details.graph_json);
+        }
+      } catch (e) {
+        console.error("Failed to parse graph JSON:", e);
       }
-    } catch (e) {
-      console.error("Failed to parse graph JSON:", e);
+
+      setSelectedTemplate(details as any);
+
+      // Initialize parameter values with defaults
+      const defaults: Record<string, any> = {};
+      (details.parameters || []).forEach((param: TemplateParameter) => {
+        if (param.default_value !== undefined) {
+          defaults[param.name] = param.default_value;
+        }
+      });
+      setParameterValues(defaults);
+      setScheduleType(type);
+      setShowScheduleDialog(true);
+    } catch (error) {
+      console.error("Failed to load template details:", error);
+      toast({
+        title: "Error",
+        description: "Failed to load template details",
+        variant: "destructive",
+      });
     }
-
-    setSelectedTemplate(details as any);
-
-    // Initialize parameter values with defaults
-    const defaults: Record<string, any> = {};
-    (details.parameters || []).forEach((param: TemplateParameter) => {
-      if (param.default_value !== undefined) {
-        defaults[param.name] = param.default_value;
-      }
-    });
-    setParameterValues(defaults);
-    setScheduleType(type);
-    setShowScheduleDialog(true);
   };
 
   const handleCreateSchedule = async () => {
@@ -979,30 +988,40 @@ export default function WorkflowsPage() {
   };
 
   const handleScheduleTemplate = async (template: WorkflowTemplate) => {
-    // Get template details
-    const details = await workflowTemplatesApi.get(template.id);
-
     try {
-      if (details.graph_json) {
-        (details as any).graph = JSON.parse(details.graph_json);
+      // Get template details
+      const details = await workflowTemplatesApi.get(template.id);
+
+      try {
+        if (details.graph_json) {
+          (details as any).graph = JSON.parse(details.graph_json);
+        }
+      } catch (e) {
+        console.error("Failed to parse graph JSON:", e);
       }
-    } catch (e) {
-      console.error("Failed to parse graph JSON:", e);
+
+      setSelectedTemplate(details as any);
+
+      // Initialize parameter values with defaults
+      const defaults: Record<string, any> = {};
+      (details.parameters || []).forEach((param: any) => {
+        if (param.default_value !== undefined) {
+          defaults[param.name] = param.default_value;
+        }
+      });
+      setParameterValues(defaults);
+
+      // Show schedule dialog
+      setScheduleType("daily");
+      setShowScheduleDialog(true);
+    } catch (error) {
+      console.error("Failed to load template details:", error);
+      toast({
+        title: "Error",
+        description: "Failed to load template details",
+        variant: "destructive",
+      });
     }
-
-    // Initialize parameter values with defaults
-    const defaults: Record<string, any> = {};
-    (details.parameters || []).forEach((param: any) => {
-      if (param.default_value !== undefined) {
-        defaults[param.name] = param.default_value;
-      }
-    });
-
-    // For now, just show a toast - full implementation would need schedule dialog
-    toast({
-      title: "Schedule Template",
-      description: "Schedule functionality coming soon! Use the dropdown in the template card for now.",
-    });
   };
 
   const handleExecuteTemplate = async (template: WorkflowTemplate) => {

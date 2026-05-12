@@ -451,6 +451,8 @@ async def generate_plan(
     Creates a phased plan with tasks, timelines, and agent
     collaboration structure based on the goal and selected resources.
     """
+    print(f"[generate_plan] Endpoint called! User: {current_user.id}, Session: {request.session_id}")
+    logger.info(f"[generate_plan] Endpoint called! User: {current_user.id}, Session: {request.session_id}")
     session = await validate_session(request.session_id)
 
     try:

@@ -2,11 +2,15 @@
  * API Configuration
  *
  * Centralized API URL configuration for all API calls.
- * Uses relative URL '/api' which works through Next.js rewrites to proxy to backend.
+ * Uses NEXT_PUBLIC_API_URL environment variable for client-side calls,
+ * falls back to relative '/api' which works through Next.js rewrites for server-side calls.
  */
 
-// Base API URL - use relative path for production deployment
-export const API_BASE_URL = "/api";
+// Base API URL - use environment variable for client-side, relative path for server-side
+export const API_BASE_URL =
+  typeof window !== "undefined" && process.env.NEXT_PUBLIC_API_URL
+    ? process.env.NEXT_PUBLIC_API_URL + "/api"
+    : "/api";
 
 // WebSocket base URL - derived from API base URL
 export const WS_BASE_URL = typeof window !== "undefined"

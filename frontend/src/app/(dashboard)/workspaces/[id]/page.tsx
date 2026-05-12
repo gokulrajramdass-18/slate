@@ -13,7 +13,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
-import { ArrowLeft, FileText, MessageSquare, Plus, Link as LinkIcon, Upload, Youtube, Globe, Share2, MessageCircle, Sparkles, Database, Code, Network, Search, Filter, X, RefreshCw, RotateCcw, CheckCircle, ChevronRight, ChevronDown, FolderOpen, Folder as FolderIcon, Presentation } from "lucide-react";
+import { ArrowLeft, FileText, MessageSquare, Plus, Link as LinkIcon, Upload, Youtube, Globe, Share2, MessageCircle, Sparkles, Database, Code, Network, Search, Filter, X, RefreshCw, RotateCcw, CheckCircle, ChevronRight, ChevronDown, FolderOpen, Folder as FolderIcon, Presentation, ChevronLeft } from "lucide-react";
 import Link from "next/link";
 import { formatRelativeTime } from "@/lib/utils";
 import { toast } from "sonner";
@@ -22,6 +22,8 @@ import { MicrositeCreateDialog } from "@/components/microsites/microsite-create-
 import { NoteEditor } from "@/components/notes/note-editor";
 import { NoteCard } from "@/components/notes/note-card";
 import { PresentationCard } from "@/components/notes/presentation-card";
+import { DocumentUploadDialog } from "@/components/workspaces/DocumentUploadDialog";
+import { DocumentCard } from "@/components/workspaces/DocumentCard";
 import { FileUploadForm } from "@/components/sources/file-upload-form";
 import { WorkspaceTasks } from "@/components/workspaces/workspace-tasks";
 import { WorkspaceTagManager } from "@/components/workspaces/workspace-tag-manager";
@@ -92,6 +94,12 @@ export default function NotebookDetailPage() {
   const [isFinalizing, setIsFinalizing] = useState(false);
   const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
+  // Pagination states
+  const [sourcesPage, setSourcesPage] = useState(1);
+  const [chatSessionsPage, setChatSessionsPage] = useState(1);
+  const [documentsPage, setDocumentsPage] = useState(1);
+  const ITEMS_PER_PAGE = 5;
+
   // Source form states
   const [textContent, setTextContent] = useState("");
   const [url, setUrl] = useState("");
@@ -137,6 +145,26 @@ export default function NotebookDetailPage() {
     all: availableSources.length,
     ...typeCounts,
   };
+
+  // Pagination logic
+  const paginateItems = (items: any[], page: number) => {
+    const startIndex = (page - 1) * ITEMS_PER_PAGE;
+    const endIndex = startIndex + ITEMS_PER_PAGE;
+    return items.slice(startIndex, endIndex);
+  };
+
+  const getTotalPages = (totalItems: number) => {
+    return Math.ceil(totalItems / ITEMS_PER_PAGE);
+  };
+
+  // Paginated data
+  const paginatedSources = paginateItems(sources, sourcesPage);
+  const paginatedChatSessions = paginateItems(chatSessions, chatSessionsPage);
+  const paginatedNotes = paginateItems(notes, documentsPage);
+
+  const sourcesTotalPages = getTotalPages(sources.length);
+  const chatSessionsTotalPages = getTotalPages(chatSessions.length);
+  const documentsTotalPages = getTotalPages(notes.length);
 
   // Fetch notes
   useEffect(() => {
@@ -1208,46 +1236,78 @@ export default function NotebookDetailPage() {
               </p>
             </div>
           ) : (
-            <div className="divide-y">
-              {sources.map((source: any) => (
-                <div
-                  key={source.id}
-                  className="flex items-center justify-between p-3 hover:bg-muted/50 transition-colors"
-                >
-                  <div className="flex items-center gap-2.5 flex-1">
-                    {source.source_type === "text" && <FileText className="w-3.5 h-3.5 text-muted-foreground" />}
-                    {source.source_type === "url" && <Globe className="w-3.5 h-3.5 text-muted-foreground" />}
-                    {source.source_type === "youtube" && <Youtube className="w-3.5 h-3.5 text-muted-foreground" />}
-                    {source.source_type === "file" && <Upload className="w-3.5 h-3.5 text-muted-foreground" />}
-                    {source.source_type === "hana_table" && <Database className="w-3.5 h-3.5 text-blue-500" />}
-                    {source.source_type === "api" && <Code className="w-3.5 h-3.5 text-purple-500" />}
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-1.5">
-                        <p className="font-medium text-sm truncate">{source.title || "Untitled"}</p>
-                        {source.sync_status === "embedding" && (
-                          <Badge className="bg-purple-100 text-purple-700 text-[10px] px-1.5 py-0 h-4">
-                            Embedding...
-                          </Badge>
-                        )}
-                        {source.sync_status === "completed" && source.chunk_count > 0 && (
-                          <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-4">
-                            <Sparkles className="w-2.5 h-2.5 mr-0.5" />
-                            {source.chunk_count}
-                          </Badge>
-                        )}
-                        {source.sync_status === "error" && (
-                          <Badge className="bg-red-100 text-red-700 text-[10px] px-1.5 py-0 h-4">
-                            Error
-                          </Badge>
-                        )}
+            <>
+              <div className="divide-y">
+                {paginatedSources.map((source: any) => (
+                  <div
+                    key={source.id}
+                    className="flex items-center justify-between p-3 hover:bg-muted/50 transition-colors"
+                  >
+                    <div className="flex items-center gap-2.5 flex-1">
+                      {source.source_type === "text" && <FileText className="w-3.5 h-3.5 text-muted-foreground" />}
+                      {source.source_type === "url" && <Globe className="w-3.5 h-3.5 text-muted-foreground" />}
+                      {source.source_type === "youtube" && <Youtube className="w-3.5 h-3.5 text-muted-foreground" />}
+                      {source.source_type === "file" && <Upload className="w-3.5 h-3.5 text-muted-foreground" />}
+                      {source.source_type === "hana_table" && <Database className="w-3.5 h-3.5 text-blue-500" />}
+                      {source.source_type === "api" && <Code className="w-3.5 h-3.5 text-purple-500" />}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-1.5">
+                          <p className="font-medium text-sm truncate">{source.title || "Untitled"}</p>
+                          {source.sync_status === "embedding" && (
+                            <Badge className="bg-purple-100 text-purple-700 text-[10px] px-1.5 py-0 h-4">
+                              Embedding...
+                            </Badge>
+                          )}
+                          {source.sync_status === "completed" && source.chunk_count > 0 && (
+                            <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-4">
+                              <Sparkles className="w-2.5 h-2.5 mr-0.5" />
+                              {source.chunk_count}
+                            </Badge>
+                          )}
+                          {source.sync_status === "error" && (
+                            <Badge className="bg-red-100 text-red-700 text-[10px] px-1.5 py-0 h-4">
+                              Error
+                            </Badge>
+                          )}
+                        </div>
+                        <p className="text-xs text-muted-foreground">{source.source_type}</p>
                       </div>
-                      <p className="text-xs text-muted-foreground">{source.source_type}</p>
                     </div>
+                    <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4">{formatRelativeTime(source.created)}</Badge>
                   </div>
-                  <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4">{formatRelativeTime(source.created)}</Badge>
+                ))}
+              </div>
+              {sourcesTotalPages > 1 && (
+                <div className="flex items-center justify-between px-4 py-3 border-t bg-muted/20">
+                  <p className="text-xs text-muted-foreground">
+                    Showing {(sourcesPage - 1) * ITEMS_PER_PAGE + 1} to {Math.min(sourcesPage * ITEMS_PER_PAGE, sources.length)} of {sources.length} sources
+                  </p>
+                  <div className="flex items-center gap-1">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setSourcesPage(p => Math.max(1, p - 1))}
+                      disabled={sourcesPage === 1}
+                      className="h-7 w-7 p-0"
+                    >
+                      <ChevronLeft className="w-3.5 h-3.5" />
+                    </Button>
+                    <span className="text-xs text-muted-foreground mx-2">
+                      Page {sourcesPage} of {sourcesTotalPages}
+                    </span>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setSourcesPage(p => Math.min(sourcesTotalPages, p + 1))}
+                      disabled={sourcesPage === sourcesTotalPages}
+                      className="h-7 w-7 p-0"
+                    >
+                      <ChevronRight className="w-3.5 h-3.5" />
+                    </Button>
+                  </div>
                 </div>
-              ))}
-            </div>
+              )}
+            </>
           )}
         </CardContent>
       </Card>
@@ -1260,7 +1320,7 @@ export default function NotebookDetailPage() {
           </CardHeader>
           <CardContent className="p-0">
             <div className="divide-y">
-              {chatSessions.map((session: any) => (
+              {paginatedChatSessions.map((session: any) => (
                 <div
                   key={session.id}
                   className="flex items-center justify-between p-3 hover:bg-muted/50 transition-colors cursor-pointer"
@@ -1277,6 +1337,36 @@ export default function NotebookDetailPage() {
                 </div>
               ))}
             </div>
+            {chatSessionsTotalPages > 1 && (
+              <div className="flex items-center justify-between px-4 py-3 border-t bg-muted/20">
+                <p className="text-xs text-muted-foreground">
+                  Showing {(chatSessionsPage - 1) * ITEMS_PER_PAGE + 1} to {Math.min(chatSessionsPage * ITEMS_PER_PAGE, chatSessions.length)} of {chatSessions.length} sessions
+                </p>
+                <div className="flex items-center gap-1">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setChatSessionsPage(p => Math.max(1, p - 1))}
+                    disabled={chatSessionsPage === 1}
+                    className="h-7 w-7 p-0"
+                  >
+                    <ChevronLeft className="w-3.5 h-3.5" />
+                  </Button>
+                  <span className="text-xs text-muted-foreground mx-2">
+                    Page {chatSessionsPage} of {chatSessionsTotalPages}
+                  </span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setChatSessionsPage(p => Math.min(chatSessionsTotalPages, p + 1))}
+                    disabled={chatSessionsPage === chatSessionsTotalPages}
+                    className="h-7 w-7 p-0"
+                  >
+                    <ChevronRight className="w-3.5 h-3.5" />
+                  </Button>
+                </div>
+              </div>
+            )}
           </CardContent>
         </Card>
       )}
@@ -1284,17 +1374,23 @@ export default function NotebookDetailPage() {
       <Card className="shadow-sm">
         <CardHeader className="flex flex-row items-center justify-between pb-3 border-b">
           <CardTitle className="text-base font-semibold">Documents</CardTitle>
-          <Button
-            size="sm"
-            onClick={() => {
-              setSelectedNote(null);
-              setShowNoteDialog(true);
-            }}
-            className="h-8 text-xs"
-          >
-            <Plus className="w-3.5 h-3.5 mr-1.5" />
-            Add Note
-          </Button>
+          <div className="flex items-center gap-1.5">
+            <DocumentUploadDialog
+              workspaceId={notebookId}
+              onUploadComplete={fetchNotes}
+            />
+            <Button
+              size="sm"
+              onClick={() => {
+                setSelectedNote(null);
+                setShowNoteDialog(true);
+              }}
+              className="h-8 text-xs"
+            >
+              <Plus className="w-3.5 h-3.5 mr-1.5" />
+              Add Note
+            </Button>
+          </div>
         </CardHeader>
         <CardContent className="p-0">
           {notes.length === 0 ? (
@@ -1322,7 +1418,7 @@ export default function NotebookDetailPage() {
 
                 // Group notes by folder
                 const notesByFolder = new Map<string | null, any[]>();
-                notes.forEach((note) => {
+                paginatedNotes.forEach((note) => {
                   const folderId = note.folder_id || null;
                   if (!notesByFolder.has(folderId)) {
                     notesByFolder.set(folderId, []);
@@ -1398,12 +1494,17 @@ export default function NotebookDetailPage() {
                                     document={doc}
                                     onDelete={handleDeleteDocument}
                                   />
-                                ) : (
+                                ) : doc.document_type === 'note' ? (
                                   <NoteCard
                                     note={doc}
                                     onEdit={handleEditNote}
                                     onDelete={handleDeleteNote}
                                     onNoteClick={handleNoteClick}
+                                  />
+                                ) : (
+                                  <DocumentCard
+                                    document={doc}
+                                    onDelete={handleDeleteDocument}
                                   />
                                 )}
                               </div>
@@ -1442,13 +1543,19 @@ export default function NotebookDetailPage() {
                               document={doc}
                               onDelete={handleDeleteDocument}
                             />
-                          ) : (
+                          ) : doc.document_type === 'note' ? (
                             <NoteCard
                               key={doc.id}
                               note={doc}
                               onEdit={handleEditNote}
                               onDelete={handleDeleteNote}
                               onNoteClick={handleNoteClick}
+                            />
+                          ) : (
+                            <DocumentCard
+                              key={doc.id}
+                              document={doc}
+                              onDelete={handleDeleteDocument}
                             />
                           )
                         ))}
@@ -1458,6 +1565,36 @@ export default function NotebookDetailPage() {
 
                 return rendered;
               })()}
+            </div>
+          )}
+          {notes.length > 0 && documentsTotalPages > 1 && (
+            <div className="flex items-center justify-between px-4 py-3 border-t bg-muted/20">
+              <p className="text-xs text-muted-foreground">
+                Showing {(documentsPage - 1) * ITEMS_PER_PAGE + 1} to {Math.min(documentsPage * ITEMS_PER_PAGE, notes.length)} of {notes.length} documents
+              </p>
+              <div className="flex items-center gap-1">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setDocumentsPage(p => Math.max(1, p - 1))}
+                  disabled={documentsPage === 1}
+                  className="h-7 w-7 p-0"
+                >
+                  <ChevronLeft className="w-3.5 h-3.5" />
+                </Button>
+                <span className="text-xs text-muted-foreground mx-2">
+                  Page {documentsPage} of {documentsTotalPages}
+                </span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setDocumentsPage(p => Math.min(documentsTotalPages, p + 1))}
+                  disabled={documentsPage === documentsTotalPages}
+                  className="h-7 w-7 p-0"
+                >
+                  <ChevronRight className="w-3.5 h-3.5" />
+                </Button>
+              </div>
             </div>
           )}
         </CardContent>

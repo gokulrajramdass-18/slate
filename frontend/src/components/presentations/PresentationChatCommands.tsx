@@ -84,13 +84,6 @@ export function detectPresentationIntent(message: string): PresentationIntent {
 
   const isMatch = hasPresentationKeyword && hasActionWord;
 
-  console.log('[PresentationIntent] Quick detection:', {
-    message,
-    isMatch,
-    hasPresentationKeyword,
-    hasActionWord
-  });
-
   if (!isMatch) {
     return { isMatch: false };
   }

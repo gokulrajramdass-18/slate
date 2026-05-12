@@ -29,9 +29,12 @@ export default function ChatSessionPage() {
   const router = useRouter();
   const sessionId = params.id as string;
 
+  console.log('[ChatSessionPage] RENDER');
+
   const [selectedSources, setSelectedSources] = useState<string[]>([]);
   const [selectedTools, setSelectedTools] = useState<string[]>([]);
   const [streamingMessage, setStreamingMessage] = useState("");
+  const [streamingSources, setStreamingSources] = useState<any[]>([]);
   const [streamingUIComponents, setStreamingUIComponents] = useState<any[]>([]);
   const [streamingToolResults, setStreamingToolResults] = useState<any[]>([]);
   const [streamingAgentSteps, setStreamingAgentSteps] = useState<AgentStep[]>([]);
@@ -89,9 +92,15 @@ export default function ChatSessionPage() {
     setOptimisticUserMessage(content);
     setIsSending(true);
     setStreamingMessage("");
+    setStreamingSources([]);
     setStreamingUIComponents([]);
     setStreamingToolResults([]);
     setStreamingAgentSteps([]);
+
+    // Notify streaming manager that a new stream is starting
+    window.dispatchEvent(new CustomEvent('streaming:start', {
+      detail: { sessionId }
+    }));
 
     try {
       const actualSourceIds = selectedSources.filter(id => !noteIds.has(id));
@@ -105,13 +114,23 @@ export default function ChatSessionPage() {
           selected_source_ids: actualSourceIds.length > 0 ? actualSourceIds : undefined,
         },
         (chunk) => setStreamingMessage((prev) => prev + chunk),
-        undefined,
+        (metadata) => {
+          // Update streaming sources from metadata
+          if (metadata?.sources) {
+            setStreamingSources(metadata.sources);
+          }
+        },
         (components) => setStreamingUIComponents(components),
         (results) => setStreamingToolResults(results),
         (step) => setStreamingAgentSteps((prev) => [...prev, step])
       );
 
       console.log('[Chat] Message sent successfully, result:', result?.id, 'content length:', result?.content?.length);
+
+      // Notify streaming manager that stream ended
+      window.dispatchEvent(new CustomEvent('streaming:end', {
+        detail: { sessionId }
+      }));
 
       // Check if this is a deep research job
       if ((result as any)?.metadata?.deep_research && (result as any)?.metadata?.job_id) {
@@ -127,13 +146,15 @@ export default function ChatSessionPage() {
 
       // Clear streaming state
       setStreamingMessage("");
+      setStreamingSources([]);
       setStreamingUIComponents([]);
-      setStreamingAgentSteps([]);
+      setStreamingToolResults([]);
       setStreamingAgentSteps([]);
       setOptimisticUserMessage(null);
     } catch (error: any) {
       toast.error(error.message || "Failed to send message");
       setStreamingMessage("");
+      setStreamingSources([]);
       setStreamingUIComponents([]);
       setStreamingToolResults([]);
       setStreamingAgentSteps([]);
@@ -270,6 +291,7 @@ export default function ChatSessionPage() {
           onSendMessage={handleSendMessage}
           isLoading={isSending}
           streamingMessage={streamingMessage}
+          streamingSources={streamingSources}
           streamingUIComponents={streamingUIComponents}
           streamingToolResults={streamingToolResults}
           streamingAgentSteps={streamingAgentSteps}

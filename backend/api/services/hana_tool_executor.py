@@ -241,14 +241,13 @@ class HANAToolExecutor:
 
         try:
             # Connect to HANA
-            # Note: For HANA Cloud, databaseName parameter is usually not needed
-            # and can cause connection errors. Omit it for best compatibility.
             connection_params = {
                 "address": creds["host"],
                 "port": creds["port"],
                 "user": creds["user"],
                 "password": creds["password"],
-                "encrypt": True
+                "encrypt": True,
+                "sslValidateCertificate": False  # For development/self-signed certs
             }
 
             # Do NOT include databaseName for HANA Cloud connections

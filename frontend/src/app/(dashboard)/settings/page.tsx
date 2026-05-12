@@ -19,7 +19,8 @@ import {
   PlayCircle,
   UserCircle,
   Shield,
-  Newspaper
+  Newspaper,
+  Activity
 } from "lucide-react";
 
 const settingsCards = [
@@ -127,6 +128,15 @@ const settingsCards = [
     icon: Network,
     color: "text-indigo-600",
     bgColor: "bg-indigo-50 dark:bg-indigo-950"
+  },
+  {
+    href: "/settings/observability",
+    title: "Observability",
+    description: "Configure monitoring and tracing with Langfuse or MLFlow",
+    icon: Activity,
+    color: "text-purple-600",
+    bgColor: "bg-purple-50 dark:bg-purple-950",
+    badge: "Admin"
   },
   {
     href: "/settings/oauth-apps",

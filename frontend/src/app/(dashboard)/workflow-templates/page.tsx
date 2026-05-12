@@ -81,11 +81,18 @@ export default function WorkflowTemplatesPage() {
   const [parameterValues, setParameterValues] = useState<Record<string, any>>({});
   const [showExecuteDialog, setShowExecuteDialog] = useState(false);
   const [showScheduleDialog, setShowScheduleDialog] = useState(false);
+  const [showViewDialog, setShowViewDialog] = useState(false);
   const [scheduleType, setScheduleType] = useState<"daily" | "weekly" | "monthly" | "custom">("daily");
   const [scheduleTime, setScheduleTime] = useState("09:00");
   const [scheduleDayOfWeek, setScheduleDayOfWeek] = useState("monday");
   const [scheduleDayOfMonth, setScheduleDayOfMonth] = useState("1");
   const [customCron, setCustomCron] = useState("0 9 * * *");
+
+  const handleScheduleClick = (type: "daily" | "weekly" | "monthly" | "custom") => {
+    setShowViewDialog(false); // Close the view dialog first
+    setScheduleType(type);
+    setTimeout(() => setShowScheduleDialog(true), 100); // Open schedule dialog after view dialog closes
+  };
 
   // Fetch templates
   const { data: templates = [], isLoading } = useQuery<WorkflowTemplate[]>({
@@ -231,6 +238,75 @@ export default function WorkflowTemplatesPage() {
     setShowExecuteDialog(false);
   };
 
+  const handleScheduleCreate = async () => {
+    if (!selectedTemplate) return;
+
+    try {
+      // Step 1: Instantiate the template to create a workflow
+      const instantiateResponse = await fetch("/api/workflow-templates/instantiate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          template_id: selectedTemplate.id,
+          parameters: parameterValues,
+        }),
+      });
+
+      if (!instantiateResponse.ok) {
+        throw new Error("Failed to create workflow from template");
+      }
+
+      const { workflow } = await instantiateResponse.json();
+
+      // Step 2: Build cron expression based on schedule type
+      let cronExpression = customCron;
+      if (scheduleType !== "custom") {
+        const [hours, minutes] = scheduleTime.split(":");
+
+        if (scheduleType === "daily") {
+          cronExpression = `${minutes} ${hours} * * *`;
+        } else if (scheduleType === "weekly") {
+          const dayMap: Record<string, string> = {
+            sunday: "0", monday: "1", tuesday: "2", wednesday: "3",
+            thursday: "4", friday: "5", saturday: "6"
+          };
+          cronExpression = `${minutes} ${hours} * * ${dayMap[scheduleDayOfWeek]}`;
+        } else if (scheduleType === "monthly") {
+          cronExpression = `${minutes} ${hours} ${scheduleDayOfMonth} * *`;
+        }
+      }
+
+      // Step 3: Create the schedule
+      const scheduleResponse = await fetch(`/api/workflows/${workflow.id}/schedules`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          schedule_type: "cron",
+          cron_expression: cronExpression,
+          is_enabled: true,
+        }),
+      });
+
+      if (!scheduleResponse.ok) {
+        throw new Error("Failed to create schedule");
+      }
+
+      toast({
+        title: "Schedule Created",
+        description: `Workflow "${workflow.name}" will run ${scheduleType}`,
+      });
+
+      setShowScheduleDialog(false);
+      queryClient.invalidateQueries({ queryKey: ["workflow-templates"] });
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "Failed to create schedule",
+        variant: "destructive",
+      });
+    }
+  };
+
   const renderParameterInput = (param: TemplateParameter) => {
     const value = parameterValues[param.name] ?? param.default_value ?? "";
     
@@ -370,19 +446,26 @@ export default function WorkflowTemplatesPage() {
                     )}
                   </CardContent>
                   <CardFooter className="flex gap-2">
-                    <Dialog>
-                      <DialogTrigger asChild>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="flex-1"
-                          onClick={() => handleViewDetails(template)}
-                        >
-                          <Eye className="h-4 w-4 mr-2" />
-                          View
-                        </Button>
-                      </DialogTrigger>
-                      <DialogContent className="max-w-3xl max-h-[80vh] overflow-y-auto">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="flex-1"
+                      onClick={() => { handleViewDetails(template); setShowViewDialog(true); }}
+                    >
+                      <Eye className="h-4 w-4 mr-2" />
+                      View
+                    </Button>
+                  </CardFooter>
+                </Card>
+              ))}
+            </div>
+          )}
+        </TabsContent>
+      </Tabs>
+
+      {/* View Template Dialog - Outside the map loop */}
+      <Dialog open={showViewDialog} onOpenChange={setShowViewDialog}>
+        <DialogContent className="max-w-3xl max-h-[80vh] overflow-y-auto">
                         <DialogHeader>
                           <DialogTitle>{selectedTemplate?.name}</DialogTitle>
                           <DialogDescription>
@@ -522,19 +605,19 @@ export default function WorkflowTemplatesPage() {
                                 <Play className="h-4 w-4 mr-2" />
                                 Execute Now
                               </DropdownMenuItem>
-                              <DropdownMenuItem onClick={() => { setScheduleType("daily"); setShowScheduleDialog(true); }}>
+                              <DropdownMenuItem onClick={() => handleScheduleClick("daily")}>
                                 <Calendar className="h-4 w-4 mr-2" />
                                 Schedule Daily
                               </DropdownMenuItem>
-                              <DropdownMenuItem onClick={() => { setScheduleType("weekly"); setShowScheduleDialog(true); }}>
+                              <DropdownMenuItem onClick={() => handleScheduleClick("weekly")}>
                                 <Calendar className="h-4 w-4 mr-2" />
                                 Schedule Weekly
                               </DropdownMenuItem>
-                              <DropdownMenuItem onClick={() => { setScheduleType("monthly"); setShowScheduleDialog(true); }}>
+                              <DropdownMenuItem onClick={() => handleScheduleClick("monthly")}>
                                 <Calendar className="h-4 w-4 mr-2" />
                                 Schedule Monthly
                               </DropdownMenuItem>
-                              <DropdownMenuItem onClick={() => { setScheduleType("custom"); setShowScheduleDialog(true); }}>
+                              <DropdownMenuItem onClick={() => handleScheduleClick("custom")}>
                                 <Clock className="h-4 w-4 mr-2" />
                                 Schedule Custom
                               </DropdownMenuItem>
@@ -543,13 +626,6 @@ export default function WorkflowTemplatesPage() {
                         </DialogFooter>
                       </DialogContent>
                     </Dialog>
-                  </CardFooter>
-                </Card>
-              ))}
-            </div>
-          )}
-        </TabsContent>
-      </Tabs>
 
       {/* Execute confirmation dialog */}
       <Dialog open={showExecuteDialog} onOpenChange={setShowExecuteDialog}>
@@ -671,13 +747,7 @@ export default function WorkflowTemplatesPage() {
             <Button variant="outline" onClick={() => setShowScheduleDialog(false)}>
               Cancel
             </Button>
-            <Button onClick={() => {
-              toast({
-                title: "Schedule Created",
-                description: `Workflow will run ${scheduleType} at ${scheduleTime}`,
-              });
-              setShowScheduleDialog(false);
-            }}>
+            <Button onClick={handleScheduleCreate}>
               <Calendar className="h-4 w-4 mr-2" />
               Create Schedule
             </Button>

@@ -5,8 +5,11 @@ Handles persistent application settings stored in the database.
 """
 
 import json
+import os
 from typing import Optional, Any
 from open_notebook.database.repository import repo_query
+from open_notebook.config import get_encryption_key
+from cryptography.fernet import Fernet
 
 
 async def get_setting(key: str, default: Any = None) -> Any:
@@ -249,3 +252,230 @@ async def set_daily_brief_config(
             "integer",
             "Maximum items to show per section in daily brief"
         )
+
+
+# ============================================================================
+# Encryption Helpers
+# ============================================================================
+
+def _encrypt_value(value: str) -> str:
+    """Encrypt a value using Fernet encryption."""
+    if not value:
+        return ""
+
+    key = get_encryption_key()
+    if not key:
+        return value  # Return unencrypted if no key
+
+    fernet = Fernet(key.encode())
+    return fernet.encrypt(value.encode()).decode()
+
+
+def _decrypt_value(encrypted_value: str) -> str:
+    """Decrypt a value using Fernet encryption."""
+    if not encrypted_value:
+        return ""
+
+    key = get_encryption_key()
+    if not key:
+        return encrypted_value  # Return as-is if no key
+
+    try:
+        fernet = Fernet(key.encode())
+        return fernet.decrypt(encrypted_value.encode()).decode()
+    except Exception:
+        # Return empty if decryption fails (might be unencrypted legacy value)
+        return ""
+
+
+# ============================================================================
+# Observability Settings
+# ============================================================================
+
+async def get_observability_config() -> dict:
+    """
+    Get all observability settings from database.
+
+    Returns:
+        Dictionary with observability configuration (secrets decrypted)
+    """
+    return {
+        "provider": await get_setting("observability_provider", "none"),
+        "langfuse": {
+            "enabled": await get_setting("langfuse_enabled", False),
+            "public_key": await get_setting("langfuse_public_key", ""),
+            "secret_key": _decrypt_value(await get_setting("langfuse_secret_key", "")),
+            "host": await get_setting("langfuse_host", "https://cloud.langfuse.com"),
+        },
+        "mlflow": {
+            "enabled": await get_setting("mlflow_enabled", False),
+            "tracking_uri": await get_setting("mlflow_tracking_uri", "http://mlflow:5000"),
+            "experiment_name": await get_setting("mlflow_experiment_name", "slate-agents"),
+            "username": await get_setting("mlflow_username", ""),
+            "password": _decrypt_value(await get_setting("mlflow_password", "")),
+        },
+        "options": {
+            "trace_level": await get_setting("observability_trace_level", "info"),
+            "log_llm_calls": await get_setting("observability_log_llm_calls", True),
+            "log_tool_calls": await get_setting("observability_log_tool_calls", True),
+            "log_agent_steps": await get_setting("observability_log_agent_steps", True),
+        }
+    }
+
+
+async def get_observability_config_masked() -> dict:
+    """
+    Get observability settings with secrets masked for API responses.
+
+    Returns:
+        Dictionary with observability configuration (secrets masked with ***)
+    """
+    config = await get_observability_config()
+
+    # Mask secrets
+    if config["langfuse"]["secret_key"]:
+        config["langfuse"]["secret_key"] = "***" + config["langfuse"]["secret_key"][-4:]
+
+    if config["mlflow"]["password"]:
+        config["mlflow"]["password"] = "***" + config["mlflow"]["password"][-4:]
+
+    return config
+
+
+async def set_observability_config(config: dict) -> None:
+    """
+    Set observability configuration in database.
+
+    Args:
+        config: Dictionary with observability settings (secrets will be encrypted)
+    """
+    # Provider
+    if "provider" in config:
+        await set_setting(
+            "observability_provider",
+            config["provider"],
+            "string",
+            "Observability provider: none, langfuse, mlflow, both"
+        )
+
+    # Langfuse settings
+    if "langfuse" in config:
+        langfuse = config["langfuse"]
+
+        if "enabled" in langfuse:
+            await set_setting(
+                "langfuse_enabled",
+                langfuse["enabled"],
+                "boolean",
+                "Enable Langfuse observability"
+            )
+
+        if "public_key" in langfuse:
+            await set_setting(
+                "langfuse_public_key",
+                langfuse["public_key"],
+                "string",
+                "Langfuse public API key"
+            )
+
+        if "secret_key" in langfuse and langfuse["secret_key"]:
+            # Only update if not masked
+            if not langfuse["secret_key"].startswith("***"):
+                encrypted_secret = _encrypt_value(langfuse["secret_key"])
+                await set_setting(
+                    "langfuse_secret_key",
+                    encrypted_secret,
+                    "string",
+                    "Langfuse secret API key (ENCRYPTED)"
+                )
+
+        if "host" in langfuse:
+            await set_setting(
+                "langfuse_host",
+                langfuse["host"],
+                "string",
+                "Langfuse host URL"
+            )
+
+    # MLFlow settings
+    if "mlflow" in config:
+        mlflow = config["mlflow"]
+
+        if "enabled" in mlflow:
+            await set_setting(
+                "mlflow_enabled",
+                mlflow["enabled"],
+                "boolean",
+                "Enable MLFlow observability"
+            )
+
+        if "tracking_uri" in mlflow:
+            await set_setting(
+                "mlflow_tracking_uri",
+                mlflow["tracking_uri"],
+                "string",
+                "MLFlow tracking server URL"
+            )
+
+        if "experiment_name" in mlflow:
+            await set_setting(
+                "mlflow_experiment_name",
+                mlflow["experiment_name"],
+                "string",
+                "MLFlow experiment name"
+            )
+
+        if "username" in mlflow:
+            await set_setting(
+                "mlflow_username",
+                mlflow["username"],
+                "string",
+                "MLFlow basic auth username (optional)"
+            )
+
+        if "password" in mlflow and mlflow["password"]:
+            # Only update if not masked
+            if not mlflow["password"].startswith("***"):
+                encrypted_password = _encrypt_value(mlflow["password"])
+                await set_setting(
+                    "mlflow_password",
+                    encrypted_password,
+                    "string",
+                    "MLFlow basic auth password (ENCRYPTED, optional)"
+                )
+
+    # Common options
+    if "options" in config:
+        options = config["options"]
+
+        if "trace_level" in options:
+            await set_setting(
+                "observability_trace_level",
+                options["trace_level"],
+                "string",
+                "Trace level: debug, info, warn, error"
+            )
+
+        if "log_llm_calls" in options:
+            await set_setting(
+                "observability_log_llm_calls",
+                options["log_llm_calls"],
+                "boolean",
+                "Log all LLM calls"
+            )
+
+        if "log_tool_calls" in options:
+            await set_setting(
+                "observability_log_tool_calls",
+                options["log_tool_calls"],
+                "boolean",
+                "Log all tool executions"
+            )
+
+        if "log_agent_steps" in options:
+            await set_setting(
+                "observability_log_agent_steps",
+                options["log_agent_steps"],
+                "boolean",
+                "Log agent execution steps"
+            )

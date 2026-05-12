@@ -1,6 +1,6 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  reactStrictMode: true,
+  reactStrictMode: false,  // Disabled to test streaming performance
   output: 'standalone',
   serverExternalPackages: [],
   async rewrites() {

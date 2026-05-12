@@ -145,6 +145,8 @@ export interface ChatMessage {
   agent_steps?: string;  // JSON string of AgentStep[]
   langfuse_trace_id?: string;
   langfuse_observation_id?: string;
+  mlflow_run_id?: string;
+  mlflow_experiment_id?: string;
 }
 
 // Agent Execution Step Types

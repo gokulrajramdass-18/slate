@@ -34,6 +34,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { AgentModelSelector } from "@/components/agents/AgentModelSelector";
+import { ResourceSelectionSection } from "@/components/agents/ResourceSelectionSection";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -493,163 +495,160 @@ export function StandaloneAgentsManager() {
 
       {/* Create Dialog */}
       <Dialog open={showCreateDialog} onOpenChange={setShowCreateDialog}>
-        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+        <DialogContent className="max-w-5xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>{editingAgentId ? "Edit Agent" : "Create Standalone Agent"}</DialogTitle>
+            <DialogTitle className="text-xl font-semibold">
+              {editingAgentId ? "Edit Agent" : "Create Standalone Agent"}
+            </DialogTitle>
+            <p className="text-sm text-muted-foreground mt-1">
+              Configure your agent with tools, data sources, and skills
+            </p>
           </DialogHeader>
 
-          <div className="space-y-4">
-            {/* Basic Info */}
-            <div className="space-y-2">
-              <Label htmlFor="name">Agent Name *</Label>
-              <Input
-                id="name"
-                value={formData.name}
-                onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                placeholder="My Research Agent"
-              />
+          <div className="space-y-6">
+            {/* Basic Info - 2 Column Grid */}
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="name" className="text-sm font-medium">
+                  Agent Name <span className="text-destructive">*</span>
+                </Label>
+                <Input
+                  id="name"
+                  value={formData.name}
+                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                  placeholder="My Research Agent"
+                  className="h-10"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="role" className="text-sm font-medium">Role</Label>
+                <Select value={formData.role} onValueChange={(value: any) => setFormData({ ...formData, role: value })}>
+                  <SelectTrigger className="h-10">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent className="bg-white dark:bg-gray-900 border-gray-200 dark:border-gray-800">
+                    {AVAILABLE_ROLES.map((role) => (
+                      <SelectItem key={role.value} value={role.value}>
+                        {role.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="description">Description</Label>
+              <Label htmlFor="description" className="text-sm font-medium">Description</Label>
               <Textarea
                 id="description"
                 value={formData.description}
                 onChange={(e) => setFormData({ ...formData, description: e.target.value })}
                 placeholder="What does this agent do?"
                 rows={2}
+                className="resize-none"
               />
             </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="role">Role</Label>
-              <Select value={formData.role} onValueChange={(value: any) => setFormData({ ...formData, role: value })}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent className="bg-white dark:bg-gray-900 border-gray-200 dark:border-gray-800">
-                  {AVAILABLE_ROLES.map((role) => (
-                    <SelectItem key={role.value} value={role.value}>
-                      {role.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+            {/* Divider */}
+            <div className="border-t" />
+
+            {/* Advanced Config Section */}
+            <div className="space-y-4">
+              <div>
+                <h3 className="text-sm font-semibold mb-3">Configuration</h3>
+                <div className="space-y-4">
+                  <AgentModelSelector
+                    selectedModelName={formData.model_name}
+                    onSelect={(model) => setFormData({ ...formData, model_name: model.name || "" })}
+                    label="Language Model"
+                    description="Select the AI model for this agent. Uses default if not specified."
+                  />
+
+                  <div className="space-y-2">
+                    <Label htmlFor="system_prompt" className="text-sm font-medium">
+                      System Prompt (Optional)
+                    </Label>
+                    <Textarea
+                      id="system_prompt"
+                      value={formData.system_prompt}
+                      onChange={(e) => setFormData({ ...formData, system_prompt: e.target.value })}
+                      placeholder="Custom instructions for this agent..."
+                      rows={3}
+                      className="resize-none"
+                    />
+                  </div>
+                </div>
+              </div>
             </div>
 
-            {/* Advanced Config */}
-            <div className="space-y-2">
-              <Label htmlFor="system_prompt">System Prompt (Optional)</Label>
-              <Textarea
-                id="system_prompt"
-                value={formData.system_prompt}
-                onChange={(e) => setFormData({ ...formData, system_prompt: e.target.value })}
-                placeholder="Custom instructions for this agent..."
-                rows={3}
+            {/* Divider */}
+            <div className="border-t" />
+
+            {/* Resources Section */}
+            <div className="space-y-5">
+              <div>
+                <h3 className="text-sm font-semibold mb-1">Resources</h3>
+                <p className="text-xs text-muted-foreground">
+                  Select tools, data sources, and skills for your agent
+                </p>
+              </div>
+
+              <ResourceSelectionSection
+                type="tools"
+                items={tools.map((t: any) => ({
+                  id: t.id,
+                  name: t.name,
+                  description: t.description,
+                  badge: t.category,
+                }))}
+                selectedIds={formData.tool_ids}
+                onSelect={(id) => setFormData({ ...formData, tool_ids: [...formData.tool_ids, id] })}
+                onDeselect={(id) => setFormData({ ...formData, tool_ids: formData.tool_ids.filter((x) => x !== id) })}
+                loading={false}
               />
-            </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="model_name">Model Override (Optional)</Label>
-              <Input
-                id="model_name"
-                value={formData.model_name}
-                onChange={(e) => setFormData({ ...formData, model_name: e.target.value })}
-                placeholder="e.g., gpt-4, claude-3-opus-20240229"
+              <ResourceSelectionSection
+                type="datasources"
+                items={sources.map((s: any) => ({
+                  id: s.id,
+                  name: s.title,
+                  description: s.description,
+                  badge: s.source_type,
+                }))}
+                selectedIds={formData.data_source_ids}
+                onSelect={(id) => setFormData({ ...formData, data_source_ids: [...formData.data_source_ids, id] })}
+                onDeselect={(id) =>
+                  setFormData({ ...formData, data_source_ids: formData.data_source_ids.filter((x) => x !== id) })
+                }
+                loading={false}
               />
-            </div>
 
-            {/* Tools */}
-            <div className="space-y-2">
-              <Label>Tools ({formData.tool_ids.length} selected)</Label>
-              <div className="border rounded p-3 max-h-32 overflow-y-auto space-y-1">
-                {tools.map((tool: any) => (
-                  <label key={tool.id} className="flex items-center gap-2 cursor-pointer hover:bg-muted p-1 rounded">
-                    <input
-                      type="checkbox"
-                      checked={formData.tool_ids.includes(tool.id)}
-                      onChange={(e) => {
-                        if (e.target.checked) {
-                          setFormData({ ...formData, tool_ids: [...formData.tool_ids, tool.id] });
-                        } else {
-                          setFormData({ ...formData, tool_ids: formData.tool_ids.filter(id => id !== tool.id) });
-                        }
-                      }}
-                    />
-                    <span className="text-sm">{tool.name}</span>
-                  </label>
-                ))}
-                {tools.length === 0 && (
-                  <p className="text-sm text-muted-foreground">No tools available</p>
-                )}
-              </div>
-            </div>
-
-            {/* Data Sources */}
-            <div className="space-y-2">
-              <Label>Data Sources ({formData.data_source_ids.length} selected)</Label>
-              <div className="border rounded p-3 max-h-32 overflow-y-auto space-y-1">
-                {sources.map((source: any) => (
-                  <label key={source.id} className="flex items-center gap-2 cursor-pointer hover:bg-muted p-1 rounded">
-                    <input
-                      type="checkbox"
-                      checked={formData.data_source_ids.includes(source.id)}
-                      onChange={(e) => {
-                        if (e.target.checked) {
-                          setFormData({ ...formData, data_source_ids: [...formData.data_source_ids, source.id] });
-                        } else {
-                          setFormData({ ...formData, data_source_ids: formData.data_source_ids.filter(id => id !== source.id) });
-                        }
-                      }}
-                    />
-                    <span className="text-sm">{source.title}</span>
-                    <Badge variant="outline" className="text-xs">{source.source_type}</Badge>
-                  </label>
-                ))}
-                {sources.length === 0 && (
-                  <p className="text-sm text-muted-foreground">No sources available</p>
-                )}
-              </div>
-            </div>
-
-            {/* Skills */}
-            <div className="space-y-2">
-              <Label>Skills ({formData.skill_ids.length} selected)</Label>
-              <div className="border rounded p-3 max-h-32 overflow-y-auto space-y-1">
-                {skillsLoading ? (
-                  <p className="text-sm text-muted-foreground">Loading skills...</p>
-                ) : skillsError ? (
-                  <p className="text-sm text-red-600">Error loading skills</p>
-                ) : skills.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">No skills available</p>
-                ) : (
-                  skills.map((skill: Skill) => (
-                  <label key={skill.id} className="flex items-center gap-2 cursor-pointer hover:bg-muted p-1 rounded">
-                    <input
-                      type="checkbox"
-                      checked={formData.skill_ids.includes(skill.id)}
-                      onChange={(e) => {
-                        if (e.target.checked) {
-                          setFormData({ ...formData, skill_ids: [...formData.skill_ids, skill.id] });
-                        } else {
-                          setFormData({ ...formData, skill_ids: formData.skill_ids.filter(id => id !== skill.id) });
-                        }
-                      }}
-                    />
-                    <span className="text-sm">{skill.name}</span>
-                    <Badge variant="outline" className="text-xs">{skill.category}</Badge>
-                  </label>
-                  ))
-                )}
-              </div>
+              <ResourceSelectionSection
+                type="skills"
+                items={skills.map((s: Skill) => ({
+                  id: s.id,
+                  name: s.name,
+                  description: s.description || "",
+                  badge: s.category,
+                }))}
+                selectedIds={formData.skill_ids}
+                onSelect={(id) => setFormData({ ...formData, skill_ids: [...formData.skill_ids, id] })}
+                onDeselect={(id) => setFormData({ ...formData, skill_ids: formData.skill_ids.filter((x) => x !== id) })}
+                loading={skillsLoading}
+                error={skillsError as Error | null}
+              />
             </div>
           </div>
 
-          <DialogFooter>
-            <Button variant="outline" onClick={() => {
-              setShowCreateDialog(false);
-              resetForm();
-            }}>
+          <DialogFooter className="gap-2 mt-6">
+            <Button
+              variant="outline"
+              onClick={() => {
+                setShowCreateDialog(false);
+                resetForm();
+              }}
+            >
               Cancel
             </Button>
             <Button onClick={handleCreate} disabled={createMutation.isPending || updateMutation.isPending}>
