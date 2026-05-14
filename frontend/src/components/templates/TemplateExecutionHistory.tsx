@@ -37,7 +37,7 @@ import {
 import { templatesApi } from "@/lib/api/templates";
 import { format } from "date-fns";
 import { useState } from "react";
-import Link from "next/link";
+import { Link } from 'react-router-dom';
 import { toast } from "sonner";
 
 interface TemplateExecutionHistoryProps {
@@ -283,7 +283,7 @@ export function TemplateExecutionHistory({ templateId }: TemplateExecutionHistor
                     <div className="flex gap-2 ml-auto">
                       {/* Direct link to result note */}
                       {execution.result_note_id && execution.workspace_id && (
-                        <Link href={`/workspaces/${execution.workspace_id}?noteId=${execution.result_note_id}`}>
+                        <Link to={`/workspaces/${execution.workspace_id}?noteId=${execution.result_note_id}`}>
                           <Button variant="default" size="sm">
                             <FileText className="h-4 w-4 mr-2" />
                             View Results
@@ -291,7 +291,7 @@ export function TemplateExecutionHistory({ templateId }: TemplateExecutionHistor
                         </Link>
                       )}
                       {execution.workspace_id && (
-                        <Link href={`/workspaces/${execution.workspace_id}`}>
+                        <Link to={`/workspaces/${execution.workspace_id}`}>
                           <Button variant="outline" size="sm">
                             <ExternalLink className="h-4 w-4 mr-2" />
                             View Workspace

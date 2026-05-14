@@ -1,13 +1,22 @@
 {
+  "welcomeFile": "/index.html",
   "authenticationMethod": "route",
   "sessionTimeout": 480,
-  "routes": [
+  "responseHeaders": [
     {
-      "source": "^/login/callback(.*)",
-      "target": "/xsuaa-check.html",
-      "destination": "frontend",
-      "authenticationType": "xsuaa"
+      "name": "Cache-Control",
+      "value": "no-cache, no-store, must-revalidate"
     },
+    {
+      "name": "Pragma",
+      "value": "no-cache"
+    },
+    {
+      "name": "Expires",
+      "value": "0"
+    }
+  ],
+  "routes": [
     {
       "source": "^/api/(.*)$",
       "target": "/api/$1",
@@ -16,27 +25,14 @@
       "csrfProtection": false
     },
     {
-      "source": "^/xsuaa-check\\.html$",
-      "target": "/xsuaa-check.html",
-      "destination": "frontend",
-      "authenticationType": "none"
-    },
-    {
-      "source": "^/$",
-      "target": "/",
-      "destination": "frontend",
-      "authenticationType": "xsuaa"
-    },
-    {
-      "source": "^/_next/(.*)$",
-      "target": "/_next/$1",
-      "destination": "frontend",
+      "source": "^/assets/(.*)$",
+      "localDir": "resources",
       "authenticationType": "none"
     },
     {
       "source": "^/(.*)$",
-      "target": "/$1",
-      "destination": "frontend",
+      "target": "/index.html",
+      "localDir": "resources",
       "authenticationType": "xsuaa"
     }
   ],

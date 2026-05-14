@@ -1,0 +1,1 @@
+import{j as r}from"./query-vendor-sxo-haSE.js";import{l as i}from"./index-C0L7HntV.js";const l={draft:{label:"Draft",variant:"secondary"},published:{label:"Published",variant:"default"},blocked:{label:"Blocked",variant:"destructive"}};function o({status:t,className:e}){const a=l[t];return r.jsx(i,{variant:a.variant,className:e,children:a.label})}export{o as S};

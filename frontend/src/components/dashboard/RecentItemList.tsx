@@ -1,6 +1,6 @@
 import { Badge } from "@/components/ui/badge";
 import { ArrowRight } from "lucide-react";
-import Link from "next/link";
+import { Link } from 'react-router-dom';
 import { formatDistanceToNow } from "date-fns";
 
 interface RecentItem {

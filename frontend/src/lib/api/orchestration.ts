@@ -73,7 +73,7 @@ export async function executeOrchestrationStream(
   onError?: (error: Error) => void,
   onComplete?: () => void
 ): Promise<void> {
-  const baseUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5055';
+  const baseUrl = import.meta.env.VITE_API_URL || 'http://localhost:5055';
   const url = `${baseUrl}/api/orchestration/execute/stream`;
 
   try {

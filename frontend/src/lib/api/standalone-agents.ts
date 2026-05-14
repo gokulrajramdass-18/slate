@@ -86,7 +86,7 @@ export async function executeStandaloneAgentStream(
   onEvent: (event: any) => void
 ): Promise<void> {
   const API_BASE =
-    process.env.NEXT_PUBLIC_API_URL || "http://localhost:5055/api";
+    import.meta.env.VITE_API_URL || "http://localhost:5055/api";
   const response = await fetch(
     `${API_BASE}/standalone-agents/${agentId}/execute/stream`,
     {

@@ -8,8 +8,8 @@
 
 // Base API URL - use environment variable for client-side, relative path for server-side
 export const API_BASE_URL =
-  typeof window !== "undefined" && process.env.NEXT_PUBLIC_API_URL
-    ? process.env.NEXT_PUBLIC_API_URL + "/api"
+  typeof window !== "undefined" && import.meta.env.VITE_API_URL
+    ? import.meta.env.VITE_API_URL + "/api"
     : "/api";
 
 // WebSocket base URL - derived from API base URL

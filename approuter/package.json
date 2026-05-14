@@ -1,0 +1,12 @@
+{
+  "name": "slate-approuter",
+  "version": "1.0.0",
+  "description": "SAP Approuter for Slate application",
+  "main": "node_modules/@sap/approuter/approuter.js",
+  "scripts": {
+    "start": "node node_modules/@sap/approuter/approuter.js"
+  },
+  "dependencies": {
+    "@sap/approuter": "^19.0.0"
+  }
+}

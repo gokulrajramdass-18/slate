@@ -8,7 +8,7 @@
  */
 
 import React, { useEffect, useMemo } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter } from '@/lib/routing/navigation';
 import {
   FileText,
   Globe,

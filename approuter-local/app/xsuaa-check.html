@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Checking authentication...</title>
+    <meta http-equiv="refresh" content="0;url=/dashboard">
+</head>
+<body>
+    <script>
+        // Check XSUAA session and populate auth store
+        (async function() {
+            try {
+                const response = await fetch('/api/auth/me', {credentials: 'include'});
+                if (response.ok) {
+                    const userData = await response.json();
+                    const authData = {
+                        state: {
+                            user: userData,
+                            isAuthenticated: true,
+                            token: 'xsuaa',
+                            refreshToken: null,
+                            permissions: []
+                        },
+                        version: 0
+                    };
+                    localStorage.setItem('auth-storage', JSON.stringify(authData));
+                    window.location.href = '/dashboard';
+                }
+            } catch (error) {
+                console.error('Auth check failed:', error);
+            }
+        })();
+    </script>
+</body>
+</html>

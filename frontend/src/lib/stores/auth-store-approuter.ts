@@ -27,7 +27,7 @@ interface AuthState {
   hasPermission: (resource: string, action: string) => boolean;
 }
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5055/api";
+const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:5055/api";
 
 export const useAuthStore = create<AuthState>()(
   persist(

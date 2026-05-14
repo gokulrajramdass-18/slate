@@ -2,7 +2,7 @@
 
 import { User, Bot, Copy, Check, FileText, Wrench, Save } from "lucide-react";
 import { useState, useEffect, useRef, useMemo } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter } from "@/lib/routing/navigation";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";

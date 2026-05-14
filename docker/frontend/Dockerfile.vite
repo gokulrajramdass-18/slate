@@ -1,0 +1,47 @@
+# Stage 1: Build frontend with Vite
+FROM node:20-alpine AS builder
+
+WORKDIR /app
+
+# Copy package files
+COPY package*.json ./
+
+# Install dependencies
+RUN npm ci
+
+# Copy source code
+COPY . .
+
+# Build arguments for environment variables
+ARG VITE_API_URL
+ARG VITE_XSUAA_ENABLED=false
+
+ENV VITE_API_URL=${VITE_API_URL}
+ENV VITE_XSUAA_ENABLED=${VITE_XSUAA_ENABLED}
+
+# Build static files
+RUN npm run build
+
+# Stage 2: Prepare static files for Approuter
+FROM node:20-alpine AS approuter
+
+# Install @sap/approuter
+RUN npm install -g @sap/approuter@^19.0.0
+
+WORKDIR /approuter
+
+# Copy approuter configuration from parent directory
+COPY ../approuter/xs-app.json ./xs-app.json 2>/dev/null || echo '{"routes":[]}' > xs-app.json
+COPY ../approuter/package.json ./package.json 2>/dev/null || echo '{"name":"approuter","version":"1.0.0"}' > package.json
+
+# Copy static frontend from builder
+COPY --from=builder /app/dist ./app
+
+# Expose port
+EXPOSE 5000
+
+# Environment variables
+ENV PORT=5000
+
+# Start approuter
+CMD ["node", "/usr/local/lib/node_modules/@sap/approuter/approuter.js"]

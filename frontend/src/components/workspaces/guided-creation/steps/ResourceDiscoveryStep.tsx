@@ -7,7 +7,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter } from '@/lib/routing/navigation';
 import { useGuidedCreationStore } from '@/lib/stores/guided-creation-store';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';

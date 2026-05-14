@@ -534,7 +534,7 @@ fi
 # Start frontend server in background
 echo -e "${BLUE}Starting frontend server...${NC}"
 cd frontend
-nohup npm run dev -- -p $FRONTEND_PORT > ../frontend.log 2>&1 &
+nohup npm run dev -- --port $FRONTEND_PORT > ../frontend.log 2>&1 &
 FRONTEND_PID=$!
 echo $FRONTEND_PID > ../.frontend.pid
 cd ..

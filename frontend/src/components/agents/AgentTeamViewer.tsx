@@ -53,7 +53,7 @@ import { agentsApi } from "@/lib/api";
 import { userQueryPromptsApi } from "@/lib/api/user-query-prompts";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/query-client";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "@/lib/routing/navigation";
 import { toast } from "sonner";
 import { useEffect } from "react";
 import type {

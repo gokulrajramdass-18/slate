@@ -1,0 +1,45 @@
+{
+  "welcomeFile": "/index.html",
+  "authenticationMethod": "route",
+  "sessionTimeout": 480,
+  "routes": [
+    {
+      "source": "^/api/(.*)$",
+      "target": "/api/$1",
+      "destination": "backend",
+      "authenticationType": "xsuaa",
+      "csrfProtection": false
+    },
+    {
+      "source": "^/assets/(.*)$",
+      "localDir": "app",
+      "authenticationType": "none",
+      "cacheControl": "public, max-age=31536000, immutable"
+    },
+    {
+      "source": "^/.*\\.(js|css|png|jpg|jpeg|svg|ico|woff|woff2|ttf|eot|json)$",
+      "localDir": "app",
+      "authenticationType": "none",
+      "cacheControl": "public, max-age=31536000, immutable"
+    },
+    {
+      "source": "^/site/view/public/(.*)$",
+      "target": "/index.html",
+      "localDir": "app",
+      "authenticationType": "none"
+    },
+    {
+      "source": "^/(.*)$",
+      "target": "/index.html",
+      "localDir": "app",
+      "authenticationType": "xsuaa"
+    }
+  ],
+  "compression": {
+    "enabled": true
+  },
+  "logout": {
+    "logoutEndpoint": "/logout",
+    "logoutPage": "/"
+  }
+}

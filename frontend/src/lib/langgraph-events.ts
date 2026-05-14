@@ -206,7 +206,7 @@ export function connectToLangGraphStream(
   contextSourceIds?: string[],
   notebookId?: string
 ): EventSource {
-  const baseUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5055';
+  const baseUrl = import.meta.env.VITE_API_URL || 'http://localhost:5055';
   const url = `${baseUrl}/api/agents/teams/${teamId}/execute/stream`;
 
   // Create EventSource (note: native EventSource doesn't support POST, need to use fetch with streaming)

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter } from "@/lib/routing/navigation";
 import { useQuery } from "@tanstack/react-query";
 import { useNotebooks, useCreateNotebook, useUpdateNotebook, useDuplicateNotebook, useDraftSessions } from "@/lib/hooks/use-api";
 import { Button } from "@/components/ui/button";

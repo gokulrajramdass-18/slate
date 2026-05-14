@@ -1,6 +1,6 @@
 "use client";
 
-import { useRouter } from "next/navigation";
+import { useRouter } from "@/lib/routing/navigation";
 import { FileText, Link, Type, Youtube, Database, Plug, MoreVertical, RefreshCw, Trash2, Eye, Sparkles } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
