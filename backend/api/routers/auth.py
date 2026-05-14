@@ -101,7 +101,8 @@ async def get_user_response_data(user: User) -> dict:
     roles = await user.get_roles()
 
     return {
-        "id": user.id,
+        "id": user.username,  # Use username as the primary ID for frontend
+        "uuid": user.id,  # Keep UUID for reference if needed
         "username": user.username,
         "email": user.email,
         "full_name": user.full_name,

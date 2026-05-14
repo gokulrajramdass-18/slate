@@ -1,7 +1,7 @@
 "use client";
 
-import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { Link } from "react-router-dom";
+import { usePathname } from "@/lib/routing/navigation";
 import { cn } from "@/lib/utils";
 import {
   BookOpen,
@@ -99,7 +99,7 @@ export function AppSidebar({ open, onClose }: AppSidebarProps) {
               return (
                 <Link
                   key={item.href}
-                  href={item.href}
+                  to={item.href}
                   title={!open ? item.label : undefined}
                   className={cn(
                     "flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors",
@@ -133,7 +133,7 @@ export function AppSidebar({ open, onClose }: AppSidebarProps) {
               return (
                 <Link
                   key={item.href}
-                  href={item.href}
+                  to={item.href}
                   title={!open ? item.label : undefined}
                   className={cn(
                     "flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors",

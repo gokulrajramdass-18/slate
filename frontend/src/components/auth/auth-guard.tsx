@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, ReactNode, useState } from "react";
-import { useRouter, usePathname } from "next/navigation";
+import { Navigate, useLocation } from "react-router-dom";
+import { useRouter, usePathname } from "@/lib/routing/navigation";
 import { useAuthStore } from "@/lib/stores/auth-store";
 
 interface AuthGuardProps {
@@ -40,8 +41,8 @@ export function AuthGuard({
   const [xsuaaChecked, setXsuaaChecked] = useState(false);
 
   // Check if XSUAA is enabled
-  const isAppRouter = typeof window !== "undefined" && window.location.port === "5001";
-  const isXsuaaEnabled = typeof window !== "undefined" && process.env.NEXT_PUBLIC_XSUAA_ENABLED === "true";
+  const isAppRouter = typeof window !== "undefined" && (window.location.port === "5001" || window.location.port === "5000");
+  const isXsuaaEnabled = typeof window !== "undefined" && import.meta.env.VITE_XSUAA_ENABLED === "true";
 
   // Wait for Zustand to hydrate from localStorage
   useEffect(() => {
@@ -93,7 +94,7 @@ export function AuthGuard({
   useEffect(() => {
     if (!isHydrated) return;
 
-    const isAppRouter = typeof window !== "undefined" && window.location.port === "5001";
+    const isAppRouter = typeof window !== "undefined" && (window.location.port === "5001" || window.location.port === "5000");
 
     if (isAppRouter && !isAuthenticated && requireAuth && !isCheckingXsuaa) {
       setIsCheckingXsuaa(true);
@@ -127,14 +128,7 @@ export function AuthGuard({
     // Check authentication status
     const isAuthed = isAuthenticated && token;
 
-    if (requireAuth && !isAuthed) {
-      // User needs to be authenticated but isn't
-      const returnUrl = pathname !== redirectTo ? `?returnUrl=${pathname}` : "";
-      router.replace(`${redirectTo}${returnUrl}`);
-    } else if (!requireAuth && isAuthed && pathname === "/login") {
-      // If user is authenticated and on login page, redirect to dashboard
-      router.replace("/dashboard");
-    }
+    // Redirect handled by Navigate component below
   }, [isAuthenticated, token, requireAuth, redirectTo, pathname, router, isHydrated]);
 
   // Show loading until hydrated
@@ -151,14 +145,14 @@ export function AuthGuard({
 
   // Show loading if auth is required but not authenticated
   if (requireAuth && !isAuthenticated) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto"></div>
-          <p className="mt-4 text-muted-foreground">Redirecting...</p>
-        </div>
-      </div>
-    );
+    // Redirect to login with return URL
+    const returnUrl = pathname !== redirectTo ? pathname : undefined;
+    return <Navigate to={redirectTo} state={{ from: returnUrl }} replace />;
+  }
+
+  // If authenticated and on login page, redirect to dashboard
+  if (!requireAuth && isAuthenticated && pathname === "/login") {
+    return <Navigate to="/dashboard" replace />;
   }
 
   return <>{children}</>;

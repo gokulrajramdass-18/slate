@@ -1,0 +1,1 @@
+import{j as e}from"./query-vendor-sxo-haSE.js";import{c as o}from"./index-C10KtemZ.js";function m({className:r,...a}){return e.jsx("div",{className:o("animate-pulse rounded-md bg-gray-200 dark:bg-gray-700",r),...a})}export{m as S};

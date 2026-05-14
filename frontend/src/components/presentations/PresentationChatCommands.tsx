@@ -8,7 +8,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter } from "@/lib/routing/navigation";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Loader2, Sparkles, Presentation, ChevronDown, X } from "lucide-react";
 import { Button } from "@/components/ui/button";

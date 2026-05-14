@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>React Streaming Test</title>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect } = React;
+
+        function App() {
+            const [message, setMessage] = useState('');
+            const [steps, setSteps] = useState([]);
+            const [isStreaming, setIsStreaming] = useState(false);
+
+            const startStream = async () => {
+                setMessage('');
+                setSteps([]);
+                setIsStreaming(true);
+
+                const response = await fetch('http://localhost:5055/api/chat/sessions/7b02fd4f-6799-474b-8880-13a2ef0c4206/messages', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message: 'Hello', stream: true })
+                });
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+                let currentEvent = '';
+                let dataBuffer = '';
+
+                while (true) {
+                    const {done, value} = await reader.read();
+                    if (done) break;
+
+                    buffer += decoder.decode(value, {stream: true});
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || '';
+
+                    for (const line of lines) {
+                        const trimmed = line.trim();
+                        if (!trimmed) {
+                            if (currentEvent && dataBuffer) {
+                                try {
+                                    const data = JSON.parse(dataBuffer);
+
+                                    if (currentEvent === 'chunk') {
+                                        setMessage(prev => prev + data.content);
+                                    } else if (currentEvent === 'agent_step') {
+                                        setSteps(prev => [...prev, data]);
+                                    }
+                                } catch(e) {}
+                                currentEvent = '';
+                                dataBuffer = '';
+                            }
+                        } else if (trimmed.startsWith('event:')) {
+                            currentEvent = trimmed.slice(6).trim();
+                        } else if (trimmed.startsWith('data:')) {
+                            dataBuffer += trimmed.slice(5).trim();
+                        }
+                    }
+                }
+
+                setIsStreaming(false);
+            };
+
+            return (
+                <div style={{padding: '20px', fontFamily: 'monospace'}}>
+                    <h1>React 18 Streaming Test</h1>
+                    <button onClick={startStream} disabled={isStreaming}>
+                        {isStreaming ? 'Streaming...' : 'Start Stream'}
+                    </button>
+
+                    <div style={{marginTop: '20px', border: '1px solid #ccc', padding: '10px'}}>
+                        <h3>Agent Steps: {steps.length}</h3>
+                        {steps.map((step, idx) => (
+                            <div key={idx} style={{background: '#e3f2fd', padding: '5px', margin: '5px 0'}}>
+                                {idx + 1}. {step.step_type}: {step.content}
+                            </div>
+                        ))}
+                    </div>
+
+                    <div style={{marginTop: '20px', border: '1px solid #ccc', padding: '10px'}}>
+                        <h3>Message: {message.length} chars</h3>
+                        <pre style={{whiteSpace: 'pre-wrap'}}>{message}</pre>
+                    </div>
+                </div>
+            );
+        }
+
+        ReactDOM.render(<App />, document.getElementById('root'));
+    </script>
+</body>
+</html>

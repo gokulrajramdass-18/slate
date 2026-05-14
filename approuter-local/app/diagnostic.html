@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>SSE Streaming Test</title>
+    <style>
+        body { font-family: monospace; padding: 20px; }
+        #output { border: 1px solid #ccc; padding: 10px; margin-top: 10px; min-height: 200px; }
+        #steps { border: 1px solid #00f; padding: 10px; margin-top: 10px; background: #e3f2fd; }
+        .chunk { color: green; }
+        .step { color: blue; margin: 5px 0; }
+    </style>
+</head>
+<body>
+    <h1>SSE Streaming Diagnostic</h1>
+    <button onclick="startTest()">Start Test</button>
+    <div id="steps"><strong>Agent Steps:</strong> <span id="step-count">0</span></div>
+    <div id="output"><strong>Response:</strong> <span id="text"></span></div>
+
+    <script>
+        let stepCount = 0;
+        let textContent = '';
+
+        async function startTest() {
+            stepCount = 0;
+            textContent = '';
+            document.getElementById('step-count').textContent = '0';
+            document.getElementById('text').textContent = '';
+
+            const response = await fetch('http://localhost:5055/api/chat/sessions/fb762b74-af72-452b-8d95-3e6e78ae7ccd/messages', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ message: 'What is AI?', stream: true })
+            });
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+            let currentEvent = '';
+            let dataBuffer = '';
+
+            while (true) {
+                const {done, value} = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, {stream: true});
+                const lines = buffer.split('\n');
+                buffer = lines.pop() || '';
+
+                for (const line of lines) {
+                    const trimmed = line.trim();
+                    if (!trimmed) {
+                        if (currentEvent && dataBuffer) {
+                            try {
+                                const data = JSON.parse(dataBuffer);
+
+                                if (currentEvent === 'chunk') {
+                                    textContent += data.content;
+                                    document.getElementById('text').textContent = textContent;
+                                } else if (currentEvent === 'agent_step') {
+                                    stepCount++;
+                                    document.getElementById('step-count').textContent = stepCount;
+                                    const stepsDiv = document.getElementById('steps');
+                                    const stepEl = document.createElement('div');
+                                    stepEl.className = 'step';
+                                    stepEl.textContent = `Step ${stepCount}: ${data.step_type} - ${data.status}`;
+                                    stepsDiv.appendChild(stepEl);
+                                }
+                            } catch(e) {}
+                            currentEvent = '';
+                            dataBuffer = '';
+                        }
+                    } else if (trimmed.startsWith('event:')) {
+                        currentEvent = trimmed.slice(6).trim();
+                    } else if (trimmed.startsWith('data:')) {
+                        dataBuffer += trimmed.slice(5).trim();
+                    }
+                }
+            }
+        }
+    </script>
+</body>
+</html>

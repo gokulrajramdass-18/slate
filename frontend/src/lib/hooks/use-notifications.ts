@@ -231,6 +231,19 @@ export const useNotifications = (
     const userId = options?.userId || userIdRef.current;
     if (!options?.autoConnect || !userId) return;
 
+    // In XSUAA mode (port 5001), disable WebSocket as AppRouter v16 doesn't support it
+    const isXsuaaMode = typeof window !== "undefined" && window.location.port === "5001";
+    if (isXsuaaMode) {
+      console.log("Notification WebSocket disabled in XSUAA mode - using polling fallback");
+      setConnected(false);
+      // Start polling instead
+      const pollInterval = setInterval(() => {
+        refetch();
+      }, options?.pollInterval || 30000);
+
+      return () => clearInterval(pollInterval);
+    }
+
     // Clean up existing connection
     if (wsRef.current) {
       wsRef.current.close();

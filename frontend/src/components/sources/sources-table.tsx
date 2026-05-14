@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter } from "@/lib/routing/navigation";
 import { FileText, Link, Type, Youtube, Database, Plug, MoreVertical, RefreshCw, Trash2, Eye, Sparkles, ChevronLeft, ChevronRight } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";

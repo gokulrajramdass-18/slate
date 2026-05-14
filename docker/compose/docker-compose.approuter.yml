@@ -14,8 +14,8 @@ services:
       - API_PORT=5055
       - DATABASE_TYPE=sqlite
       - SQLITE_DB_PATH=/app/data/database.db
-      - MOCK_XSUAA_ENABLED=true
-      - XSUAA_ENABLED=false
+      - MOCK_XSUAA_ENABLED=false
+      - XSUAA_ENABLED=true
       - JWT_SECRET_KEY=${JWT_SECRET_KEY:-local-dev-secret-key-change-me}
       - MOCK_XSUAA_SECRET=${MOCK_XSUAA_SECRET:-local-dev-secret-key-change-me}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
@@ -31,25 +31,7 @@ services:
       timeout: 5s
       retries: 3
 
-  # Frontend
-  frontend:
-    build:
-      context: ../../frontend
-      dockerfile: ../docker/frontend/Dockerfile
-    container_name: slate-frontend-approuter
-    ports:
-      - "3000:3000"
-    environment:
-      # Frontend should NOT use API URL when behind AppRouter
-      # It will use relative URLs (/api/*) which go through AppRouter
-      - NEXT_PUBLIC_API_URL=
-      - NODE_ENV=development
-    networks:
-      - slate-network
-    depends_on:
-      - backend
-
-  # AppRouter - Changed port to 5001 (5000 is used by MLflow)
+  # AppRouter with embedded frontend static files
   approuter:
     build:
       context: ../approuter
@@ -60,16 +42,11 @@ services:
     environment:
       - PORT=5001
       - PLATFORM_COOKIE_NAME=SLATE_SESSION_ID
-    volumes:
-      - ../approuter/xs-app.json:/app/xs-app.json:ro
-      - ../approuter/default-env.json:/app/default-env.json:ro
     networks:
       - slate-network
     depends_on:
       backend:
         condition: service_healthy
-      frontend:
-        condition: service_started
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:

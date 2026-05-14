@@ -1,9 +1,10 @@
-// Updated: 2026-04-27T16:56:42.498Z
+// Updated: 2026-05-14T08:09:00.000Z
 import { useEffect, useState, useCallback, useRef } from "react";
 
-// Remove trailing /api if present to avoid double /api in URLs
-const BASE_URL = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:5055").replace(/\/api\/?$/, "");
-const WS_BASE_URL = BASE_URL.replace("http", "ws");
+// Use window.location.host for WebSocket URL to work with AppRouter
+const WS_BASE_URL = typeof window !== "undefined"
+  ? `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}`
+  : "";
 
 interface UseDashboardWebSocketOptions {
   userId: string;
@@ -34,6 +35,13 @@ export function useDashboardWebSocket({
   });
 
   const connect = useCallback(() => {
+    // In XSUAA mode (port 5001), disable WebSocket as AppRouter v16 doesn't support it
+    const isXsuaaMode = typeof window !== "undefined" && window.location.port === "5001";
+    if (isXsuaaMode) {
+      console.log("Dashboard WebSocket disabled in XSUAA mode - using polling fallback");
+      return;
+    }
+
     // Don't attempt connection if disabled, no userId, or already connected/connecting
     if (!enabledRef.current || !userIdRef.current || wsRef.current?.readyState === WebSocket.OPEN || isConnectingRef.current) {
       return;

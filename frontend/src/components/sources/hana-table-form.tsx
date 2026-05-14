@@ -16,7 +16,7 @@ import { sourcesApi } from "@/lib/api/sources";
 import { hanaConnectionsApi } from "@/lib/api/hana-connections";
 import { toast } from "sonner";
 import type { SyncConfig } from "@/lib/types";
-import Link from "next/link";
+import { Link } from 'react-router-dom';
 
 interface HanaTableFormProps {
   onSubmit: (data: {
@@ -185,7 +185,7 @@ export function HanaTableForm({ onSubmit, isLoading = false, notebookId }: HanaT
               </CardTitle>
               <CardDescription>Select a saved HANA database connection</CardDescription>
             </div>
-            <Link href="/settings/hana-connections">
+            <Link to="/settings/hana-connections">
               <Button type="button" variant="outline" size="sm">
                 <Settings className="h-4 w-4 mr-2" />
                 Manage Connections
@@ -228,7 +228,7 @@ export function HanaTableForm({ onSubmit, isLoading = false, notebookId }: HanaT
             ) : (
               <div className="p-4 border border-dashed rounded-md text-center">
                 <p className="text-sm text-gray-500 mb-3">No HANA connections configured</p>
-                <Link href="/settings/hana-connections">
+                <Link to="/settings/hana-connections">
                   <Button type="button" variant="outline" size="sm">
                     <Settings className="h-4 w-4 mr-2" />
                     Create Connection

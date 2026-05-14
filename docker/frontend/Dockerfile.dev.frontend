@@ -1,21 +1,23 @@
-# Development Dockerfile for Frontend with Hot Reload
+# Development Dockerfile for Slate Frontend (React+Vite)
+# Hot-reload enabled for local development
 
 FROM node:20-alpine
 
 WORKDIR /app
 
-# Copy package files
-COPY frontend/package*.json ./
-
-# Install dependencies
+# Install dependencies first (for better caching)
+COPY package*.json ./
 RUN npm install
 
-# Copy frontend source
-COPY frontend/ ./
+# Copy source code
+COPY . .
 
+# Expose port
 EXPOSE 3000
 
-ENV NODE_ENV=development
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://localhost:3000/ || exit 1
 
-# Start development server with hot reload
-CMD ["npm", "run", "dev"]
+# Start Vite dev server
+CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0"]

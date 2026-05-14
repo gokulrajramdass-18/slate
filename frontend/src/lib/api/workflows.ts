@@ -245,7 +245,7 @@ export const workflowsApi = {
       params.append('input_data', JSON.stringify(inputData));
     }
 
-    const url = `${process.env.NEXT_PUBLIC_API_URL}/workflows/${id}/execute?stream=true&${params.toString()}`;
+    const url = `${import.meta.env.VITE_API_URL}/workflows/${id}/execute?stream=true&${params.toString()}`;
     return new EventSource(url);
   },
 

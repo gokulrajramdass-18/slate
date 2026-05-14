@@ -237,7 +237,7 @@ export function SlidePreview({
           >
             <iframe
               ref={iframeRef}
-              src={`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5055'}/api/presentations/${presentationId}/preview`}
+              src={`${import.meta.env.VITE_API_URL || 'http://localhost:5055'}/api/presentations/${presentationId}/preview`}
               className="w-[960px] h-[540px] border-0"
               sandbox="allow-scripts allow-same-origin"
               title="Presentation Preview"

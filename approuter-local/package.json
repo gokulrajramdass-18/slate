@@ -1,0 +1,11 @@
+{
+  "name": "slate-approuter-local",
+  "version": "1.0.0",
+  "description": "SAP Approuter for Slate local XSUAA testing",
+  "scripts": {
+    "start": "node node_modules/@sap/approuter/approuter.js"
+  },
+  "dependencies": {
+    "@sap/approuter": "^14.0.0"
+  }
+}

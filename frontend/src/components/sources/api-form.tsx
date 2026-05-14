@@ -14,7 +14,7 @@ import { SyncSettings } from "./sync-settings";
 import { apiConnectionsApi } from "@/lib/api/api-connections";
 import { toast } from "sonner";
 import type { SyncConfig } from "@/lib/types";
-import Link from "next/link";
+import { Link } from 'react-router-dom';
 
 interface ApiFormProps {
   onSubmit: (data: {
@@ -105,7 +105,7 @@ export function ApiForm({ onSubmit, isLoading = false, notebookId }: ApiFormProp
               </CardTitle>
               <CardDescription>Select a saved API connection</CardDescription>
             </div>
-            <Link href="/settings/api-connections">
+            <Link to="/settings/api-connections">
               <Button type="button" variant="outline" size="sm">
                 <Settings className="h-4 w-4 mr-2" />
                 Manage Connections
@@ -148,7 +148,7 @@ export function ApiForm({ onSubmit, isLoading = false, notebookId }: ApiFormProp
             ) : (
               <div className="p-4 border border-dashed rounded-md text-center">
                 <p className="text-sm text-gray-500 mb-3">No API connections configured</p>
-                <Link href="/settings/api-connections">
+                <Link to="/settings/api-connections">
                   <Button type="button" variant="outline" size="sm">
                     <Settings className="h-4 w-4 mr-2" />
                     Create Connection

@@ -7,7 +7,7 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter } from "@/lib/routing/navigation";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Loader2, FileText, Sparkles, Check } from "lucide-react";
 import { Button } from "@/components/ui/button";

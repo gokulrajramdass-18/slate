@@ -21,7 +21,7 @@ import {
   Loader2,
 } from "lucide-react";
 import type { WorkspaceTemplate } from "@/lib/api/templates";
-import Link from "next/link";
+import { Link } from 'react-router-dom';
 import { useQuery } from "@tanstack/react-query";
 import { workspacesApi } from "@/lib/api/workspaces";
 
@@ -149,7 +149,7 @@ export function TemplateCard({ template, onInstantiate, onSchedule, isExecuting 
       </CardContent>
 
       <CardFooter className="flex gap-2 border-t pt-4">
-        <Link href={`/templates/${template.id}`} className="flex-1">
+        <Link to={`/templates/${template.id}`} className="flex-1">
           <Button variant="outline" size="sm" className="w-full" disabled={isExecuting}>
             <Eye className="h-4 w-4 mr-2" />
             View

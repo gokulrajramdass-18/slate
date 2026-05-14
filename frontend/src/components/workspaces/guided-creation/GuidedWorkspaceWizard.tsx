@@ -8,7 +8,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useRouter, useSearchParams } from '@/lib/routing/navigation';
 import { useGuidedCreationStore } from '@/lib/stores/guided-creation-store';
 import { useAuthStore } from '@/lib/stores/auth-store';
 import {

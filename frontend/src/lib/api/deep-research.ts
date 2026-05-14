@@ -98,7 +98,7 @@ export const deepResearchApi = {
    */
   streamProgress: (jobId: string): EventSource => {
     return new EventSource(
-      `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5055/api'}/chat/deep-research/jobs/${jobId}/stream`
+      `${import.meta.env.VITE_API_URL || 'http://localhost:5055/api'}/chat/deep-research/jobs/${jobId}/stream`
     );
   },
 };

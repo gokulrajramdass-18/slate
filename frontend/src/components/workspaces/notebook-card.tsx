@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import Link from "next/link";
+import { Link } from 'react-router-dom';
 import { useState } from "react";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -60,7 +60,7 @@ export const NotebookCard = React.memo(function NotebookCard({ notebook, onEdit,
       <Card className="hover:shadow-xl hover:scale-[1.02] transition-all duration-300 cursor-pointer h-full flex flex-col hover:border-purple-500/30">
         <CardHeader className="flex-row items-start justify-between space-y-0 pb-2">
           <div className="flex-1">
-            <Link href={`/workspaces/${notebook.id}`}>
+            <Link to={`/workspaces/${notebook.id}`}>
               <CardTitle className="flex items-center gap-2 text-xl hover:text-primary-600 transition-colors">
                 {notebook.has_plan ? (
                   <div className="p-1.5 rounded-lg bg-gradient-to-br from-purple-100 to-blue-100 dark:from-purple-900/30 dark:to-blue-900/30 transition-transform hover:scale-110">
@@ -93,7 +93,7 @@ export const NotebookCard = React.memo(function NotebookCard({ notebook, onEdit,
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="bg-white dark:bg-gray-900 border-gray-200 dark:border-gray-800 animate-fade-in">
               <DropdownMenuItem asChild className="transition-all hover:scale-[1.02]">
-                <Link href={`/workspaces/${notebook.id}`} className="flex items-center cursor-pointer">
+                <Link to={`/workspaces/${notebook.id}`} className="flex items-center cursor-pointer">
                   <Eye className="mr-2 h-4 w-4" />
                   View
                 </Link>
@@ -128,7 +128,7 @@ export const NotebookCard = React.memo(function NotebookCard({ notebook, onEdit,
         </CardHeader>
 
         <CardContent className="flex-1">
-          <Link href={`/workspaces/${notebook.id}`}>
+          <Link to={`/workspaces/${notebook.id}`}>
             <CardDescription className="line-clamp-2 min-h-[40px]">
               {notebook.description || "No description provided"}
             </CardDescription>

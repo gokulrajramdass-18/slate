@@ -9,9 +9,10 @@ import { useNotifications } from "@/lib/hooks/use-notifications";
 import { NotificationToastContainer } from "@/components/notifications/NotificationToast";
 import { NotificationDialogManager } from "@/components/notifications/NotificationDialog";
 import { ApprovalDialogManager } from "@/components/notifications/ApprovalDialog";
-import { useRouter } from "next/navigation";
+import { Outlet } from "react-router-dom";
+import { useRouter } from "@/lib/routing/navigation";
 
-export function AppShell({ children }: { children: React.ReactNode }) {
+export function AppShell() {
   const { isOpen: sidebarOpen, toggle: toggleSidebar } = useSidebarStore();
   const user = useAuthStore((state) => state.user);
   const router = useRouter();
@@ -87,7 +88,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             sidebarOpen ? "ml-64" : "ml-16"
           )}
         >
-          <div className="h-full w-full">{children}</div>
+          <div className="h-full w-full">
+            <Outlet />
+          </div>
         </main>
       </div>
     </div>

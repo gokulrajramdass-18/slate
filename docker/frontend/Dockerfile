@@ -1,5 +1,5 @@
 # Multi-stage Dockerfile for Slate Frontend
-# Optimized for production deployment with Next.js
+# Optimized for production deployment with React+Vite
 
 # Stage 1: Dependencies
 FROM node:20-alpine AS deps
@@ -10,7 +10,7 @@ WORKDIR /app
 COPY package*.json ./
 
 # Install dependencies
-RUN npm ci --only=production
+RUN npm ci
 
 # Stage 2: Builder
 FROM node:20-alpine AS builder
@@ -20,49 +20,67 @@ WORKDIR /app
 # Copy dependencies from deps stage
 COPY --from=deps /app/node_modules ./node_modules
 
-# Copy source files and create public directory if it doesn't exist
+# Copy source files
 COPY . ./
-RUN mkdir -p public
 
-# Build the application with API URL
-ARG NEXT_PUBLIC_API_URL
-ARG NEXT_PUBLIC_XSUAA_ENABLED
-ENV NEXT_TELEMETRY_DISABLED 1
-ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
-ENV NEXT_PUBLIC_XSUAA_ENABLED=${NEXT_PUBLIC_XSUAA_ENABLED}
+# Build the application with Vite
+ARG VITE_API_URL
+ARG VITE_XSUAA_ENABLED
+ENV VITE_API_URL=${VITE_API_URL}
+ENV VITE_XSUAA_ENABLED=${VITE_XSUAA_ENABLED}
 RUN npm run build
 
-# Stage 3: Runner
-FROM node:20-alpine AS runner
+# Stage 3: Runner - Serve with nginx
+FROM nginx:alpine AS runner
 
-WORKDIR /app
+WORKDIR /usr/share/nginx/html
 
-# Set NODE_ENV
-ENV NODE_ENV=production
-ENV NEXT_TELEMETRY_DISABLED 1
+# Remove default nginx static assets
+RUN rm -rf ./*
 
-# Create non-root user
-RUN addgroup --system --gid 1001 nodejs && \
-    adduser --system --uid 1001 nextjs
+# Copy built assets from builder
+COPY --from=builder /app/dist .
 
-# Copy necessary files from builder (public directory may be empty)
-COPY --from=builder /app/public ./public
-COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
-COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+# Copy nginx configuration
+COPY <<EOF /etc/nginx/conf.d/default.conf
+server {
+    listen 3000;
+    server_name _;
+    root /usr/share/nginx/html;
+    index index.html;
 
-# Switch to non-root user
-USER nextjs
+    # Enable gzip compression
+    gzip on;
+    gzip_vary on;
+    gzip_min_length 1024;
+    gzip_types text/plain text/css text/xml text/javascript application/x-javascript application/xml+rss application/json application/javascript;
+
+    # SPA fallback - all routes go to index.html
+    location / {
+        try_files \$uri \$uri/ /index.html;
+    }
+
+    # Health check endpoint
+    location /health {
+        access_log off;
+        return 200 "healthy\n";
+        add_header Content-Type text/plain;
+    }
+
+    # Cache static assets
+    location ~* \\.(?:css|js|jpg|jpeg|gif|png|svg|ico|woff|woff2|ttf|eot)$ {
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+    }
+}
+EOF
 
 # Expose port
 EXPOSE 3000
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD node -e "require('http').get('http://localhost:3000', (res) => process.exit(res.statusCode === 200 ? 0 : 1))"
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://localhost:3000/health || exit 1
 
-# Set environment variables
-ENV PORT=3000 \
-    HOSTNAME=0.0.0.0
-
-# Start the application
-CMD ["node", "server.js"]
+# Start nginx
+CMD ["nginx", "-g", "daemon off;"]

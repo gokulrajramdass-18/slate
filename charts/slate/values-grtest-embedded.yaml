@@ -1,0 +1,178 @@
+# Slate Deployment Values for grtest-ns namespace
+# SAP BTP Kyma Runtime - sapit-sales-dev-camel
+# Configuration: AppRouter with embedded frontend (no separate frontend container)
+
+# Namespace
+namespace: grtest-ns
+
+# Global settings
+global:
+  imageRegistry: ""
+  imagePullSecrets: []
+
+# Backend configuration
+backend:
+  replicaCount: 1
+
+  image:
+    repository: gokulraj18/slate-backend
+    tag: kyma-20260514-115429
+    pullPolicy: Always
+
+  service:
+    type: ClusterIP
+    port: 5055
+
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu: "250m"
+    limits:
+      memory: "2Gi"
+      cpu: "1000m"
+
+  # Database configuration
+  database:
+    type: sqlite
+    path: /app/data/database.db
+
+  # Persistent storage for database
+  persistence:
+    enabled: true
+    storageClass: ""
+    accessMode: ReadWriteOnce
+    size: 5Gi
+
+  # Environment variables
+  env:
+    apiHost: "0.0.0.0"
+    apiPort: "5055"
+    logLevel: "INFO"
+    xsuaaEnabled: "true"  # Enable XSUAA authentication
+
+# Frontend configuration - DISABLED (embedded in approuter)
+frontend:
+  enabled: false
+
+# AppRouter configuration with embedded frontend
+approuter:
+  enabled: true
+  replicaCount: 2
+
+  image:
+    repository: gokulraj18/slate-approuter
+    tag: kyma-20260514-123200
+    pullPolicy: Always
+
+  service:
+    type: ClusterIP
+    port: 5001
+
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "100m"
+    limits:
+      memory: "1Gi"
+      cpu: "500m"
+
+  sessionAffinity:
+    enabled: true
+    cookieName: SLATE_SESSION_ID
+
+# XSUAA Service configuration
+xsuaa:
+  enabled: true
+  serviceOfferingName: xsuaa
+  servicePlanName: application
+
+  # Application name (will generate unique xsappname)
+  xsappname: slate-grtest
+  tenantMode: dedicated
+
+  # Scopes
+  scopes:
+    - name: "$XSAPPNAME.User"
+      description: "Slate user"
+    - name: "$XSAPPNAME.Admin"
+      description: "Slate administrator"
+
+  # Role templates
+  roleTemplates:
+    - name: User
+      description: "Slate User"
+      scopeReferences:
+        - "$XSAPPNAME.User"
+    - name: Admin
+      description: "Slate Administrator"
+      scopeReferences:
+        - "$XSAPPNAME.User"
+        - "$XSAPPNAME.Admin"
+
+  # OAuth redirect URIs (will be auto-configured based on host)
+  oauth2Configuration:
+    redirectUris:
+      - "https://slate-grtest.*.kyma.ondemand.com/**"
+      - "https://slate-grtest.*.kyma.sap.com/**"
+
+# API Rule configuration (Kyma Ingress)
+apiRule:
+  enabled: true
+  gateway: kyma-system/kyma-gateway
+  host: slate-grtest  # Will be: slate-grtest.<cluster-domain>
+
+  # TLS configuration
+  tls:
+    enabled: true
+    secretName: ""  # Will use default Kyma TLS certificate
+
+# Secrets configuration
+secrets:
+  # Encryption key for database
+  encryptionKey: "xK3mP9vL2nQ8jR4wT6yU1zH5sF7gD0bN9cM4xA2vB8e"
+
+  # AI Provider API Keys (optional)
+  openaiApiKey: ""
+  anthropicApiKey: ""
+
+# Destinations configuration for approuter
+destinations:
+  backend:
+    name: slate-backend
+    url: http://slate-backend:5055
+    forwardAuthToken: true  # Forward JWT to backend
+    timeout: 600000
+
+# xs-app.json routing configuration
+xsApp:
+  authenticationMethod: route
+  sessionTimeout: 480
+  welcomeFile: "/index.html"
+
+  # Response headers for cache control
+  responseHeaders:
+    - name: "Cache-Control"
+      value: "no-cache, no-store, must-revalidate"
+    - name: "Pragma"
+      value: "no-cache"
+    - name: "Expires"
+      value: "0"
+
+  routes:
+    # API routes - require XSUAA authentication
+    - source: "^/api/(.*)$"
+      target: "/api/$1"
+      destination: slate-backend
+      authenticationType: xsuaa
+      csrfProtection: false
+
+    # Static assets - no authentication
+    - source: "^/assets/(.*)$"
+      localDir: resources
+      authenticationType: none
+
+    # All other routes - serve index.html for SPA routing with XSUAA
+    - source: "^/(.*)$"
+      target: "/index.html"
+      localDir: resources
+      authenticationType: xsuaa

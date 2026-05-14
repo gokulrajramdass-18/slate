@@ -48,7 +48,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Bot, Plus, Trash2, Loader2, Activity, Brain, Search as SearchIcon, FileText, Zap, Pencil, Users, Database, Play, CheckCircle2, AlertCircle } from "lucide-react";
 import { toast } from "sonner";
-import { useRouter } from "next/navigation";
+import { useRouter } from "@/lib/routing/navigation";
 
 const ROLE_CONFIG: Record<string, { label: string; color: string; icon: typeof Bot }> = {
   planner: { label: "Planner", color: "bg-indigo-100 text-indigo-800 dark:bg-indigo-900 dark:text-indigo-200", icon: Brain },

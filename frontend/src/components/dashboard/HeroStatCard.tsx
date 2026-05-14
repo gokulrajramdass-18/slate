@@ -1,15 +1,15 @@
 import { LucideIcon } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
-import Link from "next/link";
+import { Link } from 'react-router-dom';
 
 interface HeroStatCardProps {
   title: string;
   value: number;
   icon: LucideIcon;
-  color: string;
-  bgColor: string;
+  color?: string;
+  bgColor?: string;
   href?: string;
-  trend?: { value: number; direction: "up" | "down" };
+  trend?: { value: number; direction: "up" | "down" } | null;
   highlight?: boolean;
 }
 
@@ -59,7 +59,7 @@ export function HeroStatCard({
   );
 
   if (href) {
-    return <Link href={href}>{cardContent}</Link>;
+    return <Link to={href}>{cardContent}</Link>;
   }
 
   return cardContent;

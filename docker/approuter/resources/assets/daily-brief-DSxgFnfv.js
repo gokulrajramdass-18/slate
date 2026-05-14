@@ -1,0 +1,1 @@
+import{k as a}from"./index-C10KtemZ.js";const n={get:async()=>{const{data:t}=await a.get("/daily-brief");return t},getSettings:async()=>{const{data:t}=await a.get("/admin/daily-brief/settings");return t},updateSettings:async t=>{const{data:i}=await a.put("/admin/daily-brief/settings",t);return i}};export{n as d};

@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Loader2, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { MicrositeGenerator } from "./MicrositeGenerator";
-import { useRouter } from "next/navigation";
+import { useRouter } from "@/lib/routing/navigation";
 import { apiClient } from "@/lib/api/client";
 
 interface MicrositeCreateDialogProps {

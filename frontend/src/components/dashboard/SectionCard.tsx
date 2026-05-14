@@ -1,7 +1,7 @@
 import { LucideIcon, ArrowRight } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import Link from "next/link";
+import { Link } from 'react-router-dom';
 
 interface SectionCardProps {
   title: string;
@@ -40,7 +40,7 @@ export function SectionCard({
             </Button>
           )}
           {href && (
-            <Link href={href}>
+            <Link to={href}>
               <Button variant="link" size="sm" className="text-xs hover:translate-x-1 transition-transform">
                 View all
                 <ArrowRight className="w-3 h-3 ml-1" />

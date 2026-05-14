@@ -8,7 +8,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useAuthStore } from "@/lib/stores/auth-store";
 import { dailyBriefApi } from "@/lib/api/daily-brief";
 import { toast } from "sonner";
-import Link from "next/link";
+import { Link } from 'react-router-dom';
 import { useState, useEffect } from "react";
 
 export function DailyBriefCard() {
@@ -221,7 +221,7 @@ export function DailyBriefCard() {
         {approvals.length > 0 && !isTyping && (
           <div className="flex flex-wrap gap-2 pt-4 mt-1">
             {approvals.map((approval) => (
-              <Link key={approval.id} href={approval.action_url}>
+              <Link key={approval.id} to={approval.action_url}>
                 <Button variant="default" size="sm" className="h-9 px-4 font-semibold">
                   Review: {approval.workflow_name}
                 </Button>
