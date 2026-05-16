@@ -33,7 +33,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
-import { Key, Plus, Trash2, TestTube, CheckCircle, XCircle, Loader2, Cpu } from "lucide-react";
+import { Key, Plus, Trash2, TestTube, CheckCircle, XCircle, Loader2, Cpu, Database } from "lucide-react";
 import { toast } from "sonner";
 import { Switch } from "@/components/ui/switch";
 import { SettingsHeader } from "@/components/settings/settings-header";
@@ -112,6 +112,34 @@ export default function ApiKeysPage() {
       setProvider(modelSource === "sap_ai_core" ? "sap_ai_core" : "openai");
     }
   }, [modelSource, showCreateDialog]);
+
+  // Auto-fill SAP AI Core credentials when dialog opens
+  useEffect(() => {
+    const fetchSAPAICoreCredentials = async () => {
+      if (showSAPAICoreDialog) {
+        try {
+          const response = await fetch("/api/models/sap-ai-core/credentials");
+          const data = await response.json();
+
+          if (data.configured) {
+            // Only auto-fill if fields are empty
+            if (!sapAuthUrl) setSapAuthUrl(data.auth_url || "");
+            if (!sapApiUrl) setSapApiUrl(data.api_url || "");
+            if (!sapClientId) setSapClientId(data.client_id || "");
+            if (!sapClientSecret) setSapClientSecret(data.client_secret_full || "");
+            if (!sapResourceGroup || sapResourceGroup === "default") {
+              setSapResourceGroup(data.resource_group || "default");
+            }
+          }
+        } catch (error) {
+          console.error("Failed to fetch SAP AI Core credentials:", error);
+          // Silent fail - user can still enter manually
+        }
+      }
+    };
+
+    fetchSAPAICoreCredentials();
+  }, [showSAPAICoreDialog]);
 
   const createMutation = useMutation({
     mutationFn: credentialsApi.create,
@@ -387,6 +415,50 @@ export default function ApiKeysPage() {
     }
   };
 
+  const handleImportAllSAPAICoreModels = async () => {
+    if (!sapAuthUrl || !sapApiUrl || !sapClientId || !sapClientSecret) {
+      toast.error("Please fill in all required SAP AI Core credentials");
+      return;
+    }
+
+    setLoadingSAPAICore(true);
+    try {
+      // Call bulk import endpoint
+      const result = await credentialsApi.importSAPAICoreModels({
+        auth_url: sapAuthUrl,
+        api_url: sapApiUrl,
+        client_id: sapClientId,
+        client_secret: sapClientSecret,
+        resource_group: sapResourceGroup,
+        identity_zone: sapIdentityZone || undefined,
+        identityzoneid: sapIdentityZoneId || undefined,
+      });
+
+      if (result.success) {
+        toast.success(result.message);
+        setShowSAPAICoreDialog(false);
+        // Refresh credentials list
+        queryClient.invalidateQueries({ queryKey: ["credentials"] });
+        // Reset SAP AI Core fields
+        setSapAuthUrl("");
+        setSapApiUrl("");
+        setSapClientId("");
+        setSapClientSecret("");
+        setSapResourceGroup("default");
+        setSapIdentityZone("");
+        setSapIdentityZoneId("");
+        setSapAICoreModels([]);
+      } else {
+        toast.error(result.message || "Failed to import models");
+      }
+    } catch (error: any) {
+      const errorMessage = error.response?.data?.detail || "Failed to import models from SAP AI Core";
+      toast.error(errorMessage);
+    } finally {
+      setLoadingSAPAICore(false);
+    }
+  };
+
   const handleSelectSAPAICoreModel = (model: any) => {
     setProvider("sap_ai_core");
     setModelName(model.deployment_id);
@@ -506,7 +578,21 @@ export default function ApiKeysPage() {
               Import from LiteLLM
             </Button>
           ) : (
-            <Button onClick={() => setShowSAPAICoreDialog(true)} variant="outline">
+            <Button onClick={async () => {
+              // Auto-import from standalone SAP AI Core API (no credentials needed)
+              try {
+                const result = await credentialsApi.importSAPAICoreModelsAuto();
+                if (result.success) {
+                  toast.success(`Imported ${result.imported_count} models from SAP AI Core`);
+                  queryClient.invalidateQueries({ queryKey: ["credentials"] });
+                } else {
+                  toast.error(result.message || "Failed to import models");
+                }
+              } catch (error: any) {
+                console.error("SAP AI Core auto-import error:", error);
+                toast.error(error.response?.data?.message || error.message || "Failed to import SAP AI Core models");
+              }
+            }} variant="outline">
               <Cpu className="w-4 h-4 mr-2" />
               Import from SAP AI Core
             </Button>
@@ -1166,23 +1252,44 @@ export default function ApiKeysPage() {
               </div>
             </div>
 
-            <Button
-              onClick={handleLoadSAPAICoreModels}
-              disabled={loadingSAPAICore || !sapAuthUrl || !sapApiUrl || !sapClientId || !sapClientSecret}
-              className="w-full"
-            >
-              {loadingSAPAICore ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin mr-2" />
-                  Discovering Models...
-                </>
-              ) : (
-                <>
-                  <Cpu className="w-4 h-4 mr-2" />
-                  Discover Models
-                </>
-              )}
-            </Button>
+            <div className="flex gap-2">
+              <Button
+                onClick={handleLoadSAPAICoreModels}
+                disabled={loadingSAPAICore || !sapAuthUrl || !sapApiUrl || !sapClientId || !sapClientSecret}
+                variant="outline"
+                className="flex-1"
+              >
+                {loadingSAPAICore ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                    Discovering...
+                  </>
+                ) : (
+                  <>
+                    <Cpu className="w-4 h-4 mr-2" />
+                    Discover Models
+                  </>
+                )}
+              </Button>
+
+              <Button
+                onClick={handleImportAllSAPAICoreModels}
+                disabled={loadingSAPAICore || !sapAuthUrl || !sapApiUrl || !sapClientId || !sapClientSecret}
+                className="flex-1"
+              >
+                {loadingSAPAICore ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                    Importing...
+                  </>
+                ) : (
+                  <>
+                    <Database className="w-4 h-4 mr-2" />
+                    Import All Models
+                  </>
+                )}
+              </Button>
+            </div>
 
             {sapAICoreModels.length > 0 && (
               <div className="border rounded-lg overflow-hidden">
