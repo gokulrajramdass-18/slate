@@ -39,6 +39,24 @@ sapAiCoreApi:
     clientSecret: ***REMOVED-AICORE-CLIENT-SECRET***
     baseUrl: https://api.ai.prod.eu-central-1.aws.ml.hana.ondemand.com
     resourceGroup: ***REMOVED-AICORE-RESOURCE-GROUP***
+frontend:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: gokulraj18/slate-frontend
+    tag: kyma-v1.0.7
+    pullPolicy: Always
+  env:
+    nodeEnv: production
+    nextTelemetryDisabled: "1"
+    xsuaaEnabled: "true"
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 2Gi
+    requests:
+      cpu: 500m
+      memory: 1Gi
 approuter:
   enabled: true
   replicaCount: 2
