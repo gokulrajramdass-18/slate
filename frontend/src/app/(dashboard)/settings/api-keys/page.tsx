@@ -67,6 +67,18 @@ export default function ApiKeysPage() {
   const [litellmModels, setLitellmModels] = useState<any[]>([]);
   const [loadingLiteLLM, setLoadingLiteLLM] = useState(false);
 
+  // SAP AI Core state
+  const [showSAPAICoreDialog, setShowSAPAICoreDialog] = useState(false);
+  const [sapAuthUrl, setSapAuthUrl] = useState("");
+  const [sapApiUrl, setSapApiUrl] = useState("");
+  const [sapClientId, setSapClientId] = useState("");
+  const [sapClientSecret, setSapClientSecret] = useState("");
+  const [sapResourceGroup, setSapResourceGroup] = useState("default");
+  const [sapIdentityZone, setSapIdentityZone] = useState("");
+  const [sapIdentityZoneId, setSapIdentityZoneId] = useState("");
+  const [sapAICoreModels, setSapAICoreModels] = useState<any[]>([]);
+  const [loadingSAPAICore, setLoadingSAPAICore] = useState(false);
+
   // Model source switch (litellm or sap_ai_core)
   const [modelSource, setModelSource] = useState<"litellm" | "sap_ai_core">(
     () => {
@@ -100,6 +112,34 @@ export default function ApiKeysPage() {
       setProvider(modelSource === "sap_ai_core" ? "sap_ai_core" : "openai");
     }
   }, [modelSource, showCreateDialog]);
+
+  // Auto-fill SAP AI Core credentials when dialog opens
+  useEffect(() => {
+    const fetchSAPAICoreCredentials = async () => {
+      if (showSAPAICoreDialog) {
+        try {
+          const response = await fetch("/api/models/sap-ai-core/credentials");
+          const data = await response.json();
+
+          if (data.configured) {
+            // Only auto-fill if fields are empty
+            if (!sapAuthUrl) setSapAuthUrl(data.auth_url || "");
+            if (!sapApiUrl) setSapApiUrl(data.api_url || "");
+            if (!sapClientId) setSapClientId(data.client_id || "");
+            if (!sapClientSecret) setSapClientSecret(data.client_secret_full || "");
+            if (!sapResourceGroup || sapResourceGroup === "default") {
+              setSapResourceGroup(data.resource_group || "default");
+            }
+          }
+        } catch (error) {
+          console.error("Failed to fetch SAP AI Core credentials:", error);
+          // Silent fail - user can still enter manually
+        }
+      }
+    };
+
+    fetchSAPAICoreCredentials();
+  }, [showSAPAICoreDialog]);
 
   const createMutation = useMutation({
     mutationFn: credentialsApi.create,
@@ -1106,6 +1146,244 @@ export default function ApiKeysPage() {
         </AlertDialogContent>
       </AlertDialog>
 
+      {/* SAP AI Core Discovery Dialog */}
+      <Dialog open={showSAPAICoreDialog} onOpenChange={setShowSAPAICoreDialog}>
+        <DialogContent className="max-w-6xl bg-white dark:bg-gray-900 border-gray-200 dark:border-gray-800 max-h-[90vh] overflow-hidden flex flex-col">
+          <DialogHeader>
+            <DialogTitle className="text-gray-900 dark:text-gray-100">Import Models from SAP AI Core</DialogTitle>
+            <DialogDescription className="text-gray-600 dark:text-gray-400">
+              Connect to your SAP AI Core instance to discover deployed models
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4 overflow-y-auto">
+            <div className="space-y-2">
+              <Label htmlFor="sap-auth-url" className="text-gray-900 dark:text-gray-100">
+                OAuth 2.0 Token URL *
+              </Label>
+              <Input
+                id="sap-auth-url"
+                placeholder="https://your-tenant.authentication.sap.hana.ondemand.com/oauth/token"
+                value={sapAuthUrl}
+                onChange={(e) => setSapAuthUrl(e.target.value)}
+                className="bg-white dark:bg-gray-950"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="sap-api-url" className="text-gray-900 dark:text-gray-100">
+                AI Core API URL *
+              </Label>
+              <Input
+                id="sap-api-url"
+                placeholder="https://api.ai.internalprod.eu-central-1.aws.ml.hana.ondemand.com/v2"
+                value={sapApiUrl}
+                onChange={(e) => setSapApiUrl(e.target.value)}
+                className="bg-white dark:bg-gray-950"
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="sap-client-id" className="text-gray-900 dark:text-gray-100">
+                  Client ID *
+                </Label>
+                <Input
+                  id="sap-client-id"
+                  placeholder="sb-..."
+                  value={sapClientId}
+                  onChange={(e) => setSapClientId(e.target.value)}
+                  className="bg-white dark:bg-gray-950"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="sap-client-secret" className="text-gray-900 dark:text-gray-100">
+                  Client Secret *
+                </Label>
+                <Input
+                  id="sap-client-secret"
+                  type="password"
+                  placeholder="..."
+                  value={sapClientSecret}
+                  onChange={(e) => setSapClientSecret(e.target.value)}
+                  className="bg-white dark:bg-gray-950"
+                />
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="sap-resource-group" className="text-gray-900 dark:text-gray-100">
+                Resource Group
+              </Label>
+              <Input
+                id="sap-resource-group"
+                placeholder="default"
+                value={sapResourceGroup}
+                onChange={(e) => setSapResourceGroup(e.target.value)}
+                className="bg-white dark:bg-gray-950"
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="sap-identity-zone" className="text-gray-900 dark:text-gray-100">
+                  Identity Zone (Optional)
+                </Label>
+                <Input
+                  id="sap-identity-zone"
+                  placeholder="sap-production"
+                  value={sapIdentityZone}
+                  onChange={(e) => setSapIdentityZone(e.target.value)}
+                  className="bg-white dark:bg-gray-950"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="sap-identity-zone-id" className="text-gray-900 dark:text-gray-100">
+                  Identity Zone ID (Optional)
+                </Label>
+                <Input
+                  id="sap-identity-zone-id"
+                  placeholder="uaa-..."
+                  value={sapIdentityZoneId}
+                  onChange={(e) => setSapIdentityZoneId(e.target.value)}
+                  className="bg-white dark:bg-gray-950"
+                />
+              </div>
+            </div>
+
+            <div className="flex gap-2">
+              <Button
+                onClick={handleLoadSAPAICoreModels}
+                disabled={loadingSAPAICore || !sapAuthUrl || !sapApiUrl || !sapClientId || !sapClientSecret}
+                variant="outline"
+                className="flex-1"
+              >
+                {loadingSAPAICore ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                    Discovering...
+                  </>
+                ) : (
+                  <>
+                    <Cpu className="w-4 h-4 mr-2" />
+                    Discover Models
+                  </>
+                )}
+              </Button>
+
+              <Button
+                onClick={handleImportAllSAPAICoreModels}
+                disabled={loadingSAPAICore || !sapAuthUrl || !sapApiUrl || !sapClientId || !sapClientSecret}
+                className="flex-1"
+              >
+                {loadingSAPAICore ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                    Importing...
+                  </>
+                ) : (
+                  <>
+                    <Database className="w-4 h-4 mr-2" />
+                    Import All Models
+                  </>
+                )}
+              </Button>
+            </div>
+
+            {sapAICoreModels.length > 0 && (
+              <div className="border rounded-lg overflow-hidden">
+                <div className="max-h-96 overflow-y-auto">
+                  <table className="w-full table-fixed">
+                    <thead className="bg-gray-50 dark:bg-gray-950 sticky top-0">
+                      <tr>
+                        <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 dark:text-gray-300 uppercase w-[35%]">
+                          Deployment Name
+                        </th>
+                        <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 dark:text-gray-300 uppercase w-[15%]">
+                          Type
+                        </th>
+                        <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 dark:text-gray-300 uppercase w-[15%]">
+                          Status
+                        </th>
+                        <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 dark:text-gray-300 uppercase w-[25%]">
+                          Scenario ID
+                        </th>
+                        <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 dark:text-gray-300 uppercase w-[10%]">
+                          Action
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-200 dark:divide-gray-800 bg-white dark:bg-gray-900">
+                      {sapAICoreModels.map((model) => (
+                        <tr key={model.id} className="hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">
+                          <td className="px-4 py-4">
+                            <div className="flex flex-col gap-1">
+                              <span className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
+                                {model.name}
+                              </span>
+                              <span className="text-xs text-gray-500 dark:text-gray-400 font-mono truncate">
+                                {model.deployment_id}
+                              </span>
+                            </div>
+                          </td>
+                          <td className="px-4 py-4">
+                            {getTypeBadge(model.type)}
+                          </td>
+                          <td className="px-4 py-4">
+                            <Badge variant="outline" className={
+                              model.status === "RUNNING" ? "bg-green-50 text-green-700 border-green-200 dark:bg-green-900 dark:text-green-300" :
+                              model.status === "STOPPED" ? "bg-red-50 text-red-700 border-red-200 dark:bg-red-900 dark:text-red-300" :
+                              "bg-yellow-50 text-yellow-700 border-yellow-200 dark:bg-yellow-900 dark:text-yellow-300"
+                            }>
+                              {model.status}
+                            </Badge>
+                          </td>
+                          <td className="px-4 py-4">
+                            <span className="text-xs text-gray-600 dark:text-gray-400 font-mono truncate block">
+                              {model.scenario_id || '-'}
+                            </span>
+                          </td>
+                          <td className="px-4 py-4 text-right">
+                            <Button
+                              size="sm"
+                              onClick={() => handleSelectSAPAICoreModel(model)}
+                              disabled={model.status !== "RUNNING"}
+                            >
+                              Select
+                            </Button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {sapAICoreModels.length === 0 && !loadingSAPAICore && (
+              <div className="text-center py-8 text-gray-500 dark:text-gray-400">
+                Enter your SAP AI Core credentials, then click "Discover Models"
+              </div>
+            )}
+          </div>
+          <DialogFooter className="border-t pt-4">
+            <Button variant="outline" onClick={() => {
+              setShowSAPAICoreDialog(false);
+              setSapAuthUrl("");
+              setSapApiUrl("");
+              setSapClientId("");
+              setSapClientSecret("");
+              setSapResourceGroup("default");
+              setSapIdentityZone("");
+              setSapIdentityZoneId("");
+              setSapAICoreModels([]);
+            }}>
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Switch Confirmation Dialog */}
       <AlertDialog open={showSwitchConfirmDialog} onOpenChange={setShowSwitchConfirmDialog}>

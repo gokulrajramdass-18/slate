@@ -44,7 +44,7 @@ approuter:
   replicaCount: 2
   image:
     repository: gokulraj18/slate-approuter
-    tag: kyma-v1.0.5
+    tag: kyma-v1.0.6
     pullPolicy: Always
   resources:
     limits:
