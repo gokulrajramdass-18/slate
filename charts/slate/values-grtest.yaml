@@ -44,7 +44,7 @@ frontend:
   replicaCount: 2
   image:
     repository: gokulraj18/slate-frontend
-    tag: kyma-v1.0.7
+    tag: kyma-v1.0.8
     pullPolicy: Always
   env:
     nodeEnv: production
