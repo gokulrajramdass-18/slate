@@ -1,5 +1,7 @@
-import { useState, useCallback, useEffect } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+"use client";
+
+import { useState, useCallback, useEffect, useRef, startTransition } from "react";
+import { useParams, useRouter } from "next/navigation";
 import { useChatSession, useDeleteChatSession, useNotebook } from "@/lib/hooks/use-api";
 import { chatApi } from "@/lib/api/chat";
 import { Button } from "@/components/ui/button";
@@ -22,10 +24,10 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 
-export default function ChatDetailPage() {
-  const { id } = useParams<{ id: string }>();
-  const navigate = useNavigate();
-  const sessionId = id as string;
+export default function ChatSessionPage() {
+  const params = useParams();
+  const router = useRouter();
+  const sessionId = params.id as string;
 
   console.log('[ChatSessionPage] RENDER');
 
@@ -44,6 +46,10 @@ export default function ChatDetailPage() {
   const [optimisticUserMessage, setOptimisticUserMessage] = useState<string | null>(null);
   const [deepResearchEnabled, setDeepResearchEnabled] = useState(false);
   const [noteIds, setNoteIds] = useState<Set<string>>(new Set());
+  const [isAnimating, setIsAnimating] = useState(false);
+
+  // Refs for accumulating streamed text
+  const fullTextRef = useRef("");
 
   const { data: session, refetch } = useChatSession(sessionId);
   const { data: workspace } = useNotebook(session?.notebook_id || "");
@@ -123,8 +129,6 @@ export default function ChatDetailPage() {
         (step) => setStreamingAgentSteps((prev) => [...prev, step])
       );
 
-      console.log('[Chat] Message sent successfully, result:', result?.id, 'content length:', result?.content?.length);
-
       // Notify streaming manager that stream ended
       window.dispatchEvent(new CustomEvent('streaming:end', {
         detail: { sessionId }
@@ -164,9 +168,9 @@ export default function ChatDetailPage() {
 
   const handleBack = () => {
     if (session?.notebook_id) {
-      navigate(`/workspaces/${session.notebook_id}`);
+      router.push(`/workspaces/${session.notebook_id}`);
     } else {
-      navigate("/chat");
+      router.push("/chat");
     }
   };
 
@@ -175,9 +179,9 @@ export default function ChatDetailPage() {
       await deleteMutation.mutateAsync(sessionId);
       toast.success("Chat session deleted");
       if (session?.notebook_id) {
-        navigate(`/workspaces/${session.notebook_id}`);
+        router.push(`/workspaces/${session.notebook_id}`);
       } else {
-        navigate("/chat");
+        router.push("/chat");
       }
     } catch (error: any) {
       toast.error(error.message || "Failed to delete chat session");

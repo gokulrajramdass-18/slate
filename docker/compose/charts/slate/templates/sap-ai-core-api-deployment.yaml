@@ -1,0 +1,67 @@
+{{- if .Values.sapAiCoreApi.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: slate-sap-ai-core-api
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: slate-sap-ai-core-api
+    component: sap-ai-core
+spec:
+  replicas: {{ .Values.sapAiCoreApi.replicaCount }}
+  selector:
+    matchLabels:
+      app: slate-sap-ai-core-api
+  template:
+    metadata:
+      labels:
+        app: slate-sap-ai-core-api
+    spec:
+      containers:
+      - name: sap-ai-core-api
+        image: "{{ .Values.sapAiCoreApi.image.repository }}:{{ .Values.sapAiCoreApi.image.tag }}"
+        imagePullPolicy: {{ .Values.sapAiCoreApi.image.pullPolicy }}
+        ports:
+        - containerPort: {{ .Values.sapAiCoreApi.service.port }}
+          name: http
+        env:
+        - name: AICORE_AUTH_URL
+          valueFrom:
+            secretKeyRef:
+              name: slate-sap-ai-core-credentials
+              key: authUrl
+        - name: AICORE_CLIENT_ID
+          valueFrom:
+            secretKeyRef:
+              name: slate-sap-ai-core-credentials
+              key: clientId
+        - name: AICORE_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: slate-sap-ai-core-credentials
+              key: clientSecret
+        - name: AICORE_BASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: slate-sap-ai-core-credentials
+              key: baseUrl
+        - name: AICORE_RESOURCE_GROUP
+          valueFrom:
+            secretKeyRef:
+              name: slate-sap-ai-core-credentials
+              key: resourceGroup
+        resources:
+          {{- toYaml .Values.sapAiCoreApi.resources | nindent 10 }}
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 20
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 5
+          periodSeconds: 5
+{{- end }}

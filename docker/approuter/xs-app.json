@@ -1,22 +1,28 @@
 {
-  "welcomeFile": "/index.html",
   "authenticationMethod": "route",
   "sessionTimeout": 480,
-  "responseHeaders": [
-    {
-      "name": "Cache-Control",
-      "value": "no-cache, no-store, must-revalidate"
-    },
-    {
-      "name": "Pragma",
-      "value": "no-cache"
-    },
-    {
-      "name": "Expires",
-      "value": "0"
-    }
-  ],
   "routes": [
+    {
+      "source": "^/api/models/litellm/models(.*)$",
+      "target": "/api/models/litellm/models$1",
+      "destination": "backend",
+      "authenticationType": "none",
+      "csrfProtection": false
+    },
+    {
+      "source": "^/api/models/sap-ai-core/(.*)$",
+      "target": "/api/models/sap-ai-core/$1",
+      "destination": "backend",
+      "authenticationType": "none",
+      "csrfProtection": false
+    },
+    {
+      "source": "^/api/credentials/test-connection$",
+      "target": "/api/credentials/test-connection",
+      "destination": "backend",
+      "authenticationType": "none",
+      "csrfProtection": false
+    },
     {
       "source": "^/api/(.*)$",
       "target": "/api/$1",
@@ -25,14 +31,9 @@
       "csrfProtection": false
     },
     {
-      "source": "^/assets/(.*)$",
-      "localDir": "resources",
-      "authenticationType": "none"
-    },
-    {
       "source": "^/(.*)$",
-      "target": "/index.html",
-      "localDir": "resources",
+      "target": "/$1",
+      "destination": "frontend",
       "authenticationType": "xsuaa"
     }
   ],

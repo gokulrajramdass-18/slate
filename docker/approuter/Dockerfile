@@ -11,7 +11,7 @@ RUN npm install --production
 # Copy configuration files
 COPY xs-app.json ./
 
-# Copy static frontend files to resources directory
+# Copy frontend resources
 COPY resources ./resources
 
 # Expose port

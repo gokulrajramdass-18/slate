@@ -1,0 +1,59 @@
+{{- if .Values.approuter.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: slate-approuter
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: slate-approuter
+    component: approuter
+spec:
+  replicas: {{ .Values.approuter.replicaCount }}
+  selector:
+    matchLabels:
+      app: slate-approuter
+  template:
+    metadata:
+      labels:
+        app: slate-approuter
+    spec:
+      containers:
+      - name: approuter
+        image: "{{ .Values.approuter.image.repository }}:{{ .Values.approuter.image.tag }}"
+        imagePullPolicy: {{ .Values.approuter.image.pullPolicy }}
+        ports:
+        - containerPort: {{ .Values.approuter.service.port }}
+          name: http
+        env:
+        - name: PORT
+          value: "{{ .Values.approuter.service.port }}"
+        - name: destinations
+          value: |
+            [
+              {
+                "name": "{{ .Values.approuter.destinations.backend.name }}",
+                "url": "{{ .Values.approuter.destinations.backend.url }}",
+                "forwardAuthToken": {{ .Values.approuter.destinations.backend.forwardAuthToken }}
+              }
+            ]
+        # XSUAA credentials injected via service binding
+        - name: VCAP_SERVICES
+          valueFrom:
+            secretKeyRef:
+              name: slate-xsuaa-binding
+              key: VCAP_SERVICES
+        resources:
+          {{- toYaml .Values.approuter.resources | nindent 10 }}
+        livenessProbe:
+          httpGet:
+            path: /
+            port: http
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /
+            port: http
+          initialDelaySeconds: 10
+          periodSeconds: 5
+{{- end }}

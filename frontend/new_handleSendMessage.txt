@@ -1,0 +1,75 @@
+  const handleSendMessage = async (content: string) => {
+    setOptimisticUserMessage(content);
+    setIsSending(true);
+    setStreamingMessage("");
+    setStreamingSources([]);
+    setStreamingUIComponents([]);
+    setStreamingToolResults([]);
+    setStreamingAgentSteps([]);
+    fullTextRef.current = "";
+
+    // Notify streaming manager that a new stream is starting
+    window.dispatchEvent(new CustomEvent('streaming:start', {
+      detail: { sessionId }
+    }));
+
+    try {
+      const actualSourceIds = selectedSources.filter(id => !noteIds.has(id));
+
+      const result = await chatApi.sendMessage(
+        sessionId,
+        {
+          message: content,
+          deep_research: deepResearchEnabled,
+          selected_tool_ids: selectedTools.length > 0 ? selectedTools : undefined,
+          selected_source_ids: actualSourceIds.length > 0 ? actualSourceIds : undefined,
+        },
+        (chunk) => {
+          // Just accumulate - don't update state yet
+          fullTextRef.current += chunk;
+        },
+        (metadata) => {
+          // Update streaming sources from metadata
+          if (metadata?.sources) {
+            setStreamingSources(metadata.sources);
+          }
+        },
+        (components) => setStreamingUIComponents(components),
+        (results) => setStreamingToolResults(results),
+        (step) => setStreamingAgentSteps((prev) => [...prev, step])
+      );
+
+      console.log('[Chat] Streaming complete, starting animation');
+
+      // NOW start typing animation EXACTLY like daily brief
+      const fullText = fullTextRef.current;
+      setIsAnimating(true);
+      setStreamingMessage("");
+
+      let currentIndex = 0;
+      const typingSpeed = 5; // milliseconds per character
+
+      const timer = setInterval(() => {
+        if (currentIndex < fullText.length) {
+          setStreamingMessage(fullText.substring(0, currentIndex + 1));
+          currentIndex++;
+        } else {
+          setIsAnimating(false);
+          clearInterval(timer);
+
+          // Animation complete, clean up
+          setTimeout(() => {
+            window.dispatchEvent(new CustomEvent('streaming:end', {
+              detail: { sessionId }
+            }));
+
+            setOptimisticUserMessage(null);
+            setStreamingMessage("");
+            setStreamingSources([]);
+            setStreamingUIComponents([]);
+            setStreamingToolResults([]);
+            setStreamingAgentSteps([]);
+            refetch();
+          }, 100);
+        }
+      }, typingSpeed);

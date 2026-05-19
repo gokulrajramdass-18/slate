@@ -508,7 +508,7 @@ async def get_llm_for_credential(credential_id: str):
         credential_id: Credential ID from credential store
 
     Returns:
-        LangChain LLM instance (ChatOpenAI, ChatAnthropic, etc.)
+        LangChain LLM instance (ChatOpenAI, ChatAnthropic, ChatSAPAICore, etc.)
     """
     from api.routers.credentials import _credentials_store
     from langchain_openai import ChatOpenAI
@@ -523,9 +523,34 @@ async def get_llm_for_credential(credential_id: str):
     api_key = credential.get("api_key", "42cf7b97-46a1-4613-a082-d5f1d60e1678")
     provider = credential.get("provider", "litellm")
 
-    # If provider is litellm, always use OpenAI-compatible endpoint
+    # SAP AI Core provider - calls standalone API via HTTP
+    if provider == "sap_ai_core":
+        from open_notebook.llm.chat_sap_ai_core_sdk import ChatSAPAICore
+
+        # Get deployment ID and SDK model name from credential
+        deployment_id = credential.get("deployment_id")
+        sdk_model_name = credential.get("model_name")  # This is the SDK-compatible name (e.g., "gpt-4o")
+
+        if not deployment_id:
+            raise ValueError(
+                f"Missing deployment_id for SAP AI Core credential {credential_id}"
+            )
+
+        logger.info(f"[SAP AI Core] Using deployment {deployment_id} with SDK model {sdk_model_name}")
+
+        # Create ChatSAPAICore instance - calls standalone API on port 5056
+        # Pass SDK model name (e.g., "gpt-4o") not deployment model name (e.g., "gpt-5.4")
+        return ChatSAPAICore(
+            model_name=sdk_model_name,
+            deployment_id=deployment_id,
+            temperature=0.7,
+            max_tokens=4096,
+            api_base_url="http://localhost:5056"
+        )
+
+    # LiteLLM provider - always use OpenAI-compatible endpoint
     # regardless of model name (LiteLLM proxies all models)
-    if provider == "litellm":
+    elif provider == "litellm":
         return ChatOpenAI(
             model=model_name,
             openai_api_base=base_url,

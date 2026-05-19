@@ -21,7 +21,7 @@ class S3Service:
 
     def __init__(self):
         """Initialize S3 client with configuration from environment variables"""
-        self.endpoint_url = os.getenv("S3_ENDPOINT", "http://localhost:9000")
+        self.endpoint_url = os.getenv("S3_ENDPOINT", "")
         self.access_key = os.getenv("S3_ACCESS_KEY", "minioadmin")
         self.secret_key = os.getenv("S3_SECRET_KEY", "minioadmin")
         self.bucket_name = os.getenv("S3_BUCKET_NAME", "open-notebook-files")
@@ -36,15 +36,26 @@ class S3Service:
 
         try:
             # Create S3 client
-            self.client = boto3.client(
-                "s3",
-                endpoint_url=self.endpoint_url,
-                aws_access_key_id=self.access_key,
-                aws_secret_access_key=self.secret_key,
-                region_name=self.region,
-                config=Config(signature_version="s3v4"),
-                use_ssl=self.use_ssl,
-            )
+            # For AWS S3 (host like s3-eu-central-1.amazonaws.com), don't use endpoint_url
+            # For MinIO or other S3-compatible, use endpoint_url
+            client_kwargs = {
+                "aws_access_key_id": self.access_key,
+                "aws_secret_access_key": self.secret_key,
+                "region_name": self.region,
+                "config": Config(signature_version="s3v4"),
+            }
+
+            # Check if this is AWS S3 or a custom endpoint (MinIO, etc.)
+            if self.endpoint_url and "amazonaws.com" not in self.endpoint_url:
+                # Custom S3-compatible endpoint (MinIO, etc.)
+                client_kwargs["endpoint_url"] = self.endpoint_url
+                client_kwargs["use_ssl"] = self.use_ssl
+                logger.info(f"Using custom S3 endpoint: {self.endpoint_url}")
+            else:
+                # AWS S3 - don't set endpoint_url, boto3 will use the correct AWS endpoint
+                logger.info(f"Using AWS S3 in region: {self.region}")
+
+            self.client = boto3.client("s3", **client_kwargs)
 
             # Ensure bucket exists
             self._ensure_bucket_exists()

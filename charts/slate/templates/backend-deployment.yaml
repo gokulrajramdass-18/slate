@@ -77,6 +77,66 @@ spec:
             secretKeyRef:
               name: {{ include "slate.fullname" . }}-secrets
               key: encryption-key
+        {{- if .Values.sapAiCoreApi.enabled }}
+        - name: SAP_AI_CORE_API_URL
+          value: "http://{{ include "slate.fullname" . }}-sap-ai-core-api:{{ .Values.sapAiCoreApi.service.port }}"
+        - name: AICORE_AUTH_URL
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "slate.fullname" . }}-sap-ai-core-credentials
+              key: authUrl
+        - name: AICORE_BASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "slate.fullname" . }}-sap-ai-core-credentials
+              key: baseUrl
+        - name: AICORE_CLIENT_ID
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "slate.fullname" . }}-sap-ai-core-credentials
+              key: clientId
+        - name: AICORE_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "slate.fullname" . }}-sap-ai-core-credentials
+              key: clientSecret
+        - name: AICORE_RESOURCE_GROUP
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "slate.fullname" . }}-sap-ai-core-credentials
+              key: resourceGroup
+        {{- end }}
+        {{- if .Values.objectstore.enabled }}
+        - name: S3_ENABLED
+          value: "true"
+        - name: S3_ENDPOINT
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.objectstore.secretName | default "slate-objectstore-credentials" }}
+              key: host
+        - name: S3_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.objectstore.secretName | default "slate-objectstore-credentials" }}
+              key: access_key_id
+        - name: S3_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.objectstore.secretName | default "slate-objectstore-credentials" }}
+              key: secret_access_key
+        - name: S3_BUCKET_NAME
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.objectstore.secretName | default "slate-objectstore-credentials" }}
+              key: bucket
+        - name: S3_REGION
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.objectstore.secretName | default "slate-objectstore-credentials" }}
+              key: region
+        - name: S3_USE_SSL
+          value: "true"
+        {{- end }}
         {{- if .Values.backend.persistence.enabled }}
         volumeMounts:
         - name: data

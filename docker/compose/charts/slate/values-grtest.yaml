@@ -1,0 +1,52 @@
+# Production values for grtest-ns namespace
+
+namespace: grtest-ns
+
+global:
+  domain: c-83567d2.kyma.ondemand.com
+
+backend:
+  image:
+    repository: gokulraj18/slate-backend
+    tag: kyma-v1.0.0
+    pullPolicy: Always
+  
+  persistence:
+    enabled: true
+    size: 20Gi  # Larger storage for production
+  
+  resources:
+    limits:
+      cpu: 2000m
+      memory: 4Gi
+    requests:
+      cpu: 1000m
+      memory: 2Gi
+
+sapAiCoreApi:
+  enabled: true
+  image:
+    repository: gokulraj18/slate-sap-ai-core-api
+    tag: v1.0.0
+    pullPolicy: Always
+  
+  # IMPORTANT: Set actual credentials here or use external secret management
+  credentials:
+    authUrl: "https://sapit-core-playground-vole.authentication.eu10.hana.ondemand.com"
+    clientId: "***REMOVED-AICORE-CLIENT-ID***"
+    clientSecret: "***REMOVED-AICORE-CLIENT-SECRET***"
+    baseUrl: "https://api.ai.prod.eu-central-1.aws.ml.hana.ondemand.com"
+    resourceGroup: "***REMOVED-AICORE-RESOURCE-GROUP***"
+
+approuter:
+  replicaCount: 2
+  image:
+    repository: gokulraj18/slate-approuter
+    tag: kyma-v1.0.0
+    pullPolicy: Always
+
+xsuaa:
+  xsappname: slate-grtest
+
+ingress:
+  host: slate-grtest.c-83567d2.kyma.ondemand.com

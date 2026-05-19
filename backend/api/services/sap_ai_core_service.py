@@ -309,8 +309,18 @@ class SAPAICoreService:
         logger.info(f"[SAPAICore] Determining model type: scenario_id='{scenario_id}', deployment_name='{deployment_name}', capabilities={capabilities}")
 
         # Check deployment name first (most reliable for SAP AI Core)
-        if "embedding" in deployment_lower or "text-embedding" in deployment_lower:
-            logger.info(f"[SAPAICore] Detected embedding model from deployment name")
+        # Check for common embedding model patterns
+        embedding_patterns = [
+            "embedding",
+            "text-embedding",
+            "ada-002",           # OpenAI text-embedding-ada-002
+            "ada",               # Short form
+            "embedding-3",       # OpenAI text-embedding-3-small/large
+            "embed-",            # Common prefix
+        ]
+
+        if any(pattern in deployment_lower for pattern in embedding_patterns):
+            logger.info(f"[SAPAICore] Detected embedding model from deployment name: '{deployment_name}'")
             return "embedding"
 
         # Check scenario ID
@@ -353,7 +363,7 @@ class SAPAICoreService:
         **kwargs
     ) -> Dict[str, Any]:
         """
-        Invoke a deployed model for inference.
+        Invoke a deployed model for inference (non-streaming).
 
         Args:
             deployment_id: SAP AI Core deployment ID
@@ -361,20 +371,33 @@ class SAPAICoreService:
             **kwargs: Additional model parameters (temperature, max_tokens, etc.)
 
         Returns:
-            Model response
+            Model response in OpenAI-compatible format
         """
         try:
             token = await self._get_access_token()
+            logger.info(f"[SAPAICore] Invoke request - Deployment: {deployment_id}")
+            logger.info(f"[SAPAICore] Invoke request - Resource Group: {self.config.resource_group}")
+            logger.info(f"[SAPAICore] Invoke request - Token (first 20 chars): {token[:20]}...")
 
-            # Build request payload
+            # Build request payload (ensure stream is False)
             payload = {
                 "messages": messages,
                 **kwargs
             }
+            # Explicitly disable streaming for this method
+            payload["stream"] = False
+
+            # Ensure api_url doesn't have trailing slash and has /v2
+            api_base = self.config.api_url.rstrip('/')
+            if not api_base.endswith('/v2'):
+                api_base = f"{api_base}/v2"
+
+            url = f"{api_base}/inference/deployments/{deployment_id}/chat"
+            logger.info(f"[SAPAICore] Invoke request - URL: {url}")
 
             async with httpx.AsyncClient() as client:
                 response = await client.post(
-                    f"{self.config.api_url}/lm/deployments/{deployment_id}/completions",
+                    url,
                     headers={
                         "Authorization": f"Bearer {token}",
                         "AI-Resource-Group": self.config.resource_group,
@@ -383,12 +406,133 @@ class SAPAICoreService:
                     json=payload,
                     timeout=120.0,
                 )
+                logger.info(f"[SAPAICore] Invoke response status: {response.status_code}")
+                if response.status_code != 200:
+                    logger.error(f"[SAPAICore] Error response: {response.text}")
                 response.raise_for_status()
                 return response.json()
 
         except Exception as e:
             logger.error(f"Failed to invoke model: {e}")
             raise
+
+    async def stream_model(
+        self,
+        deployment_id: str,
+        messages: List[Dict[str, str]],
+        **kwargs
+    ):
+        """
+        Stream responses from a deployed model.
+
+        Args:
+            deployment_id: SAP AI Core deployment ID
+            messages: Chat messages in OpenAI format
+            **kwargs: Additional model parameters (temperature, max_tokens, etc.)
+
+        Yields:
+            Server-Sent Event chunks in format: "data: {json}"
+        """
+        try:
+            token = await self._get_access_token()
+            logger.info(f"[SAPAICore] Stream request - Deployment: {deployment_id}")
+            logger.info(f"[SAPAICore] Stream request - Resource Group: {self.config.resource_group}")
+            logger.info(f"[SAPAICore] Stream request - Token (first 20 chars): {token[:20]}...")
+
+            # Build request payload with streaming enabled
+            payload = {
+                "messages": messages,
+                **kwargs
+            }
+            payload["stream"] = True
+
+            # Ensure api_url doesn't have trailing slash and has /v2
+            api_base = self.config.api_url.rstrip('/')
+            if not api_base.endswith('/v2'):
+                api_base = f"{api_base}/v2"
+
+            url = f"{api_base}/inference/deployments/{deployment_id}/chat"
+            logger.info(f"[SAPAICore] Stream request - URL: {url}")
+
+            async with httpx.AsyncClient() as client:
+                async with client.stream(
+                    "POST",
+                    url,
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "AI-Resource-Group": self.config.resource_group,
+                        "Content-Type": "application/json",
+                    },
+                    json=payload,
+                    timeout=120.0,
+                ) as response:
+                    logger.info(f"[SAPAICore] Stream response status: {response.status_code}")
+                    if response.status_code != 200:
+                        response_text = await response.aread()
+                        logger.error(f"[SAPAICore] Error response: {response_text.decode()}")
+                    response.raise_for_status()
+
+                    # Stream SSE (Server-Sent Events) chunks
+                    async for line in response.aiter_lines():
+                        if line:
+                            yield line
+
+        except Exception as e:
+            logger.error(f"Failed to stream model: {e}")
+            raise
+
+    async def check_model_capabilities(self, deployment_id: str) -> Dict[str, bool]:
+        """
+        Check capabilities of a specific model deployment.
+
+        Args:
+            deployment_id: SAP AI Core deployment ID
+
+        Returns:
+            Dict with capability flags:
+            - supports_function_calling: Whether model supports function/tool calls
+            - supports_streaming: Whether model supports streaming responses
+        """
+        try:
+            details = await self.get_deployment_details(deployment_id)
+
+            scenario_id = (details.get("scenarioId") or "").lower()
+            details_obj = details.get("details", {})
+
+            # Check for function calling support
+            supports_function_calling = (
+                "function" in scenario_id or
+                "tool" in scenario_id or
+                details_obj.get("functionCalling", False) or
+                details_obj.get("function_calling", False)
+            )
+
+            # Check for streaming support (default to True)
+            supports_streaming = (
+                "stream" in scenario_id or
+                details_obj.get("streaming", True)
+            )
+
+            logger.info(
+                f"[SAPAICore] Deployment {deployment_id} capabilities: "
+                f"function_calling={supports_function_calling}, "
+                f"streaming={supports_streaming}"
+            )
+
+            return {
+                "supports_function_calling": supports_function_calling,
+                "supports_streaming": supports_streaming,
+            }
+
+        except Exception as e:
+            logger.warning(
+                f"[SAPAICore] Failed to check capabilities for {deployment_id}: {e}"
+            )
+            # Return safe defaults
+            return {
+                "supports_function_calling": False,
+                "supports_streaming": True,
+            }
 
 
 async def create_sap_ai_core_service(

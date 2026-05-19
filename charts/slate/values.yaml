@@ -1,209 +1,179 @@
-# Default values for Slate
-# This is a YAML-formatted file.
-# Declare variables to be passed into your templates.
-
-# Global settings
+namespace: grtest-ns
 global:
-  # Docker registry for images
-  imageRegistry: ""
-  # Image pull secrets for private registries
-  imagePullSecrets: []
-
-# Backend configuration
+  domain: c-83567d2.kyma.ondemand.com
 backend:
-  replicaCount: 1  # Keep at 1 for SQLite
-
+  enabled: true
+  replicaCount: 1
   image:
-    repository: slate-backend
-    tag: latest
+    repository: gokulraj18/slate-backend
+    tag: kyma-v1.0.0
     pullPolicy: Always
-
   service:
     type: ClusterIP
     port: 5055
-
   resources:
-    requests:
-      memory: "512Mi"
-      cpu: "250m"
     limits:
-      memory: "2Gi"
-      cpu: "1000m"
-
-  # Health check configuration
-  livenessProbe:
+      cpu: 1000m
+      memory: 2Gi
+    requests:
+      cpu: 500m
+      memory: 1Gi
+  persistence:
     enabled: true
-    initialDelaySeconds: 30
-    periodSeconds: 10
-    timeoutSeconds: 5
-    failureThreshold: 3
-
-  readinessProbe:
-    enabled: true
-    initialDelaySeconds: 10
-    periodSeconds: 5
-    timeoutSeconds: 3
-    failureThreshold: 3
-
-  # Database configuration
+    storageClass: ''
+    size: 10Gi
+    mountPath: /app/data
+  env:
+    xsuaaEnabled: 'true'
+    apiHost: 0.0.0.0
+    apiPort: '5055'
+    databaseType: sqlite
+    sqliteDbPath: /app/data/database.db
+    logLevel: INFO
   database:
     type: sqlite
     path: /app/data/database.db
-
-  # Persistent storage
-  persistence:
+  livenessProbe:
     enabled: true
-    storageClass: ""  # Use default storage class
-    accessMode: ReadWriteOnce
-    size: 5Gi
-
-  # Environment variables
-  env:
-    apiHost: "0.0.0.0"
-    apiPort: "5055"
-    logLevel: "INFO"
-
-# Frontend configuration
-frontend:
-  replicaCount: 2
-
+    httpGet:
+      path: /api/health
+      port: 5055
+    initialDelaySeconds: 30
+    periodSeconds: 10
+  readinessProbe:
+    enabled: true
+    httpGet:
+      path: /api/health
+      port: 5055
+    initialDelaySeconds: 10
+    periodSeconds: 5
+sapAiCoreApi:
+  enabled: true
+  replicaCount: 1
   image:
-    repository: slate-frontend
-    tag: latest
+    repository: gokulraj18/slate-sap-ai-core-api
+    tag: v1.0.0
     pullPolicy: Always
-
   service:
     type: ClusterIP
-    port: 3000
-
+    port: 5056
   resources:
-    requests:
-      memory: "256Mi"
-      cpu: "100m"
     limits:
-      memory: "1Gi"
-      cpu: "500m"
-
-  # Environment variables
-  env:
-    nodeEnv: production
-    nextTelemetryDisabled: "1"
-
-# AppRouter configuration (SAP BTP Authentication)
+      cpu: 500m
+      memory: 1Gi
+    requests:
+      cpu: 250m
+      memory: 512Mi
+  credentials:
+    authUrl: ''
+    clientId: ''
+    clientSecret: ''
+    baseUrl: ''
+    resourceGroup: ''
 approuter:
   enabled: true
   replicaCount: 2
-
   image:
-    repository: sapse/approuter
-    tag: latest
+    repository: gokulraj18/slate-approuter
+    tag: kyma-v1.0.0
     pullPolicy: Always
-
   service:
     type: ClusterIP
-    port: 5000
-
+    port: 5001
   resources:
-    requests:
-      memory: "128Mi"
-      cpu: "50m"
     limits:
-      memory: "512Mi"
-      cpu: "250m"
-
-  # Session affinity configuration
+      cpu: 500m
+      memory: 1Gi
+    requests:
+      cpu: 250m
+      memory: 512Mi
   sessionAffinity:
     enabled: true
     cookieName: SLATE_SESSION_ID
-
-# XSUAA Service configuration
+  destinations:
+    backend:
+      name: backend
+      url: http://slate-backend:5055
+      forwardAuthToken: true
+frontend:
+  enabled: false
+  image:
+    repository: gokulraj18/slate-frontend
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 3000
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 250m
+      memory: 256Mi
+  env:
+    nodeEnv: production
+    apiUrl: http://slate-backend:5055
+    xsuaaEnabled: 'false'
 xsuaa:
   enabled: true
   serviceOfferingName: xsuaa
   servicePlanName: application
-
-  # Application configuration
-  xsappname: slate
-  tenantMode: dedicated
-
-  # Scopes
+  xsappname: slate-grtest
   scopes:
-    - name: "$XSAPPNAME.User"
-      description: "Slate user"
-    - name: "$XSAPPNAME.Admin"
-      description: "Slate administrator"
-
-  # Role templates
-  roleTemplates:
-    - name: User
-      description: "Slate User"
-      scopeReferences:
-        - "$XSAPPNAME.User"
-    - name: Admin
-      description: "Slate Administrator"
-      scopeReferences:
-        - "$XSAPPNAME.User"
-        - "$XSAPPNAME.Admin"
-
-  # Role collections
-  roleCollections:
-    - name: "Slate User"
-      description: "Slate User Role Collection"
-      roleTemplateReferences:
-        - "$XSAPPNAME.User"
-    - name: "Slate Admin"
-      description: "Slate Admin Role Collection"
-      roleTemplateReferences:
-        - "$XSAPPNAME.Admin"
-
-# API Rule configuration (Kyma Ingress)
-apiRule:
+  - name: $XSAPPNAME.User
+    description: User access
+  - name: $XSAPPNAME.Admin
+    description: Admin access
+  role-templates:
+  - name: User
+    description: Standard user role
+    scope-references:
+    - $XSAPPNAME.User
+  - name: Admin
+    description: Administrator role
+    scope-references:
+    - $XSAPPNAME.User
+    - $XSAPPNAME.Admin
+ingress:
   enabled: true
-  gateway: kyma-system/kyma-gateway
-  host: slate  # Will be: slate.<cluster-domain>
-
-  # Custom domain (optional)
-  # customDomain: slate.example.com
-
-  # TLS configuration
+  host: slate-grtest.c-83567d2.kyma.ondemand.com
+  gateway: kyma-gateway.kyma-system.svc.cluster.local
+  rules: &id001
+  - path: /.*
+    methods:
+    - GET
+    - POST
+    - PUT
+    - DELETE
+    - PATCH
+    - HEAD
+    - OPTIONS
+    accessStrategies:
+    - handler: noop
   tls:
-    enabled: false
-    secretName: ""
-
-# Secrets configuration
+    enabled: true
 secrets:
-  # Encryption key for database (required)
-  # Generate with: python -c "import secrets; print(secrets.token_urlsafe(32))"
-  encryptionKey: ""
-
-  # AI Provider API Keys (optional, at least one recommended)
-  openaiApiKey: ""
-  anthropicApiKey: ""
-
-# ConfigMap for destinations and routing
+  encryptionKey: change-me-in-production-use-32-chars
 destinations:
   backend:
-    name: slate-backend
+    name: backend
     url: http://slate-backend:5055
     forwardAuthToken: true
-
   frontend:
-    name: slate-frontend
+    name: frontend
     url: http://slate-frontend:3000
-    forwardAuthToken: true
-
-# xs-app.json configuration
+    forwardAuthToken: false
 xsApp:
   authenticationMethod: route
-  welcomeFile: /
-  routes:
-    - source: "^/api/(.*)$"
-      target: "/api/$1"
-      destination: slate-backend
-      authenticationType: xsuaa
-      csrfProtection: false
-
-    - source: "^/(.*)$"
-      target: "/$1"
-      destination: slate-frontend
-      authenticationType: xsuaa
+  welcomeFile: /index.html
+  logout:
+    logoutEndpoint: /logout
+    logoutPage: /
+apiRule:
+  enabled: true
+  host: slate-grtest.c-83567d2.kyma.ondemand.com
+  gateway: kyma-gateway.kyma-system.svc.cluster.local
+  rules: *id001
+  tls:
+    enabled: true

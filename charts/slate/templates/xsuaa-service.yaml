@@ -36,7 +36,7 @@ spec:
     {{- end }}
     oauth2-configuration:
       redirect-uris:
-        - "https://{{ .Values.apiRule.host }}.*.kyma.ondemand.com/**"
+        - "https://{{ .Values.ingress.host }}/**"
         - "http://localhost:5000/**"
 ---
 apiVersion: services.cloud.sap.com/v1

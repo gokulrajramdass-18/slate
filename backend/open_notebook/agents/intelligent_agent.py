@@ -482,8 +482,62 @@ Your steps:
             "max_tokens": 4096,
         }
 
+        # Check if this is a SAP AI Core model
+        is_sap_ai_core = self.model_name.startswith("sap-ai-core-")
+
+        if is_sap_ai_core:
+            # SAP AI Core integration
+            print(f"🔧 Creating SAP AI Core model for intelligent agent")
+            print(f"   Model: {self.model_name}")
+
+            from open_notebook.llm.chat_sap_ai_core_sdk import ChatSAPAICore
+            from api.services.sap_ai_core_service import SAPAICoreService, SAPAICoreConfig
+            from api.routers.credentials import _credentials_store
+            import json
+
+            # Extract deployment ID
+            deployment_id = self.model_name.replace("sap-ai-core-", "")
+
+            # Find SAP AI Core credential
+            sap_credential = None
+            for cred_id, cred in _credentials_store.items():
+                if (cred.get("provider") == "sap_ai_core" and
+                    (cred.get("model_name") == self.model_name or
+                     deployment_id in cred.get("model_name", ""))):
+                    sap_credential = cred
+                    break
+
+            if not sap_credential:
+                raise Exception(
+                    f"SAP AI Core credential not found for deployment {deployment_id}"
+                )
+
+            # Parse connection config
+            try:
+                connection_config = json.loads(sap_credential.get("api_key", "{}"))
+            except json.JSONDecodeError:
+                raise Exception("Invalid SAP AI Core credential format")
+
+            # Create config
+            config = SAPAICoreConfig(
+                auth_url=connection_config.get("auth_url"),
+                api_url=connection_config.get("api_url"),
+                client_id=connection_config.get("client_id"),
+                client_secret=connection_config.get("client_secret"),
+                resource_group=connection_config.get("resource_group", "default"),
+            )
+
+            print(f"   ✅ SAP AI Core configured for intelligent agent")
+
+            # Create model
+            model = ChatSAPAICore(
+                service=SAPAICoreService(config),
+                deployment_id=deployment_id,
+                **model_kwargs
+            )
+
         # If base_url is provided, use it (LiteLLM proxy)
-        if self.base_url:
+        elif self.base_url:
             model_kwargs["base_url"] = self.base_url
             model_kwargs["api_key"] = self.api_key or os.getenv("HAI_PROXY_KEY", "")
 
@@ -520,9 +574,15 @@ Your steps:
                 **model_kwargs
             )
 
-        # Bind tools
+        # Bind tools (only if model supports function calling)
         if self.tools:
-            model = model.bind_tools(self.tools)
+            # For SAP AI Core, check capability before binding tools
+            if is_sap_ai_core:
+                # Tools will be handled gracefully by ChatSAPAICore
+                # It will check capabilities and skip tools if not supported
+                model = model.bind_tools(self.tools)
+            else:
+                model = model.bind_tools(self.tools)
 
         return model
 

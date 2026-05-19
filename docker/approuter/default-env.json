@@ -1,0 +1,43 @@
+{
+  "destinations": [
+    {
+      "name": "backend",
+      "url": "http://backend:5055",
+      "forwardAuthToken": true,
+      "timeout": 600000
+    },
+    {
+      "name": "frontend",
+      "url": "http://frontend:3000",
+      "forwardAuthToken": false,
+      "timeout": 60000
+    }
+  ],
+  "VCAP_SERVICES": {
+    "xsuaa": [
+      {
+        "label": "xsuaa",
+        "name": "slate-xsuaa-local",
+        "tags": ["xsuaa"],
+        "credentials": {
+            "tenantmode": "dedicated",
+            "sburl": "https://internal-xsuaa.authentication.eu10.hana.ondemand.com",
+            "subaccountid": "b3736226-8612-4807-9d10-4ae4f33a0381",
+            "credential-type": "binding-secret",
+            "clientid": "sb-slate!t192469",
+            "xsappname": "slate!t192469",
+            "clientsecret": "347857bf-65dd-43aa-9a99-900c797fbbe6$WP8PIK0zUAzv6zVXwT9a29lr_BeoDdMQLTt35R0PQro=",
+            "serviceInstanceId": "4cd8b027-1895-48c0-b73e-46bbeca3f22d",
+            "url": "https://sapit-sales-dev-camel.authentication.eu10.hana.ondemand.com",
+            "uaadomain": "authentication.eu10.hana.ondemand.com",
+            "verificationkey": "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAlMJSP+wFqjYBcIcXzNaP\n5UULVUG85ZI0vaSbWdlMCWNpf5ZcJjYXHzY8AE63tcCpuz7ej6aYIK9nUlUkzXe+\nOO+AN+DILaO/nQOBEU5HY307MpIT0L7c/dvPG/mNA2LxaWEnzIC0qEJvVke8CG4X\nKtqdJgDP4jLNSo32WfoZvpEaBI+m5WAFkHpH/C++4v5HeUXX+9Z0uHzOtGqcBuWv\nsELfH1esE5IUr1RMP/wZW1XzPniJ4fFD0/D3mUwgIc1T030aIw6iQwUiynASxeuk\nALRvk20vbO/wqLCQ4xtHWLT8ihGp+8ExF/aVDx8WiB+8r5/JYa3fn+1WEgS5YKvh\nDwIDAQAB\n-----END PUBLIC KEY-----",
+            "apiurl": "https://api.authentication.eu10.hana.ondemand.com",
+            "identityzone": "sapit-sales-dev-camel",
+            "identityzoneid": "b3736226-8612-4807-9d10-4ae4f33a0381",
+            "tenantid": "b3736226-8612-4807-9d10-4ae4f33a0381",
+            "zoneid": "b3736226-8612-4807-9d10-4ae4f33a0381"
+          }
+      }
+    ]
+  }
+}
