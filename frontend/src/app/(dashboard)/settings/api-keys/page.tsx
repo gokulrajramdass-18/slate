@@ -594,7 +594,7 @@ export default function ApiKeysPage() {
               }
             }} variant="outline">
               <Cpu className="w-4 h-4 mr-2" />
-              Import from SAP AI Core
+              Auto-Import SAP AI Core Models
             </Button>
           )}
           <Button onClick={() => {
@@ -1146,8 +1146,8 @@ export default function ApiKeysPage() {
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* SAP AI Core Discovery Dialog */}
-      <Dialog open={showSAPAICoreDialog} onOpenChange={setShowSAPAICoreDialog}>
+      {/* SAP AI Core Discovery Dialog - DISABLED - Using auto-import instead */}
+      {false && <Dialog open={showSAPAICoreDialog} onOpenChange={setShowSAPAICoreDialog}>
         <DialogContent className="max-w-6xl bg-white dark:bg-gray-900 border-gray-200 dark:border-gray-800 max-h-[90vh] overflow-hidden flex flex-col">
           <DialogHeader>
             <DialogTitle className="text-gray-900 dark:text-gray-100">Import Models from SAP AI Core</DialogTitle>
@@ -1383,7 +1383,7 @@ export default function ApiKeysPage() {
             </Button>
           </DialogFooter>
         </DialogContent>
-      </Dialog>
+      </Dialog>}
 
       {/* Switch Confirmation Dialog */}
       <AlertDialog open={showSwitchConfirmDialog} onOpenChange={setShowSwitchConfirmDialog}>

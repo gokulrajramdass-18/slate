@@ -1,0 +1,10 @@
+{{- if .Values.xsuaa.enabled }}
+apiVersion: services.cloud.sap.com/v1
+kind: ServiceBinding
+metadata:
+  name: slate-xsuaa-binding
+  namespace: {{ .Values.namespace }}
+spec:
+  serviceInstanceName: slate-xsuaa
+  secretName: slate-xsuaa-binding
+{{- end }}

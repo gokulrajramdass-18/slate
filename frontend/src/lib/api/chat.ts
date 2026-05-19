@@ -99,11 +99,15 @@ export const chatApi = {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
+              "Cache-Control": "no-cache",
+              "Connection": "keep-alive",
               ...(authHeader ? { Authorization: authHeader } : {}),
               ...(userId ? { 'X-User-ID': userId } : {}),
             },
             body: JSON.stringify({ ...message, stream: true }),
             signal: abortController.signal, // Add abort signal
+            // @ts-ignore - Add cache: 'no-store' to prevent buffering
+            cache: 'no-store'
           });
         } catch (fetchError) {
           // Serialize error properly for logging

@@ -1,0 +1,149 @@
+# Default values for slate chart
+namespace: grtest-ns
+
+# Global configuration
+global:
+  domain: c-83567d2.kyma.ondemand.com  # Update with your cluster domain
+
+# Backend API configuration
+backend:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: gokulraj18/slate-backend
+    tag: latest
+    pullPolicy: Always
+  
+  service:
+    type: ClusterIP
+    port: 5055
+  
+  # Resource limits
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 2Gi
+    requests:
+      cpu: 500m
+      memory: 1Gi
+  
+  # Persistent storage for SQLite database
+  persistence:
+    enabled: true
+    storageClass: ""  # Use default storage class
+    size: 10Gi
+    mountPath: /app/data
+  
+  # Environment variables
+  env:
+    xsuaaEnabled: "true"
+    apiHost: "0.0.0.0"
+    apiPort: "5055"
+    databaseType: "sqlite"
+    sqliteDbPath: "/app/data/database.db"
+    logLevel: "INFO"
+
+# SAP AI Core API configuration
+sapAiCoreApi:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: gokulraj18/slate-sap-ai-core-api
+    tag: latest
+    pullPolicy: Always
+  
+  service:
+    type: ClusterIP
+    port: 5056
+  
+  resources:
+    limits:
+      cpu: 500m
+      memory: 1Gi
+    requests:
+      cpu: 250m
+      memory: 512Mi
+  
+  # SAP AI Core credentials (will be stored in Secret)
+  credentials:
+    authUrl: ""  # Set in values-grtest.yaml
+    clientId: ""
+    clientSecret: ""
+    baseUrl: ""
+    resourceGroup: ""
+
+# AppRouter configuration (with embedded frontend)
+approuter:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: gokulraj18/slate-approuter
+    tag: latest
+    pullPolicy: Always
+  
+  service:
+    type: ClusterIP
+    port: 5001
+  
+  resources:
+    limits:
+      cpu: 500m
+      memory: 1Gi
+    requests:
+      cpu: 250m
+      memory: 512Mi
+  
+  # Session affinity for sticky sessions
+  sessionAffinity:
+    enabled: true
+    cookieName: SLATE_SESSION_ID
+  
+  # Destinations for routing
+  destinations:
+    backend:
+      name: backend
+      url: "http://slate-backend:5055"
+      forwardAuthToken: true
+
+# Frontend configuration (DISABLED - embedded in approuter)
+frontend:
+  enabled: false
+
+# XSUAA Service configuration
+xsuaa:
+  enabled: true
+  serviceOfferingName: xsuaa
+  servicePlanName: application
+  xsappname: slate-grtest
+  
+  # OAuth scopes
+  scopes:
+    - name: "$XSAPPNAME.User"
+      description: "User access"
+    - name: "$XSAPPNAME.Admin"
+      description: "Admin access"
+  
+  # Role templates
+  role-templates:
+    - name: User
+      description: "Standard user role"
+      scope-references:
+        - "$XSAPPNAME.User"
+    - name: Admin
+      description: "Administrator role"
+      scope-references:
+        - "$XSAPPNAME.User"
+        - "$XSAPPNAME.Admin"
+
+# Kyma APIRule for ingress
+ingress:
+  enabled: true
+  host: slate-grtest.c-83567d2.kyma.ondemand.com  # Update with your domain
+  gateway: kyma-gateway.kyma-system.svc.cluster.local
+  
+  # Authentication for different paths
+  rules:
+    - path: /.*
+      methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"]
+      accessStrategies:
+        - handler: noop  # AppRouter handles XSUAA authentication

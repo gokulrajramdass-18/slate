@@ -127,14 +127,16 @@ class EmbeddingService:
             except Exception as e:
                 raise Exception(f"SAP AI Core embedding error: {str(e)}")
 
-        # LiteLLM proxy
+        # LiteLLM proxy or SAP AI Core API
         async with httpx.AsyncClient(timeout=30.0) as client:
+            # Build headers (skip Authorization if no API key)
+            headers = {"Content-Type": "application/json"}
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+
             response = await client.post(
                 f"{api_url}/embeddings",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json"
-                },
+                headers=headers,
                 json={
                     "model": model,
                     "input": text
@@ -192,12 +194,22 @@ class EmbeddingService:
                     "message": error_msg
                 }
 
-            api_url = credential["base_url"]
-            api_key = credential["api_key"]
+            # Check if this is SAP AI Core provider
+            provider = credential.get("provider", "")
 
-            # Get model name from credential, fallback to default
-            # SAP GenAI Hub uses specific model names
-            model_name = credential.get("model_name", credential.get("name", "text-embedding-ada-002"))
+            if provider == "sap_ai_core":
+                # Auto-configure for SAP AI Core
+                api_url = "http://slate-sap-ai-core-api:5056"
+                api_key = ""  # Not needed for internal service
+                # Use text-embedding-3-large as default for SAP AI Core
+                model_name = credential.get("deployment_model_name") or credential.get("model_name", "text-embedding-3-large")
+                print(f"🔧 Using SAP AI Core: {api_url} with model: {model_name}")
+            else:
+                # Use configured values for other providers
+                api_url = credential["base_url"]
+                api_key = credential["api_key"]
+                # Get model name from credential, fallback to default
+                model_name = credential.get("deployment_model_name") or credential.get("model_name", credential.get("name", "text-embedding-ada-002"))
 
         except Exception as e:
             error_msg = f"Failed to get embedding credentials: {str(e)}"

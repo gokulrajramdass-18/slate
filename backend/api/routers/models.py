@@ -4,6 +4,7 @@ Models Router
 Handles AI model configuration and selection.
 """
 
+import os
 import logging
 from typing import List, Optional
 from fastapi import APIRouter, HTTPException, status
@@ -353,10 +354,16 @@ async def get_litellm_models(
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
 
+        # Replace localhost:6655 with host.docker.internal:6655 for Docker environments
+        # This allows the backend container to reach LiteLLM on the host machine
+        effective_url = base_url.replace("localhost:6655", "host.docker.internal:6655")
+
+        logger.info(f"LiteLLM discovery: original={base_url}, effective={effective_url}")
+
         # Query LiteLLM /models endpoint
         async with httpx.AsyncClient() as client:
             response = await client.get(
-                f"{base_url}/models",
+                f"{effective_url}/models",
                 headers=headers,
                 timeout=10.0
             )
@@ -369,27 +376,44 @@ async def get_litellm_models(
             if isinstance(data, dict) and "data" in data:
                 # OpenAI-compatible format
                 for model in data["data"]:
+                    model_id = model.get("id", "")
+                    # Detect model type based on ID
+                    model_type = "language"
+                    if "embedding" in model_id.lower():
+                        model_type = "embedding"
+
                     models.append({
-                        "id": model.get("id", ""),
-                        "name": model.get("id", "").replace("--", " ").replace("-", " ").title(),
-                        "type": "language",  # Assume language model
+                        "id": model_id,
+                        "name": model_id.replace("--", " ").replace("-", " ").title(),
+                        "type": model_type,
                         "provider": model.get("owned_by", "unknown")
                     })
             elif isinstance(data, list):
                 # Simple list format
                 for model in data:
                     if isinstance(model, str):
+                        # Detect model type based on ID
+                        model_type = "language"
+                        if "embedding" in model.lower():
+                            model_type = "embedding"
+
                         models.append({
                             "id": model,
                             "name": model.replace("--", " ").replace("-", " ").title(),
-                            "type": "language",
+                            "type": model_type,
                             "provider": "litellm"
                         })
                     elif isinstance(model, dict):
+                        model_id = model.get("id", model.get("model", ""))
+                        # Detect model type based on ID if not provided
+                        model_type = model.get("type", "language")
+                        if model_type == "language" and "embedding" in model_id.lower():
+                            model_type = "embedding"
+
                         models.append({
-                            "id": model.get("id", model.get("model", "")),
-                            "name": model.get("name", model.get("id", "")).replace("--", " ").replace("-", " ").title(),
-                            "type": model.get("type", "language"),
+                            "id": model_id,
+                            "name": model.get("name", model_id).replace("--", " ").replace("-", " ").title(),
+                            "type": model_type,
                             "provider": model.get("provider", "litellm")
                         })
 
@@ -534,3 +558,46 @@ async def discover_sap_ai_core_models(request: SAPAICoreConnectionRequest):
             "error": str(e)
         }
 
+
+@router.get("/sap-ai-core/credentials")
+async def get_sap_ai_core_credentials():
+    """
+    Get SAP AI Core credentials from environment variables.
+
+    This endpoint returns the SAP AI Core credentials configured
+    in the deployment, allowing the UI to auto-fill the import form.
+
+    Returns:
+        SAP AI Core credentials if configured, otherwise empty response
+    """
+    try:
+        auth_url = os.getenv("SAP_AI_CORE_AUTH_URL") or os.getenv("AICORE_AUTH_URL")
+        api_url = os.getenv("AICORE_BASE_URL") or os.getenv("AICORE_API_URL")  # Use AICORE_BASE_URL first
+        client_id = os.getenv("SAP_AI_CORE_CLIENT_ID") or os.getenv("AICORE_CLIENT_ID")
+        client_secret = os.getenv("SAP_AI_CORE_CLIENT_SECRET") or os.getenv("AICORE_CLIENT_SECRET")
+        resource_group = os.getenv("SAP_AI_CORE_RESOURCE_GROUP") or os.getenv("AICORE_RESOURCE_GROUP", "default")
+
+        # Check if credentials are available
+        if not all([auth_url, api_url, client_id, client_secret]):
+            return {
+                "configured": False,
+                "message": "SAP AI Core credentials not configured in environment"
+            }
+
+        # Return credentials (client_secret is partially masked for security)
+        return {
+            "configured": True,
+            "auth_url": auth_url,
+            "api_url": api_url,
+            "client_id": client_id,
+            "client_secret": client_secret[:10] + "..." if client_secret else "",
+            "client_secret_full": client_secret,  # Full secret for API calls
+            "resource_group": resource_group
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to get SAP AI Core credentials: {e}")
+        return {
+            "configured": False,
+            "message": f"Error retrieving credentials: {str(e)}"
+        }

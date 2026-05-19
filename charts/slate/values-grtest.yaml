@@ -6,7 +6,7 @@ backend:
   replicaCount: 1
   image:
     repository: gokulraj18/slate-backend
-    tag: kyma-v1.0.3
+    tag: kyma-v1.0.8
     pullPolicy: Always
   persistence:
     enabled: true
@@ -24,7 +24,7 @@ sapAiCoreApi:
   replicaCount: 1
   image:
     repository: gokulraj18/slate-sap-ai-core-api
-    tag: v1.0.0
+    tag: v1.0.10
     pullPolicy: Always
   resources:
     limits:
@@ -41,15 +41,11 @@ sapAiCoreApi:
     resourceGroup: ***REMOVED-AICORE-RESOURCE-GROUP***
 frontend:
   enabled: true
-  replicaCount: 2
+  replicaCount: 1
   image:
     repository: gokulraj18/slate-frontend
     tag: kyma-v1.0.8
     pullPolicy: Always
-  env:
-    nodeEnv: production
-    nextTelemetryDisabled: "1"
-    xsuaaEnabled: "true"
   resources:
     limits:
       cpu: 1000m
@@ -62,7 +58,7 @@ approuter:
   replicaCount: 2
   image:
     repository: gokulraj18/slate-approuter
-    tag: kyma-v1.0.6
+    tag: kyma-v1.0.8
     pullPolicy: Always
   resources:
     limits:
@@ -74,6 +70,33 @@ approuter:
 xsuaa:
   enabled: true
   xsappname: slate-grtest
+  tenantMode: dedicated
+  serviceOfferingName: xsuaa
+  servicePlanName: application
+  scopes:
+    - name: "$XSAPPNAME.User"
+      description: "Slate user"
+    - name: "$XSAPPNAME.Admin"
+      description: "Slate administrator"
+  roleTemplates:
+    - name: User
+      description: "Slate User"
+      scopeReferences:
+        - "$XSAPPNAME.User"
+    - name: Admin
+      description: "Slate Administrator"
+      scopeReferences:
+        - "$XSAPPNAME.User"
+        - "$XSAPPNAME.Admin"
+  roleCollections:
+    - name: "Slate User"
+      description: "Slate User Role Collection"
+      roleTemplateReferences:
+        - "User"
+    - name: "Slate Admin"
+      description: "Slate Admin Role Collection"
+      roleTemplateReferences:
+        - "Admin"
 ingress:
   enabled: true
   host: slate-grtest.c-83567d2.kyma.ondemand.com
@@ -120,5 +143,20 @@ xsApp:
     authenticationType: xsuaa
   - source: ^/(.*)$
     target: /$1
-    localDir: resources
+    destination: frontend
     authenticationType: xsuaa
+destinations:
+  backend:
+    name: backend
+    url: http://slate-backend:5055
+    forwardAuthToken: true
+  frontend:
+    name: frontend
+    url: http://slate-frontend:3000
+    forwardAuthToken: false
+objectstore:
+  enabled: true
+  instanceName: slate-objectstore
+  bindingName: slate-objectstore-binding
+  secretName: slate-objectstore-credentials
+  plan: s3-standard

@@ -191,6 +191,38 @@ export const credentialsApi = {
     const { data } = await apiClient.post("/models/sap-ai-core/discover", params);
     return data;
   },
+
+  // Bulk import all SAP AI Core models as credentials
+  importSAPAICoreModels: async (params: {
+    auth_url: string;
+    api_url: string;
+    client_id: string;
+    client_secret: string;
+    resource_group?: string;
+    identity_zone?: string;
+    identityzoneid?: string;
+  }): Promise<{
+    success: boolean;
+    message: string;
+    imported_count: number;
+    models: Array<any>;
+    errors: Array<any>;
+  }> => {
+    const { data } = await apiClient.post("/credentials/import-sap-ai-core", params);
+    return data;
+  },
+
+  // Auto-import SAP AI Core models (no credentials needed - uses standalone API)
+  importSAPAICoreModelsAuto: async (): Promise<{
+    success: boolean;
+    message: string;
+    imported_count: number;
+    models: Array<any>;
+    errors: Array<any>;
+  }> => {
+    const { data } = await apiClient.post("/credentials/import-sap-ai-core-auto");
+    return data;
+  },
 };
 
 export const embeddingApi = {

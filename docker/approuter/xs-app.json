@@ -3,10 +3,25 @@
   "sessionTimeout": 480,
   "routes": [
     {
-      "source": "^/login/callback(.*)",
-      "target": "/xsuaa-check.html",
-      "destination": "frontend",
-      "authenticationType": "xsuaa"
+      "source": "^/api/models/litellm/models(.*)$",
+      "target": "/api/models/litellm/models$1",
+      "destination": "backend",
+      "authenticationType": "none",
+      "csrfProtection": false
+    },
+    {
+      "source": "^/api/models/sap-ai-core/(.*)$",
+      "target": "/api/models/sap-ai-core/$1",
+      "destination": "backend",
+      "authenticationType": "none",
+      "csrfProtection": false
+    },
+    {
+      "source": "^/api/credentials/test-connection$",
+      "target": "/api/credentials/test-connection",
+      "destination": "backend",
+      "authenticationType": "none",
+      "csrfProtection": false
     },
     {
       "source": "^/api/(.*)$",
@@ -14,24 +29,6 @@
       "destination": "backend",
       "authenticationType": "xsuaa",
       "csrfProtection": false
-    },
-    {
-      "source": "^/xsuaa-check\\.html$",
-      "target": "/xsuaa-check.html",
-      "destination": "frontend",
-      "authenticationType": "none"
-    },
-    {
-      "source": "^/$",
-      "target": "/",
-      "destination": "frontend",
-      "authenticationType": "xsuaa"
-    },
-    {
-      "source": "^/_next/(.*)$",
-      "target": "/_next/$1",
-      "destination": "frontend",
-      "authenticationType": "none"
     },
     {
       "source": "^/(.*)$",

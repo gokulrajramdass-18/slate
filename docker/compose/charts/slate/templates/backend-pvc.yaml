@@ -1,0 +1,18 @@
+{{- if and .Values.backend.enabled .Values.backend.persistence.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: slate-backend-pvc
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: slate-backend
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- if .Values.backend.persistence.storageClass }}
+  storageClassName: {{ .Values.backend.persistence.storageClass }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.backend.persistence.size }}
+{{- end }}

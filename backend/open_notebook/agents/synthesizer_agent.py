@@ -58,6 +58,56 @@ class SynthesizerAgent:
 
     def _create_model(self):
         """Create LLM model."""
+        # Check for SAP AI Core model
+        is_sap_ai_core = self.model_name.startswith("sap-ai-core-")
+
+        if is_sap_ai_core:
+            # SAP AI Core integration
+            from open_notebook.llm.chat_sap_ai_core_sdk import ChatSAPAICore
+            from api.services.sap_ai_core_service import SAPAICoreService, SAPAICoreConfig
+            from api.routers.credentials import _credentials_store
+            import json
+
+            # Extract deployment ID
+            deployment_id = self.model_name.replace("sap-ai-core-", "")
+
+            # Find credential
+            sap_credential = None
+            for cred_id, cred in _credentials_store.items():
+                if (cred.get("provider") == "sap_ai_core" and
+                    (cred.get("model_name") == self.model_name or
+                     deployment_id in cred.get("model_name", ""))):
+                    sap_credential = cred
+                    break
+
+            if not sap_credential:
+                raise Exception(
+                    f"SAP AI Core credential not found for deployment {deployment_id}"
+                )
+
+            # Parse config
+            try:
+                connection_config = json.loads(sap_credential.get("api_key", "{}"))
+            except json.JSONDecodeError:
+                raise Exception("Invalid SAP AI Core credential format")
+
+            # Create config
+            config = SAPAICoreConfig(
+                auth_url=connection_config.get("auth_url"),
+                api_url=connection_config.get("api_url"),
+                client_id=connection_config.get("client_id"),
+                client_secret=connection_config.get("client_secret"),
+                resource_group=connection_config.get("resource_group", "default"),
+            )
+
+            return ChatSAPAICore(
+                service=SAPAICoreService(config),
+                deployment_id=deployment_id,
+                temperature=0.3,
+                max_tokens=4096,
+            )
+
+        # Check for Anthropic
         is_anthropic = any(x in self.model_name.lower() for x in ["claude", "anthropic"])
 
         if is_anthropic:

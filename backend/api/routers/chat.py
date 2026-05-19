@@ -109,38 +109,48 @@ def get_model_credential(model_name: str) -> Optional[Dict]:
     For other models, looks up the credential in the store.
 
     Args:
-        model_name: Model ID (e.g., "sap-ai-core-{deployment_id}" or credential ID)
+        model_name: Model ID (e.g., "sap-ai-core-{deployment_id}", "gpt-4o", or credential ID)
 
     Returns:
         Credential dict or None if not found
     """
     from api.routers.credentials import _credentials_store
 
-    # First try to get from credentials store
+    # First try to get from credentials store by ID
     credential = _credentials_store.get(model_name)
+
+    # If not found by ID, search by model_name field
+    if not credential:
+        for cred_id, cred in _credentials_store.items():
+            if cred.get("model_name") == model_name:
+                credential = cred
+                break
 
     # Check if this is a SAP AI Core model (either by name prefix or provider field)
     is_sap_ai_core = (
         (model_name and model_name.startswith("sap-ai-core-")) or
-        (credential and credential.get("provider") == "sap_ai_core")
+        (credential and credential.get("provider") == "sap_ai_core") or
+        (model_name in ["gpt-4o", "gpt-4o-mini", "claude-3-opus", "claude-3-sonnet", "claude-3-5-sonnet", "claude-3-haiku"])
     )
 
-    if is_sap_ai_core:
-        # For SAP AI Core, return a synthetic credential
-        # The actual authentication is handled by gen-ai-hub SDK via environment variables
-        if model_name.startswith("sap-ai-core-"):
-            deployment_id = model_name.replace("sap-ai-core-", "")
-        else:
-            # Extract deployment ID from credential model_name
-            deployment_id = credential.get("model_name", model_name)
+    if is_sap_ai_core and credential:
+        # For SAP AI Core, use the credential data directly
+        # The SDK model name is stored in model_name field
+        sdk_model_name = credential.get("model_name", "gpt-4o")
 
-        # Return credential with sap-ai-core- prefix for agent detection
+        # Return credential that will work with ChatSAPAICore wrapper
         return {
-            "model_name": f"sap-ai-core-{deployment_id}",
+            "id": credential.get("id"),
+            "model_name": sdk_model_name,  # SDK name like "gpt-4o"
             "provider": "sap_ai_core",
-            "base_url": None,  # Not used for SAP AI Core
-            "api_key": None,   # Not used for SAP AI Core (uses env vars)
-            "deployment_id": deployment_id
+            "auth_url": credential.get("auth_url"),
+            "api_url": credential.get("api_url"),
+            "client_id": credential.get("client_id"),
+            "client_secret_encrypted": credential.get("client_secret_encrypted"),
+            "resource_group": credential.get("resource_group"),
+            "deployment_id": credential.get("deployment_id"),
+            "base_url": credential.get("api_url"),
+            "api_key": None,  # Not used - SDK uses auth_url/client_id/secret
         }
 
     # For other models, return the credential as-is
@@ -1389,6 +1399,8 @@ The data shown in the "LIVE DATA FROM SOURCES" section above was fetched in real
         trace_ids=trace_ids,
         api_key=credential.get("api_key"),
         base_url=credential.get("base_url"),
+        provider=credential.get("provider"),  # Pass provider for special handling
+        credential=credential,  # Pass full credential for SAP AI Core
         enable_tool_filtering=True if tools else False,  # Only filter when tools exist
         task_description=request.message,  # Use user query for filtering
     )
@@ -1481,7 +1493,6 @@ The data shown in the "LIVE DATA FROM SOURCES" section above was fetched in real
                 render_mode=render_mode,
                 tool_results=tool_results_data if not ui_components else None,
                 agent_steps=finalized_steps,
-                trace_ids=trace_ids,
             )
 
             # Flush Langfuse events
@@ -1810,7 +1821,13 @@ async def generate_chat_response(
             print("No AI model configured")
             return "⚠️ No AI model configured. Please add a model in Settings → Models."
 
-        print(f"🤖 Calling AI model: {credential['model_name']} via {credential['base_url']}")
+        # Replace localhost:6655 with host.docker.internal:6655 for LiteLLM in Docker
+        base_url = credential['base_url']
+        if base_url and 'localhost:6655' in base_url:
+            base_url = base_url.replace('localhost:6655', 'host.docker.internal:6655')
+            print(f"🐳 Docker mode: Rewriting LiteLLM URL from {credential['base_url']} to {base_url}")
+
+        print(f"🤖 Calling AI model: {credential['model_name']} via {base_url}")
 
         # Detect if this is an Anthropic model
         is_anthropic = "anthropic" in credential["model_name"].lower() or "claude" in credential["model_name"].lower()
@@ -1846,7 +1863,7 @@ async def generate_chat_response(
                 print(f"🔧 Including {len(hana_tools)} HANA tools in request")
 
             # Use Anthropic endpoint
-            endpoint_url = f"{credential['base_url'].replace('/litellm/v1', '')}/anthropic/v1/messages"
+            endpoint_url = f"{base_url.replace('/litellm/v1', '')}/anthropic/v1/messages"
 
             print(f"📤 Request URL: {endpoint_url}")
 
@@ -1966,14 +1983,14 @@ async def generate_chat_response(
                 "max_tokens": 2000,
                 "stream": False
             }
-            print(f"📤 Request URL: {credential['base_url']}/chat/completions")
+            print(f"📤 Request URL: {base_url}/chat/completions")
             print(f"📤 Request headers: Authorization=Bearer {credential['api_key'][:20]}..., Content-Type=application/json")
             print(f"📤 Request body: {request_payload}")
 
             # Call LiteLLM proxy
             async with httpx.AsyncClient(timeout=60.0) as client:
                 response = await client.post(
-                    f"{credential['base_url']}/chat/completions",
+                    f"{base_url}/chat/completions",
                     headers={
                         "Authorization": f"Bearer {credential['api_key']}",
                         "Content-Type": "application/json"
@@ -2435,6 +2452,12 @@ async def stream_chat_response(
             }
             return
 
+        # Replace localhost:6655 with host.docker.internal:6655 for LiteLLM in Docker
+        base_url = credential['base_url']
+        if base_url and 'localhost:6655' in base_url:
+            base_url = base_url.replace('localhost:6655', 'host.docker.internal:6655')
+            print(f"[Chat Stream] 🐳 Docker mode: Rewriting LiteLLM URL from {credential['base_url']} to {base_url}")
+
         # Detect provider
         is_anthropic = "anthropic" in credential["model_name"].lower() or "claude" in credential["model_name"].lower()
 
@@ -2470,7 +2493,7 @@ async def stream_chat_response(
                 request_payload["tools"] = hana_tools
                 print(f"[Chat Stream] 🔧 Including {len(hana_tools)} HANA tools in streaming request")
 
-            endpoint_url = f"{credential['base_url'].replace('/litellm/v1', '')}/anthropic/v1/messages"
+            endpoint_url = f"{base_url.replace('/litellm/v1', '')}/anthropic/v1/messages"
 
             async with httpx.AsyncClient(timeout=120.0) as client:
                 async with client.stream(
@@ -2671,7 +2694,7 @@ async def stream_chat_response(
             async with httpx.AsyncClient(timeout=120.0) as client:
                 async with client.stream(
                     "POST",
-                    f"{credential['base_url']}/chat/completions",
+                    f"{base_url}/chat/completions",
                     headers={
                         "Authorization": f"Bearer {credential['api_key']}",
                         "Content-Type": "application/json"

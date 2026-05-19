@@ -9,7 +9,10 @@ COPY package.json ./
 RUN npm install --production
 
 # Copy configuration files
-COPY xs-app.json default-env.json ./
+COPY xs-app.json ./
+
+# Copy frontend resources
+COPY resources ./resources
 
 # Expose port
 EXPOSE 5001

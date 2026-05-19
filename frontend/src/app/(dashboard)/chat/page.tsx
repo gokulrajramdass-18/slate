@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useChatSessions, useChatSession, useCreateChatSession, useUpdateChatSession, useDeleteChatSession, useNotebooks } from "@/lib/hooks/use-api";
 import { chatApi } from "@/lib/api/chat";
 import { Button } from "@/components/ui/button";
@@ -44,6 +44,11 @@ export default function ChatPage() {
   const [sessionToDelete, setSessionToDelete] = useState<string | null>(null);
   const [deepResearchEnabled, setDeepResearchEnabled] = useState(false);
 
+  // Refs for streaming animation
+  const fullTextRef = useRef("");
+  const animationTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const displayIndexRef = useRef(0);
+
   const { data: sessions = [] } = useChatSessions();
   const { data: currentSession, refetch } = useChatSession(selectedSessionId!);
   const { data: notebooks = [] } = useNotebooks();
@@ -57,6 +62,47 @@ export default function ChatPage() {
       setSelectedSessionId(sessions[0].id);
     }
   }, [sessions, selectedSessionId]);
+
+  // Listen for streaming chunk events and animate them
+  useEffect(() => {
+    console.log('[Chat] Setting up streaming chunk listener for session:', selectedSessionId);
+
+    const handleStreamingChunk = (event: any) => {
+      const { sessionId, content } = event.detail;
+      console.log('[Chat] Streaming event received for session:', sessionId, 'current:', selectedSessionId);
+
+      if (sessionId === selectedSessionId) {
+        console.log('[Chat] Received streaming chunk:', content);
+
+        // Accumulate the full text
+        fullTextRef.current += content;
+        console.log('[Chat] Full text length:', fullTextRef.current.length);
+
+        // Start typing animation if not already running
+        if (!animationTimerRef.current) {
+          console.log('[Chat] Starting animation timer');
+          animationTimerRef.current = setInterval(() => {
+            if (displayIndexRef.current < fullTextRef.current.length) {
+              displayIndexRef.current++;
+              setStreamingMessage(fullTextRef.current.substring(0, displayIndexRef.current));
+            }
+          }, 10); // 10ms per character
+        }
+      }
+    };
+
+    window.addEventListener('streaming:chunk', handleStreamingChunk);
+    console.log('[Chat] Listener registered');
+
+    return () => {
+      console.log('[Chat] Cleaning up listener');
+      window.removeEventListener('streaming:chunk', handleStreamingChunk);
+      if (animationTimerRef.current) {
+        clearInterval(animationTimerRef.current);
+        animationTimerRef.current = null;
+      }
+    };
+  }, [selectedSessionId]);
 
   const handleCreateSession = async () => {
     try {
@@ -127,6 +173,8 @@ export default function ChatPage() {
   const handleSendMessage = async (content: string) => {
     if (!selectedSessionId) return;
 
+    console.log('[Chat Page] handleSendMessage called');
+
     setIsSending(true);
     setStreamingMessage("");
 
@@ -142,28 +190,40 @@ export default function ChatPage() {
     setOptimisticMessages((prev) => [...prev, tempUserMessage]);
 
     try {
+      const chunkCallback = (chunk: string) => {
+        console.log('[Chat Page] Chunk callback invoked with:', chunk);
+        // Directly update - no animation
+        setStreamingMessage((prev) => prev + chunk);
+      };
+
+      console.log('[Chat Page] About to call chatApi.sendMessage with callback');
+
+      // Simple direct approach - just show chunks as they arrive
       await chatApi.sendMessage(
         selectedSessionId,
         {
-          message: content,  // Backend expects 'message' field
+          message: content,
           stream: true,
           include_context: true,
           selected_source_ids: selectedSources,
           deep_research: deepResearchEnabled,
         },
-        (chunk) => {
-          setStreamingMessage((prev) => prev + chunk);
-        }
+        chunkCallback
       );
 
-      setStreamingMessage("");
-      // Clear optimistic messages and refetch actual data
-      setOptimisticMessages([]);
-      refetch();
+      console.log('[Chat Page] chatApi.sendMessage completed');
+
+      // Clear and refetch
+      setTimeout(() => {
+        setStreamingMessage("");
+        setOptimisticMessages([]);
+        refetch();
+      }, 500);
+
     } catch (error: any) {
+      console.log('[Chat Page] Error:', error);
       toast.error(error.message || "Failed to send message");
       setStreamingMessage("");
-      // Remove optimistic message on error
       setOptimisticMessages([]);
     } finally {
       setIsSending(false);

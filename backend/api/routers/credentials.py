@@ -58,6 +58,8 @@ class CredentialResponse(BaseModel):
     provider: str
     model_name: str
     model_type: str
+    deployment_id: Optional[str] = None
+    deployment_model_name: Optional[str] = None
     base_url: Optional[str]
     is_active: bool
     connection_status: str  # "untested", "connected", "failed"
@@ -239,6 +241,10 @@ async def test_connection_before_save(request: TestConnectionRequest):
 
         # Remove trailing slash if present
         test_url = test_url.rstrip('/')
+
+        # Replace localhost:6655 with host.docker.internal:6655 for LiteLLM in Docker
+        if request.provider == "litellm":
+            test_url = test_url.replace("localhost:6655", "host.docker.internal:6655")
 
         async with httpx.AsyncClient(timeout=10.0) as client:
             # Test with a simple models list call
@@ -422,6 +428,8 @@ async def list_credentials(
             model_name=c["model_name"],
             model_type=c["model_type"],
             base_url=c.get("base_url"),
+            deployment_id=c.get("deployment_id"),
+            deployment_model_name=c.get("deployment_model_name"),
             is_active=c["is_active"],
             connection_status=c.get("connection_status", "untested"),
             last_tested=c.get("last_tested"),
@@ -457,6 +465,8 @@ async def get_credential(credential_id: str):
         model_name=c["model_name"],
         model_type=c["model_type"],
         base_url=c.get("base_url"),
+        deployment_id=c.get("deployment_id"),
+        deployment_model_name=c.get("deployment_model_name"),
         is_active=c["is_active"],
         connection_status=c.get("connection_status", "untested"),
         last_tested=c.get("last_tested"),

@@ -1,0 +1,16 @@
+--- a/api/routers/chat.py
++++ b/api/routers/chat.py
+@@ -1445,8 +1445,12 @@ async def _stream_agent_response(
+                 yield event
+
+         return EventSourceResponse(
+             enhanced_stream(),
+-            ping=5   # Send ping every 5 seconds to keep connection alive
++            ping=5,   # Send ping every 5 seconds to keep connection alive
++            headers={
++                "X-Accel-Buffering": "no",  # Disable nginx buffering
++                "Cache-Control": "no-cache",
++            }
+         )
+     else:
+             # Non-streaming agent response

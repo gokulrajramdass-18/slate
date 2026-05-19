@@ -1,0 +1,19 @@
+{{- if .Values.objectstore.enabled }}
+apiVersion: services.cloud.sap.com/v1
+kind: ServiceInstance
+metadata:
+  name: {{ .Values.objectstore.instanceName | default "slate-objectstore" }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  serviceOfferingName: objectstore
+  servicePlanName: {{ .Values.objectstore.plan | default "s3-standard" }}
+---
+apiVersion: services.cloud.sap.com/v1
+kind: ServiceBinding
+metadata:
+  name: {{ .Values.objectstore.bindingName | default "slate-objectstore-binding" }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  serviceInstanceName: {{ .Values.objectstore.instanceName | default "slate-objectstore" }}
+  secretName: {{ .Values.objectstore.secretName | default "slate-objectstore-credentials" }}
+{{- end }}

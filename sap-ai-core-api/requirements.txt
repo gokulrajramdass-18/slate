@@ -1,0 +1,12 @@
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+generative-ai-hub-sdk>=1.0.0
+httpx>=0.25.0
+python-dotenv>=1.0.0
+pydantic>=2.0.0
+langchain-aws>=1.0.0
+langchain-community>=0.0.1
+langchain-google-genai>=1.0.0
+langchain-google-vertexai>=1.0.0
+google-cloud-aiplatform>=1.0.0
+aioboto3>=13.0.0

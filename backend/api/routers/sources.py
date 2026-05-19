@@ -453,15 +453,10 @@ async def create_source(
                 detail="Failed to retrieve created source",
             )
 
-        # Trigger background embedding generation ONLY if:
-        # 1. Source has content (full_text exists)
-        # 2. Source doesn't have error in asset_data (extraction didn't fail)
-        has_error = False
-        if data.get("asset_data"):
-            asset_data_dict = json.loads(data["asset_data"]) if isinstance(data["asset_data"], str) else data["asset_data"]
-            has_error = asset_data_dict.get("error") is not None
-
-        if data.get("full_text") and not has_error:
+        # Trigger background embedding generation if source has content
+        # Even if there's an error in asset_data, we should still generate embeddings
+        # if full_text was successfully extracted
+        if data.get("full_text") and len(data.get("full_text", "").strip()) > 100:
             # Note: sync_status column doesn't exist in sources table
             # Embedding status is tracked in background job system
 

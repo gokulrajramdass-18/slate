@@ -1,0 +1,17 @@
+apiVersion: v2
+name: slate
+description: AI-Powered Workflow Orchestration Platform with SAP AI Core Integration
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+
+keywords:
+  - ai
+  - workflows
+  - orchestration
+  - sap-ai-core
+  - kyma
+
+maintainers:
+  - name: Gokulraj Ramdass
+    email: gokulraj.ramdass@sap.com

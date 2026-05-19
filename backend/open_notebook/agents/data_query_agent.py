@@ -58,6 +58,8 @@ class DataQueryAgent:
         trace_ids: Optional[Dict[str, str]] = None,
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
+        provider: Optional[str] = None,
+        credential: Optional[Dict] = None,
         task_description: Optional[str] = None,
         enable_tool_filtering: bool = False,
     ):
@@ -87,6 +89,8 @@ class DataQueryAgent:
         self.langfuse_trace_id = self.trace_ids.get("langfuse_trace_id")  # Extract for easy access
         self.api_key = api_key
         self.base_url = base_url
+        self.provider = provider
+        self.credential = credential or {}
         self.task_description = task_description or "General data query task"
         self.enable_tool_filtering = enable_tool_filtering
         self.all_tools = tools  # Store all tools before filtering
@@ -175,45 +179,89 @@ class DataQueryAgent:
             "callbacks": callbacks,
         }
 
-        # Check if this is a SAP AI Core model (starts with sap-ai-core-)
-        is_sap_ai_core = self.model_name.startswith("sap-ai-core-")
+        # Check if this is a SAP AI Core model (either by name prefix or provider field)
+        is_sap_ai_core = self.model_name.startswith("sap-ai-core-") or self.provider == "sap_ai_core"
 
         if is_sap_ai_core:
-            # For SAP AI Core, we cannot use async in __init__
-            # Instead, pass the deployment info and let the agent handle auth
+            # SAP AI Core integration
             print(f"🔧 Creating SAP AI Core model wrapper")
             print(f"   Model: {self.model_name}")
+            print(f"   Provider: {self.provider}")
 
-            # Extract deployment ID
-            deployment_id = self.model_name.replace("sap-ai-core-", "")
+            # If we have the full credential, use it directly with HTTP wrapper
+            if self.credential and self.credential.get("deployment_id"):
+                from open_notebook.llm.chat_sap_ai_core_sdk import ChatSAPAICore
+                import os
 
-            # Get SAP AI Core credentials from store
-            from api.routers.credentials import _credentials_store
-            import json
+                deployment_id = self.credential.get("deployment_id")
+                sdk_model_name = self.credential.get("model_name", "gpt-4o")
 
-            sap_credential = None
-            for cred_id, cred in _credentials_store.items():
-                if cred.get("provider") == "sap_ai_core":
-                    sap_credential = cred
-                    break
+                print(f"   ✅ Using SAP AI Core (HTTP) with deployment_id: {deployment_id}, model: {sdk_model_name}")
 
-            if not sap_credential:
-                raise Exception("SAP AI Core credential not found")
+                # Determine API URL
+                # Priority: SAP_AI_CORE_API_URL env var > Docker detection > localhost
+                api_base_url = os.getenv("SAP_AI_CORE_API_URL")
+                if not api_base_url:
+                    # Fallback: Check if we're in Docker
+                    in_docker = os.path.exists('/.dockerenv') or os.environ.get('DOCKER_CONTAINER') == 'true'
+                    api_base_url = "http://host.docker.internal:5056" if in_docker else "http://localhost:5056"
 
-            connection_config = json.loads(sap_credential.get("api_key", "{}"))
-            api_url = connection_config.get("api_url", "")
+                print(f"   🔗 API Base URL: {api_base_url}")
 
-            # For now, use ChatOpenAI as a wrapper
-            # We'll intercept the calls and route them through SAP AI Core
-            # This requires custom handling which we'll add later
-            print(f"   ⚠️  SAP AI Core models not yet fully supported in chat")
-            print(f"   Please use a LiteLLM or direct provider model for now")
+                # Create model using HTTP wrapper (calls standalone API on port 5056)
+                # Use SDK model name (e.g., "gpt-4o") not deployment model name
+                model = ChatSAPAICore(
+                    model_name=sdk_model_name,
+                    deployment_id=deployment_id,
+                    temperature=model_kwargs.get("temperature", 0.7),
+                    max_tokens=model_kwargs.get("max_tokens", 4096),
+                    api_base_url=api_base_url
+                )
+            else:
+                # Fallback: extract deployment_id from model name
+                deployment_id = self.model_name.replace("sap-ai-core-", "")
 
-            # Fallback to error
-            raise Exception(
-                "SAP AI Core models are not yet supported for chat. "
-                "Please select a different model (OpenAI, Anthropic, or LiteLLM) in Settings → Models."
-            )
+                # Get SAP AI Core credentials from store to get model_name
+                from api.routers.credentials import _credentials_store
+                from open_notebook.llm.chat_sap_ai_core_sdk import ChatSAPAICore
+
+                # Find SAP AI Core credential (match by deployment_id)
+                sap_credential = None
+                for cred_id, cred in _credentials_store.items():
+                    if (cred.get("provider") == "sap_ai_core" and
+                        cred.get("deployment_id") == deployment_id):
+                        sap_credential = cred
+                        break
+
+                if not sap_credential:
+                    raise Exception(
+                        f"SAP AI Core credential not found for deployment {deployment_id}. "
+                        "Please import SAP AI Core models in Settings → API Keys."
+                    )
+
+                # Use SDK model name (e.g., "gpt-4o") not deployment model name
+                sdk_model_name = sap_credential.get("model_name", "gpt-4o")
+
+                print(f"   ✅ SAP AI Core model configured")
+                print(f"   Deployment ID: {deployment_id}")
+                print(f"   SDK Model: {sdk_model_name}")
+
+                # Determine API URL
+                # Priority: SAP_AI_CORE_API_URL env var > Docker detection > localhost
+                import os
+                api_base_url = os.getenv("SAP_AI_CORE_API_URL")
+                if not api_base_url:
+                    # Fallback: Check if we're in Docker
+                    in_docker = os.path.exists('/.dockerenv') or os.environ.get('DOCKER_CONTAINER') == 'true'
+                    api_base_url = "http://host.docker.internal:5056" if in_docker else "http://localhost:5056"
+
+                model = ChatSAPAICore(
+                    model_name=sdk_model_name,
+                    deployment_id=deployment_id,
+                    temperature=model_kwargs.get("temperature", 0.7),
+                    max_tokens=model_kwargs.get("max_tokens", 4096),
+                    api_base_url=api_base_url
+                )
 
         # Add API key and base URL if provided (for LiteLLM integration)
         elif self.api_key:
@@ -222,13 +270,18 @@ class DataQueryAgent:
             # If base_url is provided, use OpenAI-compatible client (works with LiteLLM)
             # LiteLLM provides OpenAI-compatible endpoints for all providers
             if self.base_url:
-                # For LiteLLM, keep the base_url as-is (should be http://localhost:6655/litellm/v1)
+                # Replace localhost:6655 with host.docker.internal:6655 for LiteLLM in Docker
+                effective_base_url = self.base_url.replace('localhost:6655', 'host.docker.internal:6655')
+                if effective_base_url != self.base_url:
+                    print(f"🐳 Docker mode: Rewriting LiteLLM URL from {self.base_url} to {effective_base_url}")
+
+                # For LiteLLM, use the effective base_url
                 # LiteLLM uses /litellm/v1/chat/completions which is OpenAI-compatible
-                model_kwargs["base_url"] = self.base_url
+                model_kwargs["base_url"] = effective_base_url
 
                 print(f"🔧 Creating OpenAI-compatible model for LiteLLM")
                 print(f"   Model: {self.model_name}")
-                print(f"   Base URL: {self.base_url}")
+                print(f"   Base URL: {effective_base_url}")
                 print(f"   API key: {self.api_key[:20]}..." if self.api_key else "   API key: None")
 
                 # Use ChatOpenAI for all models when going through LiteLLM
@@ -580,8 +633,26 @@ class DataQueryAgent:
             from langchain_core.messages import SystemMessage
             messages = [SystemMessage(content=self.system_message)] + messages
 
-        # Invoke model
-        response = await self.model.ainvoke(messages)
+        # Use streaming invocation to enable token-level streaming in astream_events
+        # Collect all chunks into a single response
+        from langchain_core.messages import AIMessage, AIMessageChunk
+
+        response_content = ""
+        response_tool_calls = []
+        final_chunk = None
+
+        async for chunk in self.model.astream(messages):
+            final_chunk = chunk
+            if hasattr(chunk, "content") and chunk.content:
+                response_content += chunk.content
+            if hasattr(chunk, "tool_calls") and chunk.tool_calls:
+                response_tool_calls.extend(chunk.tool_calls)
+
+        # Create final response message
+        if response_tool_calls:
+            response = AIMessage(content=response_content, tool_calls=response_tool_calls)
+        else:
+            response = AIMessage(content=response_content)
 
         # Check if agent is calling tools
         if hasattr(response, "tool_calls") and response.tool_calls:

@@ -1,0 +1,20 @@
+{{- if .Values.xsuaa.enabled }}
+apiVersion: services.cloud.sap.com/v1
+kind: ServiceInstance
+metadata:
+  name: slate-xsuaa
+  namespace: {{ .Values.namespace }}
+spec:
+  serviceOfferingName: {{ .Values.xsuaa.serviceOfferingName }}
+  servicePlanName: {{ .Values.xsuaa.servicePlanName }}
+  parameters:
+    xsappname: {{ .Values.xsuaa.xsappname }}
+    tenant-mode: dedicated
+    scopes:
+      {{- toYaml .Values.xsuaa.scopes | nindent 6 }}
+    role-templates:
+      {{- toYaml .Values.xsuaa."role-templates" | nindent 6 }}
+    oauth2-configuration:
+      redirect-uris:
+        - https://{{ .Values.ingress.host }}/**
+{{- end }}

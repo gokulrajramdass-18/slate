@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef, startTransition } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useChatSession, useDeleteChatSession, useNotebook } from "@/lib/hooks/use-api";
 import { chatApi } from "@/lib/api/chat";
@@ -46,6 +46,10 @@ export default function ChatSessionPage() {
   const [optimisticUserMessage, setOptimisticUserMessage] = useState<string | null>(null);
   const [deepResearchEnabled, setDeepResearchEnabled] = useState(false);
   const [noteIds, setNoteIds] = useState<Set<string>>(new Set());
+  const [isAnimating, setIsAnimating] = useState(false);
+
+  // Refs for accumulating streamed text
+  const fullTextRef = useRef("");
 
   const { data: session, refetch } = useChatSession(sessionId);
   const { data: workspace } = useNotebook(session?.notebook_id || "");
@@ -124,8 +128,6 @@ export default function ChatSessionPage() {
         (results) => setStreamingToolResults(results),
         (step) => setStreamingAgentSteps((prev) => [...prev, step])
       );
-
-      console.log('[Chat] Message sent successfully, result:', result?.id, 'content length:', result?.content?.length);
 
       // Notify streaming manager that stream ended
       window.dispatchEvent(new CustomEvent('streaming:end', {

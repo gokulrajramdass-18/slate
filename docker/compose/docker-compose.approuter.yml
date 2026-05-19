@@ -14,17 +14,25 @@ services:
       - API_PORT=5055
       - DATABASE_TYPE=sqlite
       - SQLITE_DB_PATH=/app/data/database.db
-      - MOCK_XSUAA_ENABLED=true
-      - XSUAA_ENABLED=false
+      - XSUAA_ENABLED=true
       - JWT_SECRET_KEY=${JWT_SECRET_KEY:-local-dev-secret-key-change-me}
-      - MOCK_XSUAA_SECRET=${MOCK_XSUAA_SECRET:-local-dev-secret-key-change-me}
-      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-sk-placeholder-not-used}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-sk-ant-placeholder-not-used}
       - LOG_LEVEL=INFO
+      # SAP AI Core credentials for auto-import
+      - AICORE_AUTH_URL=${AICORE_AUTH_URL:-}
+      - AICORE_BASE_URL=${AICORE_BASE_URL:-}
+      - AICORE_CLIENT_ID=${AICORE_CLIENT_ID:-}
+      - AICORE_CLIENT_SECRET=${AICORE_CLIENT_SECRET:-}
+      - AICORE_RESOURCE_GROUP=${AICORE_RESOURCE_GROUP:-default}
+      # Use local SAP AI Core proxy instead of external API
+      - SAP_AI_CORE_PROXY_URL=http://host.docker.internal:5056
     volumes:
       - ../../backend/data:/app/data
     networks:
       - slate-network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5055/api/health"]
       interval: 10s
@@ -36,6 +44,8 @@ services:
     build:
       context: ../../frontend
       dockerfile: ../docker/frontend/Dockerfile
+      args:
+        - NEXT_PUBLIC_XSUAA_ENABLED=true
     container_name: slate-frontend-approuter
     ports:
       - "3000:3000"
@@ -43,7 +53,8 @@ services:
       # Frontend should NOT use API URL when behind AppRouter
       # It will use relative URLs (/api/*) which go through AppRouter
       - NEXT_PUBLIC_API_URL=
-      - NODE_ENV=development
+      - NEXT_PUBLIC_XSUAA_ENABLED=true
+      - NODE_ENV=production
     networks:
       - slate-network
     depends_on:

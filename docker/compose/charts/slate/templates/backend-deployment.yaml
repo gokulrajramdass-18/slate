@@ -1,0 +1,74 @@
+{{- if .Values.backend.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: slate-backend
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: slate-backend
+    component: backend
+spec:
+  replicas: {{ .Values.backend.replicaCount }}
+  selector:
+    matchLabels:
+      app: slate-backend
+  template:
+    metadata:
+      labels:
+        app: slate-backend
+    spec:
+      containers:
+      - name: backend
+        image: "{{ .Values.backend.image.repository }}:{{ .Values.backend.image.tag }}"
+        imagePullPolicy: {{ .Values.backend.image.pullPolicy }}
+        ports:
+        - containerPort: {{ .Values.backend.service.port }}
+          name: http
+        env:
+        - name: XSUAA_ENABLED
+          value: "{{ .Values.backend.env.xsuaaEnabled }}"
+        - name: API_HOST
+          value: "{{ .Values.backend.env.apiHost }}"
+        - name: API_PORT
+          value: "{{ .Values.backend.env.apiPort }}"
+        - name: DATABASE_TYPE
+          value: "{{ .Values.backend.env.databaseType }}"
+        - name: SQLITE_DB_PATH
+          value: "{{ .Values.backend.env.sqliteDbPath }}"
+        - name: LOG_LEVEL
+          value: "{{ .Values.backend.env.logLevel }}"
+        - name: SAP_AI_CORE_API_URL
+          value: "http://slate-sap-ai-core-api:{{ .Values.sapAiCoreApi.service.port }}"
+        # XSUAA credentials injected via service binding
+        - name: VCAP_SERVICES
+          valueFrom:
+            secretKeyRef:
+              name: slate-xsuaa-binding
+              key: VCAP_SERVICES
+              optional: true
+        volumeMounts:
+        - name: data
+          mountPath: {{ .Values.backend.persistence.mountPath }}
+        resources:
+          {{- toYaml .Values.backend.resources | nindent 10 }}
+        livenessProbe:
+          httpGet:
+            path: /api/health
+            port: http
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /api/health
+            port: http
+          initialDelaySeconds: 10
+          periodSeconds: 5
+      volumes:
+      - name: data
+        {{- if .Values.backend.persistence.enabled }}
+        persistentVolumeClaim:
+          claimName: slate-backend-pvc
+        {{- else }}
+        emptyDir: {}
+        {{- end }}
+{{- end }}

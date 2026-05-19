@@ -988,40 +988,12 @@ export default function WorkflowsPage() {
   };
 
   const handleScheduleTemplate = async (template: WorkflowTemplate) => {
-    try {
-      // Get template details
-      const details = await workflowTemplatesApi.get(template.id);
-
-      try {
-        if (details.graph_json) {
-          (details as any).graph = JSON.parse(details.graph_json);
-        }
-      } catch (e) {
-        console.error("Failed to parse graph JSON:", e);
-      }
-
-      setSelectedTemplate(details as any);
-
-      // Initialize parameter values with defaults
-      const defaults: Record<string, any> = {};
-      (details.parameters || []).forEach((param: any) => {
-        if (param.default_value !== undefined) {
-          defaults[param.name] = param.default_value;
-        }
-      });
-      setParameterValues(defaults);
-
-      // Show schedule dialog
-      setScheduleType("daily");
-      setShowScheduleDialog(true);
-    } catch (error) {
-      console.error("Failed to load template details:", error);
-      toast({
-        title: "Error",
-        description: "Failed to load template details",
-        variant: "destructive",
-      });
-    }
+    // Scheduling is handled by TemplateCard component
+    // This is a placeholder for backward compatibility
+    toast({
+      title: "Info",
+      description: "Use the template card's schedule action",
+    });
   };
 
   const handleExecuteTemplate = async (template: WorkflowTemplate) => {
