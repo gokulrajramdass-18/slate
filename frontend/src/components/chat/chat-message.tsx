@@ -190,11 +190,13 @@ export function ChatMessage({ message, isStreaming = false, notebookId }: ChatMe
   const renderMarkdownContent = () => (
     <div ref={contentRef} data-streaming={isStreaming} className="prose prose-sm dark:prose-invert max-w-full leading-7 prose-pre:max-w-full prose-pre:overflow-x-auto prose-table:max-w-full prose-table:overflow-x-auto prose-p:my-3 prose-p:break-words prose-headings:mb-3 prose-headings:mt-4 overflow-hidden">
       {isStreaming ? (
-        // During streaming, show raw text with basic formatting to avoid expensive markdown parsing
-        <pre className="whitespace-pre-wrap font-sans text-[15px] leading-7">
+        // During streaming, show raw text with basic formatting to avoid expensive markdown parsing.
+        // Use a <div> (not <pre>) to avoid inheriting Tailwind Typography's dark <pre> background,
+        // and match the final paragraph styling so there's no visual flash when markdown takes over.
+        <div className="whitespace-pre-wrap font-sans text-[15px] leading-7 bg-transparent text-inherit m-0 p-0">
           {processedContent}
           <span className="inline-block w-2 h-4 ml-1 bg-current animate-pulse" />
-        </pre>
+        </div>
       ) : (
         // After streaming completes, render full markdown
         <ReactMarkdown

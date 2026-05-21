@@ -1446,7 +1446,12 @@ The data shown in the "LIVE DATA FROM SOURCES" section above was fetched in real
 
         return EventSourceResponse(
             enhanced_stream(),
-            ping=5   # Send ping every 5 seconds to keep connection alive
+            ping=5,   # Send ping every 5 seconds to keep connection alive
+            headers={
+                "Cache-Control": "no-cache, no-transform",
+                "X-Accel-Buffering": "no",
+                "Connection": "keep-alive",
+            },
         )
     else:
             # Non-streaming agent response

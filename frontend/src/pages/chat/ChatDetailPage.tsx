@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useCallback, useEffect, useRef, startTransition } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
+import { flushSync } from "react-dom";
 import { useParams, useNavigate } from "react-router-dom";
 import { useChatSession, useDeleteChatSession, useNotebook } from "@/lib/hooks/use-api";
 import { chatApi } from "@/lib/api/chat";
@@ -117,16 +118,16 @@ export default function ChatSessionPage() {
           selected_tool_ids: selectedTools.length > 0 ? selectedTools : undefined,
           selected_source_ids: actualSourceIds.length > 0 ? actualSourceIds : undefined,
         },
-        (chunk) => setStreamingMessage((prev) => prev + chunk),
+        (chunk) => flushSync(() => setStreamingMessage((prev) => prev + chunk)),
         (metadata) => {
           // Update streaming sources from metadata
           if (metadata?.sources) {
-            setStreamingSources(metadata.sources);
+            flushSync(() => setStreamingSources(metadata.sources));
           }
         },
-        (components) => setStreamingUIComponents(components),
-        (results) => setStreamingToolResults(results),
-        (step) => setStreamingAgentSteps((prev) => [...prev, step])
+        (components) => flushSync(() => setStreamingUIComponents(components)),
+        (results) => flushSync(() => setStreamingToolResults(results)),
+        (step) => flushSync(() => setStreamingAgentSteps((prev) => [...prev, step]))
       );
 
       // Notify streaming manager that stream ended

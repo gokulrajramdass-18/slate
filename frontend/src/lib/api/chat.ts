@@ -203,7 +203,7 @@ export const chatApi = {
                     if (data.content) {
                       fullMessage += data.content;
                       // Dispatch custom event for immediate DOM update
-                      console.log('[Chat API] Dispatching chunk event for session:', sessionId);
+                      console.log(`[Chat API ${performance.now().toFixed(0)}ms] CHUNK len=${data.content.length} preview="${data.content.substring(0, 30)}"`);
                       window.dispatchEvent(new CustomEvent('streaming:chunk', {
                         detail: { sessionId, content: data.content }
                       }));
@@ -213,7 +213,7 @@ export const chatApi = {
                   } else if (currentEvent === "agent_step") {
                     if (onAgentStep) {
                       // Dispatch custom event for immediate DOM update
-                      console.log('[Chat API] Dispatching agent_step event for session:', sessionId);
+                      console.log(`[Chat API ${performance.now().toFixed(0)}ms] AGENT_STEP type=${data.step_type} status=${data.status}`);
                       window.dispatchEvent(new CustomEvent('streaming:agent_step', {
                         detail: { sessionId, step: data }
                       }));
