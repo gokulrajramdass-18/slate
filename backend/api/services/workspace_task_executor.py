@@ -9,6 +9,7 @@ Automatically executes tasks in AI-guided workspaces by:
 """
 
 import asyncio
+import json
 import logging
 from datetime import datetime
 from typing import Dict, List, Optional, Set
@@ -255,7 +256,16 @@ class WorkspaceTaskExecutor:
             result = await self._run_task_logic(workspace_id, task)
             logger.info(f"✓ _run_task_logic returned: {result}")
 
-            # Mark as completed and save result
+            # Mark as completed and save result.
+            # `result` is a TEXT column in SQLite — dicts/lists must be JSON-encoded
+            # before binding (sqlite3 only accepts str/int/float/bytes/None).
+            if result is None:
+                result_value = None
+            elif isinstance(result, (dict, list)):
+                result_value = json.dumps(result)
+            else:
+                result_value = str(result)
+
             await repo_execute("""
                 UPDATE workspace_plan_tasks
                 SET status = 'completed',
@@ -265,7 +275,7 @@ class WorkspaceTaskExecutor:
                 WHERE id = :task_id
             """, {
                 "task_id": task_id,
-                "result": result if result else None,
+                "result": result_value,
                 "completed_at": datetime.utcnow().isoformat(),
                 "updated": datetime.utcnow().isoformat()
             })

@@ -34,10 +34,13 @@ class NodeType(str, Enum):
     TEMPLATE = "template"
     DELAY = "delay"
     WEBHOOK = "webhook"
+    EMAIL = "email"             # Send email via configured SMTP
     SNAPSHOT = "snapshot"       # Store data snapshot
     COMPARE = "compare"         # Compare two snapshots
     HANA_TABLE = "hana_table"   # HANA table data source
     API = "api"                 # REST API endpoint with snapshots
+    FOREACH = "foreach"         # Iterate over a list, run a body node per item
+    JQ = "jq"                   # Process / transform JSON with a jq expression
 
 
 class ExecutionStatus(str, Enum):
@@ -71,13 +74,19 @@ class Position(BaseModel):
 class InputFieldDefinition(BaseModel):
     """Definition for a single input field in input nodes."""
     name: str = Field(description="Field name (e.g., 'query', 'user_id')")
-    type: Literal["string", "number", "boolean", "array", "object"] = Field(default="string")
+    type: Literal["string", "number", "boolean", "array", "object", "dropdown"] = Field(default="string")
     required: bool = Field(default=False)
     default_value: Optional[Any] = None
     description: Optional[str] = Field(default=None, description="Help text for users")
     validation: Optional[Dict[str, Any]] = Field(
         default=None,
         description="JSON schema validation rules (e.g., {'minLength': 5})"
+    )
+    # For type=='dropdown': either a list of strings (simple) or a list of {label, value} pairs.
+    # When the user selects an option, only `value` (or the bare string) flows downstream.
+    options: Optional[List[Any]] = Field(
+        default=None,
+        description="Dropdown choices: list of strings, or list of {label, value} objects"
     )
 
 
@@ -187,6 +196,14 @@ class NodeConfig(BaseModel):
     webhook_auth_type: Optional[Literal["none", "bearer", "basic"]] = None
     webhook_auth_token: Optional[str] = None
 
+    # Email node config (uses SMTP settings configured in Settings → SMTP)
+    email_to: Optional[List[str]] = None        # Recipient emails; supports {{var}} per entry
+    email_cc: Optional[List[str]] = None
+    email_bcc: Optional[List[str]] = None
+    email_subject: Optional[str] = None
+    email_body: Optional[str] = None            # HTML body produced by the rich-text editor
+    email_is_html: Optional[bool] = True
+
     # Snapshot node config
     snapshot_mode: Optional[Literal["store", "compare"]] = "store"
     snapshot_label: Optional[str] = None  # 'yesterday', 'today', 'baseline'
@@ -205,9 +222,10 @@ class NodeConfig(BaseModel):
     hana_table_name: Optional[str] = None  # Fully qualified table name (SCHEMA.TABLE)
     hana_query: Optional[str] = None  # Optional custom SQL query (SELECT only)
     hana_where_clause: Optional[str] = None  # WHERE clause filter
-    hana_limit: Optional[int] = 100  # Row limit
+    hana_limit: Optional[int] = 10000  # Row limit
     hana_columns: Optional[List[str]] = None  # Specific columns to select
     conditions: Optional[List[Dict[str, Any]]] = None  # Filter conditions: [{column: str, operator: str, value: str}]
+    hana_fail_on_empty: Optional[bool] = False  # Raise if query returns 0 rows
 
     # API node config
     api_endpoint: Optional[str] = None  # Full URL
@@ -221,6 +239,36 @@ class NodeConfig(BaseModel):
     api_timeout: Optional[int] = 30  # Request timeout in seconds
     api_connection_id: Optional[str] = None  # Reference to api_connections table (optional)
     api_path: Optional[str] = None  # Path to append to connection endpoint (e.g., "/users", "/todos")
+    api_fail_on_empty: Optional[bool] = False  # Raise if extracted data is empty
+    api_empty_check_path: Optional[str] = None  # JSONPath to check for emptiness; falls back to api_response_data_path
+    api_expected_status_codes: Optional[List[int]] = None  # If set, only these status codes are accepted
+
+    # ForEach node config
+    foreach_source: Optional[str] = None  # Template like "{{hana-NODE-ID.rows}}" pointing to a list
+    foreach_body_node_id: Optional[str] = None  # ID of the node to execute once per item
+    foreach_on_error: Optional[Literal["continue", "fail"]] = "continue"
+    foreach_max_items: Optional[int] = 1000  # Cap on rows iterated
+
+    # JQ node config
+    jq_expression: Optional[str] = Field(
+        default=None,
+        description="jq expression applied to the input JSON (e.g., '.users | map(.name)')"
+    )
+    jq_input_source: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional template selecting the input JSON. Supports {{node-id.field}}; "
+            "if omitted, the most recent upstream node output is used."
+        )
+    )
+    jq_output_mode: Optional[Literal["first", "all"]] = Field(
+        default="first",
+        description="'first' returns a single value; 'all' returns the full list of jq results"
+    )
+    jq_on_error: Optional[Literal["fail", "null"]] = Field(
+        default="fail",
+        description="'fail' raises on jq errors; 'null' returns null and continues"
+    )
 
 
 class WorkflowNode(BaseModel):
@@ -463,6 +511,7 @@ class WorkflowSchedule(ObjectModel):
     enabled: bool = True
     last_run_at: Optional[datetime] = None
     next_run_at: Optional[datetime] = None
+    input_data: Optional[Dict[str, Any]] = None
 
     @classmethod
     async def get_by_workflow(cls, workflow_id: str):
@@ -493,6 +542,13 @@ class WorkflowSchedule(ObjectModel):
         if row.get("event_trigger"):
             event_trigger = EventTrigger(**json.loads(row["event_trigger"]))
 
+        input_data = None
+        if row.get("input_data"):
+            try:
+                input_data = json.loads(row["input_data"])
+            except (TypeError, json.JSONDecodeError):
+                input_data = None
+
         return cls(
             id=row["id"],
             workflow_id=row["workflow_id"],
@@ -503,6 +559,7 @@ class WorkflowSchedule(ObjectModel):
             enabled=bool(row["enabled"]),
             last_run_at=row.get("last_run_at"),
             next_run_at=row.get("next_run_at"),
+            input_data=input_data,
             created=row.get("created_at"),
             updated=row.get("updated_at"),
         )
@@ -527,6 +584,7 @@ class WorkflowSchedule(ObjectModel):
                 "enabled": self.enabled,
                 "last_run_at": self.last_run_at.isoformat() if self.last_run_at else None,
                 "next_run_at": self.next_run_at.isoformat() if self.next_run_at else None,
+                "input_data": json.dumps(self.input_data) if self.input_data else None,
             }
 
             # Check if exists

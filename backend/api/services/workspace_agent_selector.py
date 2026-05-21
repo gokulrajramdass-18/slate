@@ -40,9 +40,10 @@ class WorkspaceAgentSelector:
         )
 
         # Get teams associated with this workspace
+        # Note: agent_teams uses `goal` (not `description`) — alias it for consumer compatibility.
         teams = await repo_query(
             """
-            SELECT id, name, description, config
+            SELECT id, name, goal AS description, config
             FROM agent_teams
             WHERE notebook_id = :workspace_id AND status = 'active'
             ORDER BY created ASC

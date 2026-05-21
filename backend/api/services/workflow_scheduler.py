@@ -212,10 +212,16 @@ class WorkflowScheduler:
                 print(f"⚠️ Workflow {workflow_id} is not active, skipping execution")
                 return
 
-            # Create engine and execute
+            # Load schedule to pull stored user-provided input_data
+            schedule = await WorkflowSchedule.get(schedule_id)
+            stored_input = (schedule.input_data or {}) if schedule else {}
+
+            # Create engine and execute. User-provided values flow first; trigger
+            # metadata is appended (and overrides) so callers can detect it.
             engine = WorkflowEngine(workflow)
             execution = await engine.execute(
                 input_data={
+                    **stored_input,
                     "triggered_by": "cron",
                     "schedule_id": schedule_id,
                     "timestamp": datetime.utcnow().isoformat(),
@@ -223,7 +229,6 @@ class WorkflowScheduler:
             )
 
             # Update schedule last_run_at
-            schedule = await WorkflowSchedule.get(schedule_id)
             if schedule:
                 schedule.last_run_at = datetime.utcnow()
 

@@ -5,11 +5,133 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Plus, Trash2 } from 'lucide-react';
-import type { InputFieldDefinition } from '@/lib/stores/graph-store';
+import type { DropdownOption, InputFieldDefinition } from '@/lib/stores/graph-store';
 
 interface InputFieldVisualEditorProps {
   fields: InputFieldDefinition[];
   onChange: (fields: InputFieldDefinition[]) => void;
+}
+
+type DropdownOptionMode = 'simple' | 'keyvalue';
+
+function detectDropdownMode(options: Array<string | DropdownOption> | undefined): DropdownOptionMode {
+  if (!options || options.length === 0) return 'simple';
+  return options.some((o) => typeof o === 'object' && o !== null) ? 'keyvalue' : 'simple';
+}
+
+function DropdownOptionsEditor({
+  options,
+  onChange,
+}: {
+  options: Array<string | DropdownOption>;
+  onChange: (next: Array<string | DropdownOption>) => void;
+}) {
+  const mode = detectDropdownMode(options);
+
+  const setMode = (next: DropdownOptionMode) => {
+    if (next === mode) return;
+    if (next === 'simple') {
+      onChange(options.map((o) => (typeof o === 'string' ? o : String(o.value ?? ''))));
+    } else {
+      onChange(
+        options.map((o) =>
+          typeof o === 'string'
+            ? { label: o, value: o }
+            : { label: o.label ?? '', value: o.value ?? '' },
+        ),
+      );
+    }
+  };
+
+  const addOption = () => {
+    if (mode === 'simple') {
+      onChange([...options, '']);
+    } else {
+      onChange([...options, { label: '', value: '' }]);
+    }
+  };
+
+  const removeOption = (idx: number) => {
+    onChange(options.filter((_, i) => i !== idx));
+  };
+
+  const updateOption = (idx: number, value: string | DropdownOption) => {
+    const next = [...options];
+    next[idx] = value;
+    onChange(next);
+  };
+
+  return (
+    <div className="space-y-3 rounded-md border bg-muted/30 p-3">
+      <div className="flex items-center justify-between">
+        <Label className="text-xs">Options</Label>
+        <Select value={mode} onValueChange={(v) => setMode(v as DropdownOptionMode)}>
+          <SelectTrigger className="h-7 w-[140px] text-xs">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="simple">Simple list</SelectItem>
+            <SelectItem value="keyvalue">Key / value</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+
+      {options.length === 0 ? (
+        <p className="text-xs text-muted-foreground">No options yet.</p>
+      ) : (
+        <div className="space-y-2">
+          {options.map((opt, idx) =>
+            mode === 'simple' ? (
+              <div key={idx} className="flex items-center gap-2">
+                <Input
+                  value={typeof opt === 'string' ? opt : String(opt.value ?? '')}
+                  onChange={(e) => updateOption(idx, e.target.value)}
+                  placeholder="Value"
+                  className="h-8 text-xs"
+                />
+                <Button size="icon" variant="ghost" onClick={() => removeOption(idx)} className="h-7 w-7">
+                  <Trash2 className="h-3.5 w-3.5 text-destructive" />
+                </Button>
+              </div>
+            ) : (
+              <div key={idx} className="flex items-center gap-2">
+                <Input
+                  value={typeof opt === 'object' ? opt.label : ''}
+                  onChange={(e) =>
+                    updateOption(idx, {
+                      label: e.target.value,
+                      value: typeof opt === 'object' ? opt.value : '',
+                    })
+                  }
+                  placeholder="Label (shown to user)"
+                  className="h-8 text-xs"
+                />
+                <Input
+                  value={typeof opt === 'object' ? String(opt.value ?? '') : ''}
+                  onChange={(e) =>
+                    updateOption(idx, {
+                      label: typeof opt === 'object' ? opt.label : '',
+                      value: e.target.value,
+                    })
+                  }
+                  placeholder="Value (sent downstream)"
+                  className="h-8 text-xs"
+                />
+                <Button size="icon" variant="ghost" onClick={() => removeOption(idx)} className="h-7 w-7">
+                  <Trash2 className="h-3.5 w-3.5 text-destructive" />
+                </Button>
+              </div>
+            ),
+          )}
+        </div>
+      )}
+
+      <Button size="sm" variant="outline" onClick={addOption} className="h-7 text-xs">
+        <Plus className="h-3 w-3 mr-1" />
+        Add Option
+      </Button>
+    </div>
+  );
 }
 
 export function InputFieldVisualEditor({ fields, onChange }: InputFieldVisualEditorProps) {
@@ -75,7 +197,13 @@ export function InputFieldVisualEditor({ fields, onChange }: InputFieldVisualEdi
                   <Label htmlFor={`field-type-${index}`}>Type</Label>
                   <Select
                     value={field.type}
-                    onValueChange={(value) => updateField(index, { type: value as any })}
+                    onValueChange={(value) => {
+                      const updates: Partial<InputFieldDefinition> = { type: value as any };
+                      if (value === 'dropdown' && (!field.options || field.options.length === 0)) {
+                        updates.options = [];
+                      }
+                      updateField(index, updates);
+                    }}
                   >
                     <SelectTrigger id={`field-type-${index}`}>
                       <SelectValue />
@@ -86,6 +214,7 @@ export function InputFieldVisualEditor({ fields, onChange }: InputFieldVisualEdi
                       <SelectItem value="boolean">Boolean</SelectItem>
                       <SelectItem value="array">Array</SelectItem>
                       <SelectItem value="object">Object</SelectItem>
+                      <SelectItem value="dropdown">Dropdown</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -100,6 +229,13 @@ export function InputFieldVisualEditor({ fields, onChange }: InputFieldVisualEdi
                   />
                 </div>
               </div>
+
+              {field.type === 'dropdown' && (
+                <DropdownOptionsEditor
+                  options={field.options || []}
+                  onChange={(options) => updateField(index, { options })}
+                />
+              )}
 
               <div className="space-y-2">
                 <Label htmlFor={`field-desc-${index}`}>Description</Label>

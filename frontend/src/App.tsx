@@ -169,6 +169,9 @@ const SettingsPromptsPage = lazy(
 const SettingsRolesPage = lazy(
   () => import("@/pages/settings/SettingsRolesPage")
 );
+const SettingsLookupsPage = lazy(
+  () => import("@/pages/settings/SettingsLookupsPage")
+);
 const SettingsSkillsPage = lazy(
   () => import("@/pages/settings/SettingsSkillsPage")
 );
@@ -398,6 +401,7 @@ export default function App() {
           <Route path="observability" element={<SettingsObservabilityPage />} />
           <Route path="prompts" element={<SettingsPromptsPage />} />
           <Route path="roles" element={<SettingsRolesPage />} />
+          <Route path="lookups" element={<SettingsLookupsPage />} />
           <Route path="skills" element={<SettingsSkillsPage />} />
           <Route path="smtp" element={<SettingsSmtpPage />} />
           <Route path="tools" element={<SettingsToolsPage />} />

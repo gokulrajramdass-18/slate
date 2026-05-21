@@ -401,16 +401,20 @@ class IntelligentAgent:
         # Apply tool filtering if enabled
         if self.enable_tool_filtering:
             import asyncio
-            from deep_agents_integration.tool_filtering import get_plan_mode_filter
-
-            filter_instance = get_plan_mode_filter()
-            filter_result = asyncio.run(
-                filter_instance.filter_tools_for_query(
-                    query=self.task_description,
-                    available_tools=tools
+            try:
+                from deep_agents_integration.tool_filtering import get_plan_mode_filter
+            except ImportError as exc:
+                print(f"⚠️ Tool filtering unavailable ({exc}); using all {len(tools)} tools")
+                self.tools = list(tools)
+            else:
+                filter_instance = get_plan_mode_filter()
+                filter_result = asyncio.run(
+                    filter_instance.filter_tools_for_query(
+                        query=self.task_description,
+                        available_tools=tools
+                    )
                 )
-            )
-            self.tools = [t for t in tools if t.name in filter_result.selected_tool_ids]
+                self.tools = [t for t in tools if t.name in filter_result.selected_tool_ids]
         else:
             self.tools = tools
 

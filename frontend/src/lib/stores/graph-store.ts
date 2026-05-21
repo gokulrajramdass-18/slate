@@ -11,18 +11,25 @@ import type { Node, Edge, Connection } from '@xyflow/react';
 // Types
 // ============================================================================
 
+export interface DropdownOption {
+  label: string;
+  value: any;
+}
+
 export interface InputFieldDefinition {
   name: string;
-  type: 'string' | 'number' | 'boolean' | 'array' | 'object';
+  type: 'string' | 'number' | 'boolean' | 'array' | 'object' | 'dropdown';
   required: boolean;
   default_value?: any;
   description?: string;
   validation?: Record<string, any>;
+  /** For type='dropdown': list of strings (simple) or {label, value} pairs. */
+  options?: Array<string | DropdownOption>;
 }
 
 export interface NodeData {
   label: string;
-  type: 'input' | 'llm' | 'tool' | 'conditional' | 'agent' | 'output' | 'notebook_generator' | 'microsite_generator' | 'api';
+  type: 'input' | 'llm' | 'tool' | 'conditional' | 'agent' | 'output' | 'notebook_generator' | 'microsite_generator' | 'api' | 'human_approval' | 'workspace' | 'template' | 'delay' | 'webhook' | 'email' | 'snapshot' | 'compare' | 'hana_table' | 'foreach' | 'jq';
   config: {
     // LLM config
     model_name?: string;
@@ -78,6 +85,18 @@ export interface NodeData {
     auto_create_notebook?: boolean;
     auto_notebook_description?: string;
     fail_on_moderation_block?: boolean;
+
+    // ForEach config
+    foreach_source?: string;
+    foreach_body_node_id?: string;
+    foreach_on_error?: 'continue' | 'fail';
+    foreach_max_items?: number;
+
+    // JQ config
+    jq_expression?: string;
+    jq_input_source?: string;
+    jq_output_mode?: 'first' | 'all';
+    jq_on_error?: 'fail' | 'null';
   };
   // Execution state
   status?: 'pending' | 'running' | 'completed' | 'failed';

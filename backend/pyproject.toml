@@ -40,6 +40,7 @@ dependencies = [
     "beautifulsoup4>=4.12.0",  # HTML parsing
     "ddgs>=7.0.0",  # DuckDuckGo web search (formerly duckduckgo-search)
     "python-a2a>=0.5.0",  # Agent-to-Agent protocol
+    "jq>=1.6.0",  # jq JSON processor for the JQ workflow node
 ]
 
 [project.optional-dependencies]

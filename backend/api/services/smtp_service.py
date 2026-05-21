@@ -5,7 +5,7 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from typing import Optional
-from open_notebook.config import get_database
+from open_notebook.database.repository import repo_query
 
 
 class SMTPService:
@@ -14,9 +14,8 @@ class SMTPService:
     @staticmethod
     async def get_config() -> Optional[dict]:
         """Get SMTP configuration from database"""
-        db = get_database()
         query = "SELECT * FROM smtp_config WHERE id = 'default' AND is_active = 1"
-        results = await db.query(query)
+        results = await repo_query(query)
 
         if not results:
             return None
@@ -37,44 +36,52 @@ class SMTPService:
         Returns:
             True if email sent successfully, False otherwise
         """
-        config = await SMTPService.get_config()
-
-        if not config:
-            print("⚠️ SMTP not configured. Cannot send email.")
-            return False
-
         try:
-            # Create message
-            msg = MIMEMultipart("alternative")
-            msg["From"] = f"{config.get('smtp_from_name', 'Open Notebook')} <{config['smtp_from_email']}>"
-            msg["To"] = to_email
-            msg["Subject"] = subject
-
-            # Attach body
-            mime_type = "html" if is_html else "plain"
-            msg.attach(MIMEText(body, mime_type))
-
-            # Connect to SMTP server
-            if config.get("smtp_use_ssl"):
-                server = smtplib.SMTP_SSL(config["smtp_host"], config["smtp_port"])
-            else:
-                server = smtplib.SMTP(config["smtp_host"], config["smtp_port"])
-                if config.get("smtp_use_tls"):
-                    server.starttls()
-
-            # Login
-            server.login(config["smtp_username"], config["smtp_password"])
-
-            # Send email
-            server.send_message(msg)
-            server.quit()
-
-            print(f"✅ Email sent to {to_email}")
+            await SMTPService.send_email_strict(to_email, subject, body, is_html)
             return True
-
         except Exception as e:
             print(f"❌ Failed to send email: {e}")
             return False
+
+    @staticmethod
+    async def send_email_strict(to_email: str, subject: str, body: str, is_html: bool = False) -> None:
+        """Send email and raise the underlying exception on failure.
+
+        Use this when callers need the real reason for failure (e.g. invalid
+        recipient, auth failure, connection refused) instead of a generic bool.
+        """
+        config = await SMTPService.get_config()
+
+        if not config:
+            raise RuntimeError("SMTP not configured. Add SMTP settings under Settings → SMTP.")
+
+        # Create message
+        msg = MIMEMultipart("alternative")
+        msg["From"] = f"{config.get('smtp_from_name', 'Open Notebook')} <{config['smtp_from_email']}>"
+        msg["To"] = to_email
+        msg["Subject"] = subject
+
+        mime_type = "html" if is_html else "plain"
+        msg.attach(MIMEText(body, mime_type))
+
+        # Connect
+        if config.get("smtp_use_ssl"):
+            server = smtplib.SMTP_SSL(config["smtp_host"], config["smtp_port"])
+        else:
+            server = smtplib.SMTP(config["smtp_host"], config["smtp_port"])
+            if config.get("smtp_use_tls"):
+                server.starttls()
+
+        try:
+            server.login(config["smtp_username"], config["smtp_password"])
+            server.send_message(msg)
+        finally:
+            try:
+                server.quit()
+            except Exception:
+                pass
+
+        print(f"✅ Email sent to {to_email}")
 
     @staticmethod
     async def send_otp_email(to_email: str, otp_code: str, microsite_title: str) -> bool:

@@ -7,11 +7,51 @@ Converts WorkflowGraph → LangGraph StateGraph → Sequential execution
 
 import json
 from datetime import datetime
-from typing import Dict, Any, Optional, AsyncGenerator
+from typing import Dict, Any, Optional, AsyncGenerator, Annotated
 from uuid import uuid4
 
 from langgraph.graph import StateGraph, END
 from pydantic import BaseModel, Field
+
+
+def _last_write_wins(_old, new):
+    """LangGraph reducer: take the latest write when parallel branches update the same key."""
+    return new
+
+
+def _max_int(old, new):
+    """LangGraph reducer: take the largest integer when parallel branches update the same key."""
+    if old is None:
+        return new
+    if new is None:
+        return old
+    return max(old, new)
+
+
+def _merge_dicts(old, new):
+    """LangGraph reducer: shallow-merge dicts when parallel branches each contribute keys."""
+    if not old:
+        return new or {}
+    if not new:
+        return old
+    merged = dict(old)
+    merged.update(new)
+    return merged
+
+
+def _append_unique(old, new):
+    """LangGraph reducer: append new items to a list, skipping duplicates."""
+    old_list = list(old or [])
+    if new is None:
+        return old_list
+    if isinstance(new, list):
+        for item in new:
+            if item not in old_list:
+                old_list.append(item)
+    else:
+        if new not in old_list:
+            old_list.append(new)
+    return old_list
 
 from open_notebook.domain.workflow import (
     Workflow,
@@ -49,33 +89,37 @@ class WorkflowState(BaseModel):
     class Config:
         arbitrary_types_allowed = True
 
-    # Current execution state
-    current_node_id: Optional[str] = None
-    prev_node_id: Optional[str] = None
-    next_node_id: Optional[str] = None
+    # Current execution state (parallel-safe via reducers — concurrent branches
+    # may all write these, so LangGraph would otherwise raise INVALID_CONCURRENT_GRAPH_UPDATE)
+    current_node_id: Annotated[Optional[str], _last_write_wins] = None
+    prev_node_id: Annotated[Optional[str], _last_write_wins] = None
+    next_node_id: Annotated[Optional[str], _last_write_wins] = None
 
-    # Node outputs
-    node_outputs: Dict[str, Any] = Field(default_factory=dict)
+    # Node outputs — parallel branches each write their own node's key, so merge
+    node_outputs: Annotated[Dict[str, Any], _merge_dicts] = Field(default_factory=dict)
 
     # Input/output
     input_data: Dict[str, Any] = Field(default_factory=dict)
-    final_output: Optional[Any] = None
+    final_output: Annotated[Optional[Any], _last_write_wins] = None
 
-    # Execution tracking
-    visited_nodes: list[str] = Field(default_factory=list)
-    iteration: int = 0
+    # Execution tracking — visited list grows, iteration counts up
+    visited_nodes: Annotated[list[str], _append_unique] = Field(default_factory=list)
+    iteration: Annotated[int, _max_int] = 0
     max_iterations: int = 50  # Safety limit
 
     # Workflow and execution IDs for approval tracking
     workflow_id: Optional[str] = None
     execution_id: Optional[str] = None
+    user_id: Optional[str] = None
+    username: Optional[str] = None
+    user_email: Optional[str] = None
 
     # Pause tracking (for human approval nodes)
-    paused: bool = False
-    approval_id: Optional[str] = None
+    paused: Annotated[bool, _last_write_wins] = False
+    approval_id: Annotated[Optional[str], _last_write_wins] = None
 
     # Error tracking
-    error: Optional[str] = None
+    error: Annotated[Optional[str], _last_write_wins] = None
 
 
 # ============================================================================
@@ -113,6 +157,48 @@ class WorkflowEngine:
 
         workflow_state = StateGraph(WorkflowState)
 
+        # Pre-compute ForEach mapping. The ForEach node has two source handles:
+        #   - "each": fires once per item (consumed inline by ForEachNodeExecutor)
+        #   - "done": fires once after all items are processed (the LangGraph successor)
+        # We skip every node reachable from the `each` handle at compile time so
+        # LangGraph never tries to run them as normal successors. They're invoked
+        # in-process by the ForEach executor instead.
+        each_chain_ids: set[str] = set()              # nodes reachable only via the each-chain
+        foreach_done_target: Dict[str, Optional[str]] = {}  # foreach_id -> node connected via "done" handle (or None for END)
+        for fnode in self.workflow.graph.nodes:
+            if fnode.type == NodeType.FOREACH:
+                # Walk the each-chain
+                each_start = None
+                for e in self.workflow.graph.edges:
+                    if e.source == fnode.id and e.sourceHandle == "each":
+                        each_start = e.target
+                        break
+                    if e.source == fnode.id and e.sourceHandle is None and each_start is None:
+                        # Backwards compat: if no handle specified, treat as each
+                        each_start = e.target
+                if each_start:
+                    cursor = each_start
+                    seen: set = set()
+                    while cursor and cursor not in seen and cursor != fnode.id:
+                        seen.add(cursor)
+                        each_chain_ids.add(cursor)
+                        next_id = None
+                        for e in self.workflow.graph.edges:
+                            if e.source == cursor:
+                                next_id = e.target
+                                break
+                        cursor = next_id
+                    print(f"[WorkflowEngine._build_langgraph] ForEach {fnode.id} each-chain: {seen}")
+
+                # Find the done target
+                done_target = None
+                for e in self.workflow.graph.edges:
+                    if e.source == fnode.id and e.sourceHandle == "done":
+                        done_target = e.target
+                        break
+                foreach_done_target[fnode.id] = done_target
+                print(f"[WorkflowEngine._build_langgraph] ForEach {fnode.id} done target: {done_target}")
+
         # Add nodes
         for node in self.workflow.graph.nodes:
             print(f"[WorkflowEngine._build_langgraph] Adding node: {node.id} (type: {node.type})")
@@ -128,18 +214,60 @@ class WorkflowEngine:
         # Set entry point
         workflow_state.set_entry_point(self.workflow.graph.entry_node_id)
 
-        # Add edges
+        # Group regular edges by source so a single node with multiple
+        # outgoing edges (parallel fan-out) gets one combined router.
+        regular_edges_by_source: Dict[str, list] = {}
         for edge in self.workflow.graph.edges:
-            # Check if source is a conditional node
             source_node = self._get_node_by_id(edge.source)
 
             if source_node and source_node.type == NodeType.CONDITIONAL:
-                # Conditional edge - add via conditional edges
-                # Will be routed in _should_continue
                 continue
+            if source_node and source_node.type == NodeType.FOREACH and edge.sourceHandle == "each":
+                print(f"[WorkflowEngine._build_langgraph] Skipping ForEach->each edge {edge.source}->{edge.target} (each-chain runs inline)")
+                continue
+            if source_node and source_node.type == NodeType.FOREACH and edge.sourceHandle == "done":
+                continue
+            if source_node and source_node.type == NodeType.FOREACH and edge.sourceHandle is None and edge.target in each_chain_ids:
+                print(f"[WorkflowEngine._build_langgraph] Skipping ForEach->each (legacy unhandled) edge {edge.source}->{edge.target}")
+                continue
+            if edge.source in each_chain_ids:
+                print(f"[WorkflowEngine._build_langgraph] Skipping each-chain internal edge {edge.source}->{edge.target}")
+                continue
+
+            regular_edges_by_source.setdefault(edge.source, []).append(edge.target)
+
+        # Each grouped source becomes a guarded conditional router so that a
+        # failed node short-circuits to END instead of feeding the next node.
+        for source_id, targets in regular_edges_by_source.items():
+            unique_targets = list(dict.fromkeys(targets))  # preserve order, dedupe
+
+            def _route(state, _tgts=unique_targets):
+                if getattr(state, "error", None):
+                    return END
+                # Single target -> string; multiple targets -> list (parallel)
+                return _tgts[0] if len(_tgts) == 1 else _tgts
+
+            mapping = {t: t for t in unique_targets}
+            mapping[END] = END
+            workflow_state.add_conditional_edges(source_id, _route, mapping)
+
+        # Add ForEach -> done-target successor edges (guarded the same way)
+        for foreach_id, done_target in foreach_done_target.items():
+            if done_target:
+                workflow_state.add_conditional_edges(
+                    foreach_id,
+                    lambda state, tgt=done_target: END if getattr(state, "error", None) else tgt,
+                    {done_target: done_target, END: END},
+                )
+                print(f"[WorkflowEngine._build_langgraph] Added ForEach->done edge {foreach_id}->{done_target}")
             else:
-                # Regular edge
-                workflow_state.add_edge(edge.source, edge.target)
+                workflow_state.add_edge(foreach_id, END)
+                print(f"[WorkflowEngine._build_langgraph] Added ForEach->END edge for {foreach_id} (no done handle wired)")
+
+        # Each-chain nodes still need a terminal edge so LangGraph can compile
+        for chain_id in each_chain_ids:
+            workflow_state.add_edge(chain_id, END)
+            print(f"[WorkflowEngine._build_langgraph] Added each-chain->END edge for {chain_id} (unreachable normally; defensive)")
 
         # Add conditional routing for conditional nodes
         conditional_nodes = [
@@ -168,11 +296,19 @@ class WorkflowEngine:
                 )
             elif true_edge:
                 # Only true edge exists
-                workflow_state.add_edge(node.id, true_edge.target)
+                workflow_state.add_conditional_edges(
+                    node.id,
+                    lambda state, tgt=true_edge.target: END if getattr(state, "error", None) else tgt,
+                    {true_edge.target: true_edge.target, END: END},
+                )
                 print(f"[WorkflowEngine]   Added single edge (true only)")
             elif false_edge:
                 # Only false edge exists
-                workflow_state.add_edge(node.id, false_edge.target)
+                workflow_state.add_conditional_edges(
+                    node.id,
+                    lambda state, tgt=false_edge.target: END if getattr(state, "error", None) else tgt,
+                    {false_edge.target: false_edge.target, END: END},
+                )
                 print(f"[WorkflowEngine]   Added single edge (false only)")
 
         # Add end condition for output nodes
@@ -275,6 +411,9 @@ class WorkflowEngine:
         try:
             # Execute node
             print(f"[WorkflowEngine._execute_node] Calling executor.execute for {node_id}")
+            # Make execution tracker available to executors (e.g. ForEach uses it
+            # to record aggregated node_states for inline chain nodes).
+            executor._execution = self._execution
             result = await executor.execute(state.dict())
             print(f"[WorkflowEngine._execute_node] Executor completed for {node_id}, result keys: {result.keys()}")
 
@@ -339,7 +478,10 @@ class WorkflowEngine:
     async def execute(
         self,
         input_data: Optional[Dict[str, Any]] = None,
-        stream: bool = False
+        stream: bool = False,
+        user_id: Optional[str] = None,
+        username: Optional[str] = None,
+        user_email: Optional[str] = None,
     ) -> WorkflowExecution:
         """
         Execute workflow sequentially.
@@ -377,6 +519,9 @@ class WorkflowEngine:
             input_data=input_data or {},
             workflow_id=self.workflow.id,
             execution_id=self._execution.id,
+            user_id=user_id or self.workflow.created_by,
+            username=username,
+            user_email=user_email,
         )
         print(f"[WorkflowEngine] Entry node: {self.workflow.graph.entry_node_id}")
         print(f"[WorkflowEngine] Starting execution...")
@@ -461,7 +606,10 @@ class WorkflowEngine:
 
     async def execute_streaming(
         self,
-        input_data: Optional[Dict[str, Any]] = None
+        input_data: Optional[Dict[str, Any]] = None,
+        user_id: Optional[str] = None,
+        username: Optional[str] = None,
+        user_email: Optional[str] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Execute workflow with streaming updates.
@@ -497,6 +645,9 @@ class WorkflowEngine:
             input_data=input_data or {},
             workflow_id=self.workflow.id,
             execution_id=self._execution.id,
+            user_id=user_id or self.workflow.created_by,
+            username=username,
+            user_email=user_email,
         )
 
         try:

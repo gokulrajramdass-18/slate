@@ -23,6 +23,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Loader2, CheckCircle, XCircle, Clock, X, Eye, FileText, ExternalLink, BookOpen, Globe, AlertTriangle } from 'lucide-react';
 import { useGraphStore } from '@/lib/stores/graph-store';
 import type { WorkflowExecution } from '@/lib/api/workflows';
+import { cn } from '@/lib/utils';
 
 // ============================================================================
 // Execution Overlay Component
@@ -390,18 +391,32 @@ function ExecutionDetailsDialog({
           {/* Node Outputs Tab */}
           <TabsContent value="nodes" className="space-y-4">
             <div className="grid grid-cols-4 gap-2">
-              {nodeEntries.map(([nodeId]) => (
-                <Button
-                  key={nodeId}
-                  variant={selectedNode === nodeId ? 'default' : 'outline'}
-                  size="sm"
-                  onClick={() => setSelectedNode(nodeId)}
-                  className="justify-start"
-                >
-                  <FileText className="h-3 w-3 mr-2" />
-                  {nodeId.split('-')[0]}
-                </Button>
-              ))}
+              {nodeEntries.map(([nodeId, nodeState]) => {
+                const typeLabel = nodeId.split('-')[0];
+                const idSuffix = nodeId.length > 8 ? nodeId.slice(-4) : '';
+                const status = nodeState.status;
+                const isSelected = selectedNode === nodeId;
+                const failed = status === 'failed';
+                return (
+                  <Button
+                    key={nodeId}
+                    variant={isSelected ? 'default' : 'outline'}
+                    size="sm"
+                    onClick={() => setSelectedNode(nodeId)}
+                    className={cn(
+                      'justify-start',
+                      !isSelected && failed && 'border-destructive/60 text-destructive hover:text-destructive',
+                    )}
+                    title={`${nodeId} · ${status}`}
+                  >
+                    <FileText className="h-3 w-3 mr-2 shrink-0" />
+                    <span className="truncate">{typeLabel}</span>
+                    {idSuffix && (
+                      <span className="ml-1 text-[10px] font-mono opacity-60">…{idSuffix}</span>
+                    )}
+                  </Button>
+                );
+              })}
             </div>
 
             {selectedNode && nodeStates[selectedNode] && (

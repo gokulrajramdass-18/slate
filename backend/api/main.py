@@ -17,7 +17,7 @@ from fastapi.exceptions import RequestValidationError
 
 from api.middleware import OAuthRateLimitMiddleware, OAuthAuditMiddleware
 from api.models import ErrorResponse, HealthCheckResponse
-from api.routers import notebooks, sources, database, dashboard, chat, chat_settings, source_chat, auth, models, embedding, credentials, sap_ai_core_sdk_import, sap_ai_core_proxy, microsites, microsite_chat, smtp, notes, search, hana_connections, api_connections, deep_research, charts, files, tools, agents, agent_memory, agent_tools, agent_skills, mcp_servers, agent_prompts, system_prompts, user_query_prompts, standalone_agents, workflows, bookmarks, graph, mcp_oauth, workspace_guided, workspace_tasks, folders, a2a, a2a_remote, users, roles, resource_shares, entities, entity_relationships, communities, autonomous_orchestration, actions, orchestration_actions, oauth, workspace_templates, orchestration_schedules, workflow_templates, workflow_approvals, template_executions, notifications, external_notifications, api_keys, presentations, workflow_snapshots, documents, daily_brief, agent_evaluations, workspace_documents, observability_settings
+from api.routers import notebooks, sources, database, dashboard, chat, chat_settings, source_chat, auth, models, embedding, credentials, sap_ai_core_sdk_import, sap_ai_core_proxy, microsites, microsite_chat, smtp, notes, search, hana_connections, api_connections, deep_research, charts, files, tools, agents, agent_memory, agent_tools, agent_skills, mcp_servers, agent_prompts, system_prompts, user_query_prompts, standalone_agents, workflows, bookmarks, graph, mcp_oauth, workspace_guided, workspace_tasks, folders, a2a, a2a_remote, users, roles, resource_shares, entities, entity_relationships, communities, autonomous_orchestration, actions, orchestration_actions, oauth, workspace_templates, orchestration_schedules, workflow_templates, workflow_approvals, template_executions, notifications, external_notifications, api_keys, presentations, workflow_snapshots, documents, daily_brief, agent_evaluations, workspace_documents, observability_settings, settings_lookups
 from api.services.database_service import get_database_service
 from open_notebook.database.interface import ConnectionConfig, DatabaseError
 from open_notebook.database.repository import init_database
@@ -474,6 +474,7 @@ app.include_router(database.router)
 app.include_router(dashboard.router)  # Analytics dashboard
 app.include_router(daily_brief.router)  # Daily brief with AI summaries
 app.include_router(observability_settings.router)  # Observability configuration (admin)
+app.include_router(settings_lookups.router)  # Admin-managed lookup lists for configurable dropdowns
 app.include_router(chat.router)
 app.include_router(chat_settings.router)
 app.include_router(deep_research.router)  # Deep research mode

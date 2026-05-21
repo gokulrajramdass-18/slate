@@ -321,6 +321,36 @@ export function HanaTablePropertyPanel({ selectedNode, handleUpdate }: HanaTable
         </div>
       )}
 
+      {/* Row Limit */}
+      {selectedTable && (
+        <div className="space-y-2 pt-2 border-t">
+          <Label htmlFor="hana-limit">Row Limit</Label>
+          <input
+            id="hana-limit"
+            type="number"
+            min={1}
+            max={1000000}
+            value={selectedNode.data.config.hana_limit ?? 10000}
+            onChange={(e) => {
+              const raw = e.target.value;
+              if (raw === "") {
+                handleUpdate("hana_limit", 10000);
+                return;
+              }
+              const parsed = parseInt(raw, 10);
+              if (!Number.isNaN(parsed) && parsed > 0) {
+                handleUpdate("hana_limit", parsed);
+              }
+            }}
+            placeholder="10000"
+            className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+          />
+          <p className="text-xs text-muted-foreground">
+            Maximum number of rows to fetch. Default: 10000.
+          </p>
+        </div>
+      )}
+
       {/* Enable Snapshots */}
       {selectedTable && (
         <div className="space-y-2 pt-2 border-t">
@@ -345,6 +375,30 @@ export function HanaTablePropertyPanel({ selectedNode, handleUpdate }: HanaTable
         </div>
       )}
 
+      {/* Fail on empty result */}
+      {selectedTable && (
+        <div className="space-y-2 pt-2 border-t">
+          <div className="flex items-start gap-2">
+            <input
+              type="checkbox"
+              id="hana-fail-on-empty"
+              checked={selectedNode.data.config.hana_fail_on_empty || false}
+              onChange={(e) => handleUpdate('hana_fail_on_empty', e.target.checked)}
+              className="mt-1"
+            />
+            <div className="flex-1">
+              <Label htmlFor="hana-fail-on-empty" className="cursor-pointer">
+                Fail on empty result
+              </Label>
+              <p className="text-xs text-muted-foreground mt-1">
+                Halt the workflow with a clear error if the query returns 0 rows.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+
       {/* Query Preview */}
       {selectedTable && (
         <div className="space-y-2 pt-2 border-t">
@@ -363,6 +417,7 @@ export function HanaTablePropertyPanel({ selectedNode, handleUpdate }: HanaTable
                 ))}
               </div>
             )}
+            <div className="mt-1">LIMIT {selectedNode.data.config.hana_limit ?? 10000}</div>
           </div>
         </div>
       )}

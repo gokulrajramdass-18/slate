@@ -213,6 +213,64 @@ export function APINodePropertyPanel({ selectedNode, handleUpdate }: APINodeProp
         </>
       )}
 
+      <div className="h-px bg-border" />
+
+      <div className="space-y-3">
+        <div className="flex items-center gap-2">
+          <Checkbox
+            id="api-fail-on-empty"
+            checked={selectedNode.data.config.api_fail_on_empty || false}
+            onCheckedChange={(checked) => handleUpdate("api_fail_on_empty", checked)}
+          />
+          <Label htmlFor="api-fail-on-empty" className="cursor-pointer">
+            Fail on empty response
+          </Label>
+        </div>
+
+        <p className="text-xs text-muted-foreground">
+          Halt the workflow if the response is empty at the configured path
+        </p>
+
+        {selectedNode.data.config.api_fail_on_empty && (
+          <div className="space-y-2 pl-6 border-l-2 border-primary/20">
+            <Label className="text-xs">Empty-check path (optional)</Label>
+            <Input
+              value={selectedNode.data.config.api_empty_check_path || ""}
+              onChange={(e) => handleUpdate("api_empty_check_path", e.target.value || null)}
+              placeholder="Defaults to response data path"
+              className="text-xs h-8"
+            />
+            <p className="text-xs text-muted-foreground">
+              JSONPath to check for emptiness (e.g. <code>$.meta.total</code>). Falls back to the response data path when unset.
+            </p>
+          </div>
+        )}
+
+        <div className="space-y-2">
+          <Label className="text-xs">Expected status codes (optional)</Label>
+          <Input
+            value={(selectedNode.data.config.api_expected_status_codes || []).join(", ")}
+            onChange={(e) => {
+              const raw = e.target.value;
+              if (!raw.trim()) {
+                handleUpdate("api_expected_status_codes", null);
+                return;
+              }
+              const codes = raw
+                .split(",")
+                .map((s) => parseInt(s.trim(), 10))
+                .filter((n) => !isNaN(n));
+              handleUpdate("api_expected_status_codes", codes);
+            }}
+            placeholder="e.g. 200, 201"
+            className="text-xs h-8"
+          />
+          <p className="text-xs text-muted-foreground">
+            Comma-separated list of acceptable HTTP status codes. When unset, any 2xx is accepted.
+          </p>
+        </div>
+      </div>
+
       {/* Help Text */}
       {!selectedConnection && (
         <div className="rounded-lg border border-blue-200 bg-blue-50 dark:border-blue-900 dark:bg-blue-950 p-3">

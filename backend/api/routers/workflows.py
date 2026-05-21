@@ -10,9 +10,12 @@ that can be scheduled via cron, events, or dependencies.
 import json
 from datetime import datetime
 from typing import List, Optional, Dict, Any
-from fastapi import APIRouter, HTTPException, BackgroundTasks
+from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
+
+from api.dependencies.auth import get_current_user
+from open_notebook.domain.user import User
 
 from open_notebook.domain.workflow import (
     Workflow,
@@ -70,6 +73,10 @@ class CreateScheduleRequest(BaseModel):
     event_trigger: Optional[EventTrigger] = Field(None, description="Event trigger config")
     upstream_workflow_id: Optional[str] = Field(None, description="Upstream workflow for dependency chains")
     enabled: bool = Field(default=True, description="Enable schedule immediately")
+    input_data: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Values for the workflow's input fields, captured once at schedule creation"
+    )
 
 
 class UpdateScheduleRequest(BaseModel):
@@ -77,6 +84,58 @@ class UpdateScheduleRequest(BaseModel):
     cron_expression: Optional[str] = None
     event_trigger: Optional[EventTrigger] = None
     enabled: Optional[bool] = None
+    input_data: Optional[Dict[str, Any]] = None
+
+
+# ============================================================================
+# Helpers
+# ============================================================================
+
+def _get_workflow_input_node(workflow):
+    """Return the workflow's input node, or None."""
+    return next(
+        (node for node in workflow.graph.nodes if node.type == NodeType.INPUT),
+        None,
+    )
+
+
+def _validate_workflow_input_data(workflow, input_data: Optional[Dict[str, Any]]) -> None:
+    """
+    Validate the supplied input_data against the workflow's input node fields.
+    Raises HTTPException(422) on missing required fields.
+    """
+    input_node = _get_workflow_input_node(workflow)
+    if not input_node or not input_node.config.input_fields:
+        return
+
+    data = input_data or {}
+    errors: List[str] = []
+    for field_def in input_node.config.input_fields:
+        present = field_def.name in data
+        value = data.get(field_def.name)
+
+        if field_def.required and not present:
+            if field_def.default_value is None:
+                errors.append(f"Required field '{field_def.name}' is missing")
+            continue
+
+        if field_def.type == "dropdown" and present and value is not None and value != "":
+            allowed = []
+            for opt in (field_def.options or []):
+                if isinstance(opt, dict):
+                    allowed.append(opt.get("value"))
+                else:
+                    allowed.append(opt)
+            if allowed and value not in allowed:
+                errors.append(
+                    f"Field '{field_def.name}' value is not one of the allowed options"
+                )
+
+    if errors:
+        raise HTTPException(
+            status_code=422,
+            detail={"message": "Input validation failed", "errors": errors},
+        )
 
 
 # ============================================================================
@@ -84,7 +143,10 @@ class UpdateScheduleRequest(BaseModel):
 # ============================================================================
 
 @router.post("")
-async def create_workflow(request: CreateWorkflowRequest):
+async def create_workflow(
+    request: CreateWorkflowRequest,
+    current_user: User = Depends(get_current_user),
+):
     """
     Create a new workflow definition.
 
@@ -95,8 +157,7 @@ async def create_workflow(request: CreateWorkflowRequest):
     - Valid node configurations
     """
     try:
-        # Get user from auth (placeholder)
-        user_id = "default-user"  # TODO: Get from auth context
+        user_id = current_user.id
 
         # Validate graph structure
         _validate_workflow_graph(request.graph)
@@ -186,6 +247,12 @@ async def list_workflows(
                     "created_by": w.created_by,
                     "updated_at": w.updated.isoformat() if w.updated else None,
                     "source_template": template_info.get(w.id),
+                    "required_input_fields": [
+                        f.dict() for f in (
+                            (_get_workflow_input_node(w).config.input_fields or [])
+                            if _get_workflow_input_node(w) else []
+                        )
+                    ],
                 }
                 for w in workflows
             ],
@@ -311,6 +378,7 @@ async def delete_workflow(workflow_id: str):
 async def execute_workflow(
     workflow_id: str,
     request: ExecuteWorkflowRequest,
+    current_user: User = Depends(get_current_user),
 ):
     """
     Execute a workflow.
@@ -335,29 +403,7 @@ async def execute_workflow(
             raise HTTPException(status_code=400, detail="Workflow is not active")
 
         # Validate input data against input node schema
-        input_node = next(
-            (node for node in workflow.graph.nodes if node.type == NodeType.INPUT),
-            None
-        )
-
-        if input_node and input_node.config.input_fields:
-            validation_errors = []
-            input_fields = input_node.config.input_fields
-            input_data = request.input_data or {}
-
-            for field_def in input_fields:
-                if field_def.required and field_def.name not in input_data:
-                    if field_def.default_value is None:
-                        validation_errors.append(f"Required field '{field_def.name}' is missing")
-
-            if validation_errors:
-                raise HTTPException(
-                    status_code=422,
-                    detail={
-                        "message": "Input validation failed",
-                        "errors": validation_errors
-                    }
-                )
+        _validate_workflow_input_data(workflow, request.input_data)
 
         # Create engine
         engine = WorkflowEngine(workflow)
@@ -366,11 +412,16 @@ async def execute_workflow(
         if request.stream:
             # Stream execution
             return EventSourceResponse(
-                _stream_execution(engine, request.input_data)
+                _stream_execution(engine, request.input_data, current_user.id, getattr(current_user, "username", None), getattr(current_user, "email", None))
             )
         else:
             # Non-streaming execution
-            execution = await engine.execute(input_data=request.input_data)
+            execution = await engine.execute(
+                input_data=request.input_data,
+                user_id=current_user.id,
+                username=getattr(current_user, "username", None),
+                user_email=getattr(current_user, "email", None),
+            )
 
             return {
                 "success": True,
@@ -383,7 +434,9 @@ async def execute_workflow(
                 "node_states": {
                     node_id: {
                         "status": state.status.value,
-                        "output": state.output_data,
+                        "started_at": state.started_at.isoformat() if state.started_at else None,
+                        "completed_at": state.completed_at.isoformat() if state.completed_at else None,
+                        "output_data": state.output_data,
                         "error": state.error,
                     }
                     for node_id, state in execution.node_states.items()
@@ -397,10 +450,16 @@ async def execute_workflow(
         raise HTTPException(status_code=500, detail=f"Execution failed: {str(e)}")
 
 
-async def _stream_execution(engine: WorkflowEngine, input_data: Dict[str, Any]):
+async def _stream_execution(
+    engine: WorkflowEngine,
+    input_data: Dict[str, Any],
+    user_id: Optional[str] = None,
+    username: Optional[str] = None,
+    user_email: Optional[str] = None,
+):
     """Stream execution events via SSE."""
     try:
-        async for event in engine.execute_streaming(input_data):
+        async for event in engine.execute_streaming(input_data, user_id=user_id, username=username, user_email=user_email):
             yield {
                 "event": event["type"],
                 "data": json.dumps(event)
@@ -443,6 +502,8 @@ async def list_executions(
                             "status": state.status.value,
                             "started_at": state.started_at.isoformat() if state.started_at else None,
                             "completed_at": state.completed_at.isoformat() if state.completed_at else None,
+                            "output_data": state.output_data,
+                            "error": state.error,
                         }
                         for node_id, state in e.node_states.items()
                     },
@@ -525,6 +586,12 @@ async def create_schedule(workflow_id: str, request: CreateScheduleRequest):
         if request.schedule_type == ScheduleType.DEPENDENCY and not request.upstream_workflow_id:
             raise HTTPException(status_code=400, detail="upstream_workflow_id required for dependency schedules")
 
+        # Validate that supplied input_data covers required fields.
+        # Required only when the workflow has required input fields and the
+        # schedule is not a dependency chain (which receives input from upstream).
+        if request.schedule_type != ScheduleType.DEPENDENCY:
+            _validate_workflow_input_data(workflow, request.input_data)
+
         # Create schedule
         schedule = WorkflowSchedule(
             id=None,  # Will be generated
@@ -534,6 +601,7 @@ async def create_schedule(workflow_id: str, request: CreateScheduleRequest):
             event_trigger=request.event_trigger,
             upstream_workflow_id=request.upstream_workflow_id,
             enabled=request.enabled,
+            input_data=request.input_data,
         )
 
         await schedule.save()
@@ -552,6 +620,7 @@ async def create_schedule(workflow_id: str, request: CreateScheduleRequest):
             "event_trigger": schedule.event_trigger.dict() if schedule.event_trigger else None,
             "upstream_workflow_id": schedule.upstream_workflow_id,
             "enabled": schedule.enabled,
+            "input_data": schedule.input_data,
             "next_run_at": schedule.next_run_at.isoformat() if schedule.next_run_at else None,
         }
 
@@ -578,6 +647,7 @@ async def list_schedules(workflow_id: str):
                     "event_trigger": s.event_trigger.dict() if s.event_trigger else None,
                     "upstream_workflow_id": s.upstream_workflow_id,
                     "enabled": s.enabled,
+                    "input_data": s.input_data,
                     "last_run_at": s.last_run_at.isoformat() if s.last_run_at else None,
                     "next_run_at": s.next_run_at.isoformat() if s.next_run_at else None,
                 }
@@ -610,6 +680,14 @@ async def update_schedule(
             schedule.event_trigger = request.event_trigger
         if request.enabled is not None:
             schedule.enabled = request.enabled
+        if request.input_data is not None:
+            # Validate against the workflow's required input fields (skip for
+            # dependency schedules, which receive input from upstream).
+            if schedule.schedule_type != ScheduleType.DEPENDENCY:
+                workflow = await Workflow.get(schedule.workflow_id)
+                if workflow:
+                    _validate_workflow_input_data(workflow, request.input_data)
+            schedule.input_data = request.input_data
 
         await schedule.save()
 
@@ -935,7 +1013,8 @@ async def save_workflow_as_template(
     category: Optional[str] = None,
     parameters: Optional[List[dict]] = None,
     is_public: bool = False,
-    tags: Optional[List[str]] = None
+    tags: Optional[List[str]] = None,
+    current_user: User = Depends(get_current_user),
 ):
     """
     Save workflow as a reusable template.
@@ -947,8 +1026,7 @@ async def save_workflow_as_template(
 
         service = get_workflow_template_service()
 
-        # Get user from header (placeholder)
-        user_id = "default-user"  # TODO: Get from auth context
+        user_id = current_user.id
 
         template_id = await service.create_template_from_workflow(
             workflow_id=workflow_id,

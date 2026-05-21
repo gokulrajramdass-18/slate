@@ -16,6 +16,7 @@ services:
       - SQLITE_DB_PATH=/app/data/database.db
       - XSUAA_ENABLED=true
       - JWT_SECRET_KEY=${JWT_SECRET_KEY:-local-dev-secret-key-change-me}
+      - OPEN_NOTEBOOK_ENCRYPTION_KEY=${OPEN_NOTEBOOK_ENCRYPTION_KEY}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-sk-placeholder-not-used}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-sk-ant-placeholder-not-used}
       - LOG_LEVEL=INFO
@@ -27,12 +28,23 @@ services:
       - AICORE_RESOURCE_GROUP=${AICORE_RESOURCE_GROUP:-default}
       # Use local SAP AI Core proxy instead of external API
       - SAP_AI_CORE_PROXY_URL=http://host.docker.internal:5056
+      # Local S3 (MinIO) for file uploads
+      - S3_ENABLED=true
+      - S3_ENDPOINT=http://minio:9000
+      - S3_ACCESS_KEY=minioadmin
+      - S3_SECRET_KEY=minioadmin
+      - S3_BUCKET_NAME=open-notebook-files
+      - S3_REGION=us-east-1
+      - S3_USE_SSL=false
     volumes:
       - ../../backend/data:/app/data
     networks:
       - slate-network
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    depends_on:
+      minio:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5055/api/health"]
       interval: 10s
@@ -89,6 +101,30 @@ services:
       timeout: 5s
       retries: 3
 
+  # MinIO - S3-compatible local object storage for file uploads
+  minio:
+    image: minio/minio:latest
+    container_name: slate-minio
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # MinIO web console
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio-data:/data
+    networks:
+      - slate-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
 networks:
   slate-network:
     driver: bridge
+
+volumes:
+  minio-data:

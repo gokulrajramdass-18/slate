@@ -153,7 +153,7 @@ export default function WorkflowExecutionsPage() {
                     <TableRow
                       key={execution.id}
                       className="cursor-pointer hover:bg-accent/50"
-                      onClick={() => router.push(`executions/${execution.id}`)}
+                      onClick={() => router.push(`/workflows/${workflowId}/executions/${execution.id}`)}
                     >
                       <TableCell>
                         <Badge
@@ -203,7 +203,7 @@ export default function WorkflowExecutionsPage() {
                           size="sm"
                           onClick={(e) => {
                             e.stopPropagation();
-                            router.push(`executions/${execution.id}`);
+                            router.push(`/workflows/${workflowId}/executions/${execution.id}`);
                           }}
                         >
                           View

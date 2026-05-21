@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback, useEffect, useRef, startTransition } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useNavigate } from "react-router-dom";
 import { useChatSession, useDeleteChatSession, useNotebook } from "@/lib/hooks/use-api";
 import { chatApi } from "@/lib/api/chat";
 import { Button } from "@/components/ui/button";
@@ -26,7 +26,7 @@ import {
 
 export default function ChatSessionPage() {
   const params = useParams();
-  const router = useRouter();
+  const navigate = useNavigate();
   const sessionId = params.id as string;
 
   console.log('[ChatSessionPage] RENDER');
@@ -168,9 +168,9 @@ export default function ChatSessionPage() {
 
   const handleBack = () => {
     if (session?.notebook_id) {
-      router.push(`/workspaces/${session.notebook_id}`);
+      navigate(`/workspaces/${session.notebook_id}`);
     } else {
-      router.push("/chat");
+      navigate("/chat");
     }
   };
 
@@ -179,9 +179,9 @@ export default function ChatSessionPage() {
       await deleteMutation.mutateAsync(sessionId);
       toast.success("Chat session deleted");
       if (session?.notebook_id) {
-        router.push(`/workspaces/${session.notebook_id}`);
+        navigate(`/workspaces/${session.notebook_id}`);
       } else {
-        router.push("/chat");
+        navigate("/chat");
       }
     } catch (error: any) {
       toast.error(error.message || "Failed to delete chat session");

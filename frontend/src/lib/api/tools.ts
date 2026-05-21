@@ -15,7 +15,7 @@ export const toolsApi = {
     category?: string;
     enabled?: boolean;
   }): Promise<Tool[]> => {
-    const { data } = await apiClient.get("/tools", { params });
+    const { data } = await apiClient.get("/tools/", { params });
     return data.tools ?? data;
   },
 
@@ -27,7 +27,7 @@ export const toolsApi = {
 
   // Create a new tool
   create: async (tool: ToolCreate): Promise<{ id: string }> => {
-    const { data } = await apiClient.post("/tools", tool);
+    const { data } = await apiClient.post("/tools/", tool);
     return data;
   },
 

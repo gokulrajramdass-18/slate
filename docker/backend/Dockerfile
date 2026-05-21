@@ -30,6 +30,7 @@ FROM backend-base as backend
 # Copy application code
 COPY open_notebook/ /app/open_notebook/
 COPY api/ /app/api/
+COPY deep_agents_integration/ /app/deep_agents_integration/
 COPY pyproject.toml README.md ./
 
 # Install the package in editable mode

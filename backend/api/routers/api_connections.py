@@ -15,7 +15,7 @@ from open_notebook.database.repository import (
     repo_delete,
 )
 from open_notebook.config import get_encryption_key
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, InvalidToken
 import base64
 from api.services.api_endpoint_discovery import (
     discover_endpoints_from_openapi,
@@ -122,22 +122,165 @@ def encrypt_auth_config(auth_config: Optional[Dict[str, Any]]) -> Optional[str]:
     return base64.b64encode(encrypted).decode()
 
 
+class AuthConfigDecryptionError(Exception):
+    """Raised when stored auth_config cannot be decrypted. Use the message
+    verbatim — it explains what went wrong and how to fix it."""
+
+
 def decrypt_auth_config(encrypted: Optional[str]) -> Optional[Dict[str, Any]]:
-    """Decrypt authentication configuration"""
+    """Decrypt authentication configuration.
+
+    Returns None only when there is nothing to decrypt (encrypted is empty).
+    Raises AuthConfigDecryptionError with a specific, user-actionable message
+    for every other failure mode (missing key, wrong key, corrupt ciphertext,
+    bad JSON), so callers don't have to guess why auth_config came back None.
+    """
     if not encrypted:
         return None
 
     key = get_encryption_key()
     if not key:
-        return None
+        raise AuthConfigDecryptionError(
+            "Cannot decrypt stored credentials: OPEN_NOTEBOOK_ENCRYPTION_KEY "
+            "is not set in the backend environment. Set it to the same Fernet "
+            "key that was used when the connection was created, then restart."
+        )
 
     try:
         fernet = Fernet(key.encode())
+    except Exception as e:
+        raise AuthConfigDecryptionError(
+            f"OPEN_NOTEBOOK_ENCRYPTION_KEY is not a valid Fernet key "
+            f"(must be 32 url-safe base64-encoded bytes). Error: {e}"
+        )
+
+    try:
         encrypted_bytes = base64.b64decode(encrypted.encode())
+    except Exception as e:
+        raise AuthConfigDecryptionError(
+            f"Stored auth_config is not valid base64 — the database row "
+            f"may be corrupted. Error: {e}"
+        )
+
+    try:
         decrypted = fernet.decrypt(encrypted_bytes)
+    except InvalidToken:
+        raise AuthConfigDecryptionError(
+            "Stored credentials cannot be decrypted with the current "
+            "OPEN_NOTEBOOK_ENCRYPTION_KEY. The connection was encrypted with "
+            "a different key — either restore the original key, or re-create "
+            "the connection so it is re-encrypted with the current key."
+        )
+    except Exception as e:
+        raise AuthConfigDecryptionError(f"Decryption failed: {e}")
+
+    try:
         return json.loads(decrypted.decode())
-    except Exception:
-        return None
+    except Exception as e:
+        raise AuthConfigDecryptionError(
+            f"Decrypted auth_config is not valid JSON: {e}"
+        )
+
+
+async def fetch_client_credentials_token(auth_config: Dict[str, Any]) -> str:
+    """Exchange OAuth 2.0 client_credentials for an access token.
+
+    Required keys in ``auth_config``: ``token_url``, ``client_id``, ``client_secret``.
+    Optional: ``scope``, ``audience``, ``client_auth`` ("body" or "basic", default "body").
+
+    Raises HTTPException(400) on missing fields or token endpoint failure.
+    """
+    import httpx
+
+    missing = [
+        k for k in ("token_url", "client_id", "client_secret")
+        if not auth_config.get(k)
+    ]
+    if missing:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"client_credentials auth_config missing: {', '.join(missing)}",
+        )
+
+    data: Dict[str, Any] = {"grant_type": "client_credentials"}
+    if auth_config.get("scope"):
+        data["scope"] = auth_config["scope"]
+    if auth_config.get("audience"):
+        data["audience"] = auth_config["audience"]
+
+    client_auth_mode = (auth_config.get("client_auth") or "body").lower()
+    request_kwargs: Dict[str, Any] = {"data": data}
+    if client_auth_mode == "basic":
+        request_kwargs["auth"] = (auth_config["client_id"], auth_config["client_secret"])
+    else:
+        data["client_id"] = auth_config["client_id"]
+        data["client_secret"] = auth_config["client_secret"]
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(auth_config["token_url"], **request_kwargs)
+            resp.raise_for_status()
+            try:
+                payload = resp.json()
+            except Exception:
+                content_type = resp.headers.get("content-type", "unknown")
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        f"Token endpoint at {auth_config['token_url']} returned "
+                        f"HTTP {resp.status_code} but body is not JSON "
+                        f"(Content-Type: {content_type}). Body preview: {resp.text[:200]}"
+                    ),
+                )
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Token endpoint returned {e.response.status_code}: "
+                f"{e.response.text[:300]}"
+            ),
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Token request failed: {e}",
+        )
+
+    token = payload.get("access_token")
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Token endpoint did not return 'access_token'. Got keys: {list(payload.keys())}",
+        )
+    return token
+
+
+async def apply_auth_to_request(
+    auth_type: str,
+    auth_config: Optional[Dict[str, Any]],
+    headers: Dict[str, str],
+    query_params: Dict[str, Any],
+) -> None:
+    """Mutate ``headers`` / ``query_params`` to apply the configured auth.
+
+    Used by the test endpoints and the workflow API node so all callers share
+    one auth resolution path.
+    """
+    if not auth_config:
+        return
+    if auth_type == "bearer" and auth_config.get("token"):
+        headers["Authorization"] = f"Bearer {auth_config['token']}"
+    elif auth_type == "api_key":
+        location = auth_config.get("location", "header")
+        key = auth_config.get("key", "X-API-Key")
+        value = auth_config.get("value", "")
+        if location == "header":
+            headers[key] = value
+        elif location == "query":
+            query_params[key] = value
+    elif auth_type == "client_credentials":
+        token = await fetch_client_credentials_token(auth_config)
+        headers["Authorization"] = f"Bearer {token}"
 
 
 def format_connection(row: dict) -> APIConnectionResponse:
@@ -311,7 +454,15 @@ async def test_connection(connection_id: str):
     conn = results[0]
 
     # Decrypt auth config
-    auth_config = decrypt_auth_config(conn.get("auth_config_encrypted"))
+    try:
+        auth_config = decrypt_auth_config(conn.get("auth_config_encrypted"))
+    except AuthConfigDecryptionError as e:
+        await repo_update("api_connections", connection_id, {
+            "last_tested": datetime.utcnow().isoformat(),
+            "test_status": "failed",
+            "test_message": str(e),
+        })
+        return APIConnectionTestResponse(success=False, message=str(e))
 
     # Build test request
     import httpx
@@ -321,13 +472,15 @@ async def test_connection(connection_id: str):
     request_body = json.loads(conn["request_body"]) if conn.get("request_body") else None
 
     # Add authentication
-    if conn["auth_type"] == "bearer" and auth_config and "token" in auth_config:
-        headers["Authorization"] = f"Bearer {auth_config['token']}"
-    elif conn["auth_type"] == "api_key" and auth_config:
-        if auth_config.get("location") == "header":
-            headers[auth_config.get("key", "X-API-Key")] = auth_config.get("value", "")
-        elif auth_config.get("location") == "query":
-            query_params[auth_config.get("key", "api_key")] = auth_config.get("value", "")
+    try:
+        await apply_auth_to_request(conn["auth_type"], auth_config, headers, query_params)
+    except HTTPException as e:
+        await repo_update("api_connections", connection_id, {
+            "last_tested": datetime.utcnow().isoformat(),
+            "test_status": "failed",
+            "test_message": e.detail,
+        })
+        return APIConnectionTestResponse(success=False, message=e.detail)
 
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -347,8 +500,26 @@ async def test_connection(connection_id: str):
 
         response.raise_for_status()
 
-        # Parse response
-        data = response.json()
+        # Parse response (tolerate non-JSON bodies — a 200 still means connectivity works)
+        try:
+            data = response.json()
+        except Exception:
+            content_type = response.headers.get("content-type", "unknown")
+            body_preview = response.text[:200]
+            await repo_update("api_connections", connection_id, {
+                "last_tested": datetime.utcnow().isoformat(),
+                "test_status": "success",
+                "test_message": f"Connected (HTTP {response.status_code}); response is not JSON ({content_type}).",
+            })
+            return APIConnectionTestResponse(
+                success=True,
+                message=(
+                    f"Connected (HTTP {response.status_code}). Response is not JSON "
+                    f"(Content-Type: {content_type}). Body preview: {body_preview}"
+                ),
+                preview={"raw": body_preview},
+                record_count=0,
+            )
 
         # Extract data using data_path if specified
         if conn.get("data_path"):
@@ -401,13 +572,10 @@ async def test_config(config: APIConnectionCreate):
     request_body = config.request_body
 
     # Add authentication
-    if config.auth_type == "bearer" and config.auth_config and "token" in config.auth_config:
-        headers["Authorization"] = f"Bearer {config.auth_config['token']}"
-    elif config.auth_type == "api_key" and config.auth_config:
-        if config.auth_config.get("location") == "header":
-            headers[config.auth_config.get("key", "X-API-Key")] = config.auth_config.get("value", "")
-        elif config.auth_config.get("location") == "query":
-            query_params[config.auth_config.get("key", "api_key")] = config.auth_config.get("value", "")
+    try:
+        await apply_auth_to_request(config.auth_type, config.auth_config, headers, query_params)
+    except HTTPException as e:
+        return APIConnectionTestResponse(success=False, message=e.detail)
 
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -427,8 +595,21 @@ async def test_config(config: APIConnectionCreate):
 
         response.raise_for_status()
 
-        # Parse response
-        data = response.json()
+        # Parse response (tolerate non-JSON bodies — a 200 still means connectivity works)
+        try:
+            data = response.json()
+        except Exception:
+            content_type = response.headers.get("content-type", "unknown")
+            body_preview = response.text[:200]
+            return APIConnectionTestResponse(
+                success=True,
+                message=(
+                    f"Connected (HTTP {response.status_code}). Response is not JSON "
+                    f"(Content-Type: {content_type}). Body preview: {body_preview}"
+                ),
+                preview={"raw": body_preview},
+                record_count=0,
+            )
 
         # Extract data using data_path if specified
         if config.data_path:

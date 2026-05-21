@@ -116,7 +116,13 @@ class DataQueryAgent:
     async def _apply_tool_filtering(self):
         """Apply tool filtering asynchronously if enabled"""
         if self.enable_tool_filtering and hasattr(self, 'all_tools'):
-            from deep_agents_integration.tool_filtering import get_plan_mode_filter
+            try:
+                from deep_agents_integration.tool_filtering import get_plan_mode_filter
+            except ImportError as exc:
+                # Optional dependency: skip filtering rather than break chat streaming.
+                print(f"⚠️ Tool filtering unavailable ({exc}); using all {len(self.all_tools)} tools")
+                self.tools = list(self.all_tools)
+                return
 
             print(f"🔍 Applying tool filtering to {len(self.all_tools)} tools...")
 

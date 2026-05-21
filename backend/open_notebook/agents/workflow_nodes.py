@@ -17,10 +17,15 @@ from datetime import datetime, date, timedelta
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from langchain_openai import ChatOpenAI
 
-from open_notebook.domain.workflow import NodeConfig, NodeType
+from open_notebook.domain.workflow import NodeConfig, NodeType, NodeExecutionState, ExecutionStatus
 from open_notebook.agents.messaging import MessageBus
 from open_notebook.agents.task_manager import TaskManager
 from open_notebook.agents.agent_manager import get_agent_class
+
+
+# Sentinel returned by direct lookups when a {{...}} reference resolves to nothing.
+# Distinct from None because None is a legitimate resolved value.
+_SENTINEL_UNRESOLVED = object()
 
 
 # ============================================================================
@@ -39,6 +44,68 @@ class BaseNodeExecutor(ABC):
         """
         self.config = config
 
+    def _lookup_variable(
+        self,
+        var_name: str,
+        input_data: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Any:
+        """Resolve ``{{var}}``-style reference to its raw Python value.
+
+        Returns the value (which may be a dict, list, str, etc.) without
+        stringifying it and without applying the SQL-injection screen — the
+        screen belongs at SQL boundaries, not at every variable lookup. Use
+        this when you need to feed an upstream node's output into something
+        that expects native types (e.g. jq input).
+
+        Returns ``_SENTINEL_UNRESOLVED`` when the path can't be resolved so
+        callers can distinguish "missing" from "resolved to None".
+        """
+        if "." in var_name:
+            parts = var_name.split(".")
+            head, rest = parts[0], parts[1:]
+
+            def _walk(start: Any) -> Any:
+                current = start
+                for part in rest:
+                    if isinstance(current, dict) and part in current:
+                        current = current[part]
+                    else:
+                        return _SENTINEL_UNRESOLVED
+                return current
+
+            if head in input_data:
+                walked = _walk(input_data[head])
+                if walked is not _SENTINEL_UNRESOLVED:
+                    return walked
+            if head in context:
+                walked = _walk(context[head])
+                if walked is not _SENTINEL_UNRESOLVED:
+                    return walked
+            # Try walking the full path inside each top-level node output
+            for node_output in context.values():
+                if isinstance(node_output, dict):
+                    current = node_output
+                    ok = True
+                    for part in parts:
+                        if isinstance(current, dict) and part in current:
+                            current = current[part]
+                        else:
+                            ok = False
+                            break
+                    if ok:
+                        return current
+            return _SENTINEL_UNRESOLVED
+
+        if var_name in input_data:
+            return input_data[var_name]
+        if var_name in context:
+            return context[var_name]
+        for node_output in context.values():
+            if isinstance(node_output, dict) and var_name in node_output:
+                return node_output[var_name]
+        return _SENTINEL_UNRESOLVED
+
     @abstractmethod
     async def execute(self, state: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -56,7 +123,8 @@ class BaseNodeExecutor(ABC):
         self,
         template: str,
         input_data: Dict[str, Any],
-        context: Dict[str, Any]
+        context: Dict[str, Any],
+        sql_context: bool = False,
     ) -> str:
         """
         Substitute {{variable}} placeholders with actual values.
@@ -66,6 +134,10 @@ class BaseNodeExecutor(ABC):
             template: Template string with {{var}} placeholders
             input_data: Input data from input node
             context: Previous node outputs
+            sql_context: When True, apply the SQL-injection guard to substituted
+                values. Only enable for values that will be concatenated into
+                SQL — LLM prompts, email bodies, webhook payloads, etc. are
+                free-form text and should not trip the guard.
 
         Returns:
             Substituted string
@@ -86,8 +158,21 @@ class BaseNodeExecutor(ABC):
             if '.' in var_name:
                 parts = var_name.split('.')
 
-                # Try direct lookup: first check if first part is a top-level key
-                if parts[0] in context:
+                # Try direct lookup: first check if first part is in input_data
+                # (covers ForEach iteration variables like {{item.CAMPAIGN_ID}}, {{index}}, etc.)
+                if parts[0] in input_data:
+                    current = input_data[parts[0]]
+                    found = True
+                    for part in parts[1:]:
+                        if isinstance(current, dict) and part in current:
+                            current = current[part]
+                        else:
+                            found = False
+                            break
+                    if found:
+                        value = current
+                # Then check if first part is a top-level key in context
+                elif parts[0] in context:
                     current = context[parts[0]]
                     found = True
                     # Navigate remaining path
@@ -130,9 +215,9 @@ class BaseNodeExecutor(ABC):
                             break
 
             if value is None:
-                # Keep placeholder if not found
-                print(f"[BaseNodeExecutor] Warning: Variable {{{{{var_name}}}}} not found in input_data or context")
-                continue
+                raise ValueError(
+                    f"Variable {{{{{var_name}}}}} could not be resolved from input_data or node outputs"
+                )
 
             # Format value based on type
             if isinstance(value, (dict, list)):
@@ -142,10 +227,63 @@ class BaseNodeExecutor(ABC):
             else:
                 formatted_value = str(value)
 
+            # Reject empty resolved values (e.g. "", "   ") — they almost always
+            # indicate a misconfigured upstream node and produce broken SQL/URLs.
+            if formatted_value.strip() == "":
+                raise ValueError(
+                    f"Variable {{{{{var_name}}}}} resolved to an empty value"
+                )
+
+            # Lightweight SQL-injection screen on substituted values. Only
+            # applied when the caller declared this substitution targets SQL —
+            # otherwise legitimate punctuation in LLM/email/webhook content
+            # (e.g. ';' inside JSON or prose) would be rejected.
+            if sql_context:
+                self._reject_if_sql_injection(var_name, formatted_value)
+
             # Replace placeholder with value
             result = result.replace(f"{{{{{var_name}}}}}", formatted_value)
 
         return result
+
+    @staticmethod
+    def _reject_if_sql_injection(var_name: str, value: str) -> None:
+        """Raise ValueError if `value` looks like a SQL-injection payload.
+
+        Heuristic, not a substitute for parameterized queries — we still want
+        to fail loudly when an upstream node produces something like
+        `' OR 1=1 --` so it never lands in a query.
+        """
+        import re
+
+        lowered = value.lower()
+        # Comment markers and statement terminators
+        if "--" in value or "/*" in value or "*/" in value:
+            raise ValueError(
+                f"Variable {{{{{var_name}}}}} contains SQL comment markers; rejected as potential injection"
+            )
+        if ";" in value:
+            raise ValueError(
+                f"Variable {{{{{var_name}}}}} contains ';'; rejected as potential injection"
+            )
+        # Classic boolean-bypass patterns and stacked-statement keywords.
+        # Word-boundary match so we don't flag legitimate text like "or" inside a name.
+        injection_patterns = [
+            r"\bunion\s+select\b",
+            r"\bor\s+1\s*=\s*1\b",
+            r"\band\s+1\s*=\s*1\b",
+            r"\bdrop\s+table\b",
+            r"\bdelete\s+from\b",
+            r"\binsert\s+into\b",
+            r"\bupdate\s+\S+\s+set\b",
+            r"\bexec(?:ute)?\s*\(",
+            r"\bxp_cmdshell\b",
+        ]
+        for pat in injection_patterns:
+            if re.search(pat, lowered):
+                raise ValueError(
+                    f"Variable {{{{{var_name}}}}} matches SQL-injection pattern '{pat}'; rejected"
+                )
 
 
 # ============================================================================
@@ -370,8 +508,11 @@ class ConditionalNodeExecutor(BaseNodeExecutor):
         # Extract value from state
         node_outputs = state.get("node_outputs", {})
 
-        # Parse field path (e.g., "previous-node.status")
-        if "." in field_path:
+        # Parse field path (e.g., "previous-node.status").
+        # If unconfigured, evaluated value is None — _evaluate_condition handles that.
+        if not field_path:
+            value = None
+        elif "." in field_path:
             node_id, field_name = field_path.split(".", 1)
             if node_id in node_outputs:
                 value = node_outputs[node_id].get(field_name)
@@ -400,18 +541,62 @@ class ConditionalNodeExecutor(BaseNodeExecutor):
     def _evaluate_condition(self, condition_type: str, value: Any, comparison_value: Any) -> bool:
         """Evaluate condition based on type."""
         if condition_type == "equals":
-            return value == comparison_value
+            return self._loose_equals(value, comparison_value)
         elif condition_type == "not_equals":
-            return value != comparison_value
+            return not self._loose_equals(value, comparison_value)
         elif condition_type == "contains":
-            return comparison_value in str(value)
-        elif condition_type == "greater_than":
-            return float(value) > float(comparison_value)
-        elif condition_type == "less_than":
-            return float(value) < float(comparison_value)
+            if comparison_value is None or value is None:
+                return False
+            return str(comparison_value) in str(value)
+        elif condition_type in ("greater_than", "less_than"):
+            try:
+                if condition_type == "greater_than":
+                    return float(value) > float(comparison_value)
+                return float(value) < float(comparison_value)
+            except (TypeError, ValueError):
+                return False
         else:
-            # Default to False for unknown conditions
+            # Unknown or unconfigured — default to False
             return False
+
+    @staticmethod
+    def _loose_equals(value: Any, comparison_value: Any) -> bool:
+        """Equality that tolerates the UI's string-typed comparison values.
+
+        The PropertyPanel collects `comparison_value` as a string, but upstream
+        node outputs are typed (bool/int/float/None). Direct `==` would say
+        `True == "true"` is False. Coerce common scalar pairs before comparing,
+        falling back to strict `==` when no sensible coercion applies.
+        """
+        if value == comparison_value:
+            return True
+        if value is None or comparison_value is None:
+            return value is None and comparison_value is None
+        if isinstance(value, bool) or isinstance(comparison_value, bool):
+            def to_bool(v: Any):
+                if isinstance(v, bool):
+                    return v
+                if isinstance(v, str):
+                    s = v.strip().lower()
+                    if s in ("true", "1", "yes"):
+                        return True
+                    if s in ("false", "0", "no", ""):
+                        return False
+                return None
+            b1, b2 = to_bool(value), to_bool(comparison_value)
+            if b1 is not None and b2 is not None:
+                return b1 == b2
+        if isinstance(value, (int, float)) and isinstance(comparison_value, str):
+            try:
+                return float(value) == float(comparison_value)
+            except ValueError:
+                pass
+        if isinstance(comparison_value, (int, float)) and isinstance(value, str):
+            try:
+                return float(value) == float(comparison_value)
+            except ValueError:
+                pass
+        return str(value) == str(comparison_value)
 
 
 # ============================================================================
@@ -798,6 +983,46 @@ class HumanApprovalNodeExecutor(BaseNodeExecutor):
             )
             await approval.save()
 
+            # Broadcast notification so the user sees a popup/toast
+            try:
+                from api.services.notification_service import notify_approval_pending
+                from open_notebook.database.repository import repo_query
+
+                workflow_name = "Workflow"
+                node_label = state.get("current_node_id") or "Approval"
+                try:
+                    rows = await repo_query(
+                        "SELECT name, graph_json FROM workflows WHERE id = :id",
+                        {"id": workflow_id},
+                    )
+                    if rows:
+                        workflow_name = rows[0].get("name") or workflow_name
+                        graph_raw = rows[0].get("graph_json")
+                        if graph_raw:
+                            graph = json.loads(graph_raw) if isinstance(graph_raw, str) else graph_raw
+                            for n in graph.get("nodes", []):
+                                if n.get("id") == state.get("current_node_id"):
+                                    node_label = n.get("label") or node_label
+                                    break
+                except Exception as lookup_err:
+                    print(f"[HumanApprovalNodeExecutor] Could not resolve workflow/node names: {lookup_err}")
+
+                if user_id and user_id != "system":
+                    await notify_approval_pending(
+                        user_id=user_id,
+                        workflow_name=workflow_name,
+                        execution_id=execution_id,
+                        approval_id=approval.id,
+                        node_name=node_label,
+                    )
+                    print(f"[HumanApprovalNodeExecutor] notify_approval_pending broadcast for user {user_id}, approval {approval.id}")
+                else:
+                    print(f"[HumanApprovalNodeExecutor] Skipping notification — no resolved user_id (got '{user_id}')")
+            except Exception as notify_err:
+                print(f"[HumanApprovalNodeExecutor] Failed to broadcast approval notification: {notify_err}")
+                import traceback
+                traceback.print_exc()
+
             # Raise exception to pause workflow
             raise WorkflowPausedException(
                 execution_id=execution_id,
@@ -1117,6 +1342,102 @@ class WebhookNodeExecutor(BaseNodeExecutor):
 
 
 # ============================================================================
+# Email Node Executor
+# ============================================================================
+
+class EmailNodeExecutor(BaseNodeExecutor):
+    """Execute email node - send email via SMTP using Settings → SMTP config."""
+
+    def _resolve_recipients(
+        self,
+        raw: Optional[List[str]],
+        input_data: Dict[str, Any],
+        node_outputs: Dict[str, Any],
+    ) -> List[str]:
+        if not raw:
+            return []
+        resolved: List[str] = []
+        for entry in raw:
+            substituted = self._substitute_variables(entry or "", input_data, node_outputs)
+            for piece in substituted.split(","):
+                addr = piece.strip()
+                if addr:
+                    resolved.append(addr)
+        return resolved
+
+    async def execute(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """Send an email to each configured recipient using SMTPService."""
+        from api.services.smtp_service import SMTPService
+
+        input_data = state.get("input_data", {})
+        node_outputs = state.get("node_outputs", {})
+        current_node_id = state["current_node_id"]
+
+        subject = self._substitute_variables(self.config.email_subject or "", input_data, node_outputs)
+        body = self._substitute_variables(self.config.email_body or "", input_data, node_outputs)
+        is_html = bool(self.config.email_is_html) if self.config.email_is_html is not None else True
+
+        to_list = self._resolve_recipients(self.config.email_to, input_data, node_outputs)
+        cc_list = self._resolve_recipients(self.config.email_cc, input_data, node_outputs)
+        bcc_list = self._resolve_recipients(self.config.email_bcc, input_data, node_outputs)
+
+        if not to_list:
+            return {
+                **state,
+                "node_outputs": {
+                    **node_outputs,
+                    current_node_id: {
+                        "error": "Email node requires at least one recipient in 'To'",
+                        "status": "email_failed",
+                    },
+                },
+            }
+
+        recipients = to_list + cc_list + bcc_list
+        sent: List[str] = []
+        failed: List[Dict[str, str]] = []
+
+        for recipient in recipients:
+            try:
+                await SMTPService.send_email_strict(
+                    to_email=recipient,
+                    subject=subject,
+                    body=body,
+                    is_html=is_html,
+                )
+                sent.append(recipient)
+            except Exception as e:
+                print(f"[EmailNodeExecutor] Error sending to {recipient}: {e}")
+                failed.append({"recipient": recipient, "error": str(e)})
+
+        status = "email_sent" if sent and not failed else ("email_partial" if sent else "email_failed")
+
+        # If every recipient failed, raise so the engine marks this node FAILED
+        # rather than silently completing green with a bad payload downstream.
+        if failed and not sent:
+            error_summary = "; ".join(
+                f"{f['recipient']}: {f['error']}" for f in failed
+            )
+            raise RuntimeError(f"Email send failed for all recipients — {error_summary}")
+
+        return {
+            **state,
+            "node_outputs": {
+                **node_outputs,
+                current_node_id: {
+                    "status": status,
+                    "subject": subject,
+                    "sent_to": sent,
+                    "failed": failed,
+                    "to": to_list,
+                    "cc": cc_list,
+                    "bcc": bcc_list,
+                },
+            },
+        }
+
+
+# ============================================================================
 # API Node Executor
 # ============================================================================
 
@@ -1163,10 +1484,26 @@ class APINodeExecutor(BaseNodeExecutor):
             request_body = json.loads(conn.get("request_body")) if conn.get("request_body") and isinstance(conn.get("request_body"), str) else conn.get("request_body")
             auth_config_encrypted = conn.get("auth_config_encrypted")
 
-            # Decrypt auth_config if encrypted
+            # Decrypt auth_config if encrypted. Any failure here yields a
+            # specific, actionable message — not a downstream NoneType error.
             if auth_config_encrypted:
-                from api.routers.api_connections import decrypt_auth_config
-                auth_config = decrypt_auth_config(auth_config_encrypted)
+                from api.routers.api_connections import (
+                    decrypt_auth_config,
+                    AuthConfigDecryptionError,
+                )
+                try:
+                    auth_config = decrypt_auth_config(auth_config_encrypted)
+                except AuthConfigDecryptionError as e:
+                    raise ValueError(
+                        f"API connection '{conn.get('name')}' "
+                        f"({api_connection_id}): {e}"
+                    )
+                if auth_config is None:
+                    raise ValueError(
+                        f"API connection '{conn.get('name')}' "
+                        f"({api_connection_id}): stored auth_config decrypted to None. "
+                        f"Re-create the connection so credentials are re-encrypted."
+                    )
             else:
                 auth_config = {}
 
@@ -1202,37 +1539,101 @@ class APINodeExecutor(BaseNodeExecutor):
 
             print(f"[APINodeExecutor] Using raw config: {method} {endpoint}")
 
-        # Handle authentication
+        # Resolve {{node-id.path}} placeholders in URL, headers, query params, and body.
+        # Without this, literal "{{...}}" gets sent to upstream APIs (Outreach silently
+        # ignores unknown filter values and returns an unfiltered page).
+        input_data = state.get("input_data", {}) or {}
+        node_outputs = state.get("node_outputs", {}) or {}
+
+        def _sub_str(value):
+            if isinstance(value, str) and "{{" in value:
+                return self._substitute_variables(value, input_data, node_outputs)
+            return value
+
+        def _sub_deep(value):
+            if isinstance(value, str):
+                return _sub_str(value)
+            if isinstance(value, dict):
+                return {k: _sub_deep(v) for k, v in value.items()}
+            if isinstance(value, list):
+                return [_sub_deep(v) for v in value]
+            return value
+
+        endpoint = _sub_str(endpoint)
+        headers = {k: _sub_str(v) for k, v in (headers or {}).items()}
+        query_params = {k: _sub_str(v) for k, v in (query_params or {}).items()}
+        if request_body is not None:
+            request_body = _sub_deep(request_body)
+        print(f"[APINodeExecutor] Resolved endpoint: {endpoint}")
+
+        # Handle authentication. For each auth_type that needs credentials,
+        # surface a clear "what's missing" error rather than silently skipping
+        # auth and letting the upstream API return an opaque 401.
         auth = None
         if auth_type == "bearer":
             token = auth_config.get("token") or auth_config.get("bearer_token")
-            if token:
-                headers["Authorization"] = f"Bearer {token}"
+            if not token:
+                raise ValueError(
+                    f"Bearer auth requires 'token' or 'bearer_token' in "
+                    f"auth_config, got keys: {list(auth_config.keys()) or 'none'}"
+                )
+            headers["Authorization"] = f"Bearer {token}"
         elif auth_type == "api_key":
             token = auth_config.get("token") or auth_config.get("api_key")
-            if token:
-                headers["X-API-Key"] = token
+            if not token:
+                raise ValueError(
+                    f"API key auth requires 'token' or 'api_key' in "
+                    f"auth_config, got keys: {list(auth_config.keys()) or 'none'}"
+                )
+            headers["X-API-Key"] = token
         elif auth_type == "basic":
             username = auth_config.get("username", "")
             password = auth_config.get("password", "")
-            if username and password:
-                auth = (username, password)
+            if not (username and password):
+                raise ValueError(
+                    f"Basic auth requires 'username' and 'password' in "
+                    f"auth_config, got keys: {list(auth_config.keys()) or 'none'}"
+                )
+            auth = (username, password)
+        elif auth_type == "client_credentials":
+            from api.routers.api_connections import fetch_client_credentials_token
+            try:
+                token = await fetch_client_credentials_token(auth_config)
+            except Exception as e:
+                # fetch_client_credentials_token raises HTTPException; unwrap
+                # detail for a readable workflow error.
+                detail = getattr(e, "detail", None) or str(e)
+                raise ValueError(f"OAuth client_credentials token request failed: {detail}")
+            headers["Authorization"] = f"Bearer {token}"
 
         try:
+            # httpx wipes the URL's existing query string when params={} is
+            # passed — pass None when there are no extra params so any query
+            # already baked into the URL (e.g. ?filter[customId]=…) survives.
+            send_params = query_params if query_params else None
+
             # Make HTTP request
             async with httpx.AsyncClient(timeout=timeout) as client:
                 if method == "GET":
-                    response = await client.get(endpoint, headers=headers, params=query_params, auth=auth)
+                    response = await client.get(endpoint, headers=headers, params=send_params, auth=auth)
                 elif method == "POST":
-                    response = await client.post(endpoint, headers=headers, params=query_params, json=request_body, auth=auth)
+                    response = await client.post(endpoint, headers=headers, params=send_params, json=request_body, auth=auth)
                 elif method == "PUT":
-                    response = await client.put(endpoint, headers=headers, params=query_params, json=request_body, auth=auth)
+                    response = await client.put(endpoint, headers=headers, params=send_params, json=request_body, auth=auth)
                 elif method == "DELETE":
-                    response = await client.delete(endpoint, headers=headers, params=query_params, auth=auth)
+                    response = await client.delete(endpoint, headers=headers, params=send_params, auth=auth)
                 else:
                     raise ValueError(f"Unsupported HTTP method: {method}")
 
-                response.raise_for_status()
+                expected_codes = self.config.api_expected_status_codes
+                if expected_codes:
+                    if response.status_code not in expected_codes:
+                        raise ValueError(
+                            f"API returned HTTP {response.status_code}, expected one of {expected_codes}. "
+                            f"Body preview: {response.text[:300]}"
+                        )
+                else:
+                    response.raise_for_status()
                 response_json = response.json()
 
             # Extract array from response using JSONPath
@@ -1243,6 +1644,34 @@ class APINodeExecutor(BaseNodeExecutor):
                 raise ValueError(f"No data found at JSONPath: {data_path}")
 
             data = matches[0].value
+
+            if self.config.api_fail_on_empty:
+                explicit_check_path = self.config.api_empty_check_path
+                if explicit_check_path:
+                    check_path_label = explicit_check_path
+                    check_matches = jsonpath_parse(explicit_check_path).find(response_json)
+                    check_value = check_matches[0].value if check_matches else None
+                else:
+                    # Default: check the extracted value. If it's a JSON:API-style
+                    # envelope ({data: [...], meta: {...}}), peek inside the inner
+                    # `data` key — this is the common Outreach/JSON:API shape and
+                    # users expect "fail on empty" to mean the inner payload.
+                    check_value = data
+                    check_path_label = data_path
+                    if isinstance(data, dict) and "data" in data and isinstance(data["data"], (list, dict, str)):
+                        check_value = data["data"]
+                        check_path_label = f"{data_path}.data"
+
+                is_empty = (
+                    check_value is None
+                    or (isinstance(check_value, (list, dict, str)) and len(check_value) == 0)
+                    or check_value == 0
+                )
+                if is_empty:
+                    raise ValueError(
+                        f"API node failed: response is empty at path '{check_path_label}'. "
+                        f"Endpoint: {endpoint}"
+                    )
 
             # Ensure data is a list of dicts (required for snapshots)
             if not isinstance(data, list):
@@ -1319,33 +1748,15 @@ class APINodeExecutor(BaseNodeExecutor):
 
         except httpx.HTTPStatusError as e:
             print(f"[APINodeExecutor] HTTP error: {e.response.status_code}")
-            return {
-                **state,
-                "node_outputs": {
-                    **state.get("node_outputs", {}),
-                    state["current_node_id"]: {
-                        "status": "error",
-                        "error": f"HTTP {e.response.status_code}: {e.response.text}",
-                        "status_code": e.response.status_code,
-                        "endpoint": endpoint
-                    }
-                }
-            }
+            raise ValueError(
+                f"HTTP {e.response.status_code} from {endpoint}. "
+                f"Body preview: {e.response.text[:300]}"
+            )
         except Exception as e:
             print(f"[APINodeExecutor] Error: {e}")
             import traceback
             traceback.print_exc()
-            return {
-                **state,
-                "node_outputs": {
-                    **state.get("node_outputs", {}),
-                    state["current_node_id"]: {
-                        "status": "error",
-                        "error": str(e),
-                        "endpoint": endpoint
-                    }
-                }
-            }
+            raise
 
     async def _cleanup_old_snapshots(self, workflow_id, node_id, current_snapshot_id):
         """Keep only 2 most recent snapshots for this node."""
@@ -1566,20 +1977,42 @@ class CompareNodeExecutor(BaseNodeExecutor):
             print(f"[CompareNode] Delta from compare_with: {json.dumps(delta, indent=2, default=str)}")
 
             # Check if changes exceed threshold
-            has_changes = delta.get("changed", False) and delta.get("change_percentage", 0) > change_threshold
+            has_changes = bool(delta.get("changed", False)) and delta.get("change_percentage", 0) > change_threshold
 
             # Extract changed rows
             changed_rows = self._extract_changed_rows(delta)
 
             print(f"[CompareNode] After _extract_changed_rows: {json.dumps(changed_rows, indent=2, default=str)}")
 
+            # Capture pre-filter counts so the output explains why changed_rows
+            # may be empty when has_changes is true (the watch_columns filter
+            # can strip every diff row, which previously looked like a bug).
+            pre_filter_summary = {
+                "added": len(changed_rows.get("added", [])),
+                "removed": len(changed_rows.get("removed", [])),
+                "modified": len(changed_rows.get("modified", [])),
+            }
+
             # Filter changed rows by watch_columns if configured
             watch_columns = self.config.watch_columns
+            filter_applied = bool(watch_columns)
             if watch_columns:
                 changed_rows = self._filter_by_watch_columns(changed_rows, watch_columns)
                 print(f"[CompareNode] Filtered by watch_columns: {watch_columns}")
 
-            print(f"[CompareNode] Has changes: {has_changes}, Changed rows: {len(changed_rows.get('added', [])) + len(changed_rows.get('removed', [])) + len(changed_rows.get('modified', []))}")
+            post_filter_total = (
+                len(changed_rows.get("added", []))
+                + len(changed_rows.get("removed", []))
+                + len(changed_rows.get("modified", []))
+            )
+
+            # When a watch_columns filter is configured, treat has_changes as
+            # "are there matching changes?" so downstream conditional nodes act
+            # on filter-relevant diffs only.
+            if filter_applied:
+                has_changes = has_changes and post_filter_total > 0
+
+            print(f"[CompareNode] Has changes: {has_changes}, Changed rows: {post_filter_total}")
 
             # Build result
             result = {
@@ -1594,8 +2027,10 @@ class CompareNodeExecutor(BaseNodeExecutor):
                 "summary": {
                     "added": len(changed_rows.get("added", [])),
                     "removed": len(changed_rows.get("removed", [])),
-                    "modified": len(changed_rows.get("modified", []))
-                }
+                    "modified": len(changed_rows.get("modified", [])),
+                },
+                "pre_filter_summary": pre_filter_summary,
+                "watch_columns_applied": watch_columns or [],
             }
 
             return {
@@ -1753,6 +2188,340 @@ class CompareNodeExecutor(BaseNodeExecutor):
 
 
 # ============================================================================
+# ForEach Node Executor
+# ============================================================================
+
+class ForEachNodeExecutor(BaseNodeExecutor):
+    """Iterate over a list, running the chain wired to the `each` handle once per item.
+
+    The ForEach node has two output handles:
+        - `each`: chain of nodes that runs once per item
+        - `done`: chain that runs once after all items are processed
+
+    Config:
+        foreach_source: "{{some-node.rows}}" — must resolve to a Python list.
+        foreach_on_error: "continue" (default) or "fail".
+        foreach_max_items: hard cap on iterations (default 1000).
+
+    Per iteration the each-chain sees:
+        input_data["item"]   — the current row
+        input_data["index"]  — 0-based position
+        input_data["total"]  — total rows being iterated
+
+    Output (in node_outputs[<foreach-id>]):
+        results: [...] — one entry per iteration, the LAST node of each chain's output
+        errors:  [{"index": int, "error": str}, ...]
+        count, succeeded, failed
+    """
+
+    def _resolve_list(self, template: str, input_data: Dict[str, Any], node_outputs: Dict[str, Any]):
+        """Resolve a {{...}} reference to its raw Python value (preferring list)."""
+        import re
+        if not template:
+            return None
+        match = re.fullmatch(r'\s*\{\{([^}]+)\}\}\s*', template)
+        if not match:
+            # Not a single placeholder — substitute, then JSON-decode
+            substituted = self._substitute_variables(template, input_data, node_outputs)
+            try:
+                return json.loads(substituted)
+            except Exception:
+                return None
+        var_name = match.group(1).strip()
+
+        def _walk(parts, root):
+            current = root
+            for part in parts:
+                if isinstance(current, dict) and part in current:
+                    current = current[part]
+                else:
+                    return None
+            return current
+
+        if '.' in var_name:
+            parts = var_name.split('.')
+            if parts[0] in node_outputs:
+                value = _walk(parts[1:], node_outputs[parts[0]])
+                if value is not None:
+                    return value
+            for output in node_outputs.values():
+                if isinstance(output, dict):
+                    value = _walk(parts, output)
+                    if value is not None:
+                        return value
+            if parts[0] in input_data:
+                value = _walk(parts[1:], input_data[parts[0]])
+                if value is not None:
+                    return value
+            return None
+        else:
+            if var_name in input_data:
+                return input_data[var_name]
+            if var_name in node_outputs:
+                return node_outputs[var_name]
+            for output in node_outputs.values():
+                if isinstance(output, dict) and var_name in output:
+                    return output[var_name]
+            return None
+
+    async def execute(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        from open_notebook.domain.workflow import NodeConfig as _NodeConfig
+        from open_notebook.database.repository import repo_query
+
+        node_id = state.get("current_node_id")
+        node_outputs = dict(state.get("node_outputs", {}))
+        input_data = dict(state.get("input_data", {}))
+
+        source_template = self.config.foreach_source or ""
+        on_error = self.config.foreach_on_error or "continue"
+        max_items = self.config.foreach_max_items if self.config.foreach_max_items is not None else 1000
+
+        print(f"[ForEachNodeExecutor] Node {node_id} starting. source='{source_template}', on_error='{on_error}', max_items={max_items}")
+
+        if not source_template:
+            return self._fail(state, node_id, "foreach_source is empty")
+
+        # Resolve source list
+        items = self._resolve_list(source_template, input_data, node_outputs)
+        if items is None:
+            return self._fail(state, node_id, f"Could not resolve source '{source_template}' to a value")
+        if not isinstance(items, list):
+            return self._fail(state, node_id, f"Source resolved to {type(items).__name__}, expected list")
+
+        # Apply max_items cap
+        original_count = len(items)
+        if max_items and original_count > max_items:
+            print(f"[ForEachNodeExecutor] Capping iterations at {max_items} (source had {original_count})")
+            items = items[:max_items]
+
+        # Load workflow graph so we can walk the `each` subgraph
+        try:
+            rows = await repo_query(
+                "SELECT graph_json FROM workflows WHERE id = :id",
+                {"id": state.get("workflow_id")},
+            )
+            if not rows:
+                return self._fail(state, node_id, "Could not load workflow graph")
+            graph_raw = rows[0].get("graph_json")
+            graph = json.loads(graph_raw) if isinstance(graph_raw, str) else graph_raw
+        except Exception as lookup_err:
+            return self._fail(state, node_id, f"Could not load workflow graph: {lookup_err}")
+
+        all_nodes = {n["id"]: n for n in graph.get("nodes", [])}
+        all_edges = graph.get("edges", [])
+
+        # Walk the chain reachable from the `each` handle. The terminal of this
+        # chain is the boundary where the `each`-subgraph ends — when we hit a
+        # node with no outgoing edges within the subgraph, or we loop back to
+        # the foreach itself, we stop.
+        each_chain_start = None
+        for e in all_edges:
+            if e.get("source") == node_id and (e.get("sourceHandle") in ("each", None) and e.get("sourceHandle") != "done"):
+                # First edge whose handle is "each" (or unspecified — for backwards compat with single-handle wires)
+                if e.get("sourceHandle") == "each":
+                    each_chain_start = e.get("target")
+                    break
+                elif e.get("sourceHandle") is None and each_chain_start is None:
+                    each_chain_start = e.get("target")
+
+        if not each_chain_start:
+            return self._fail(state, node_id, "ForEach has no chain wired to the `each` output handle")
+
+        # Compute the linear order of node IDs in the each-chain.
+        # We walk from each_chain_start, following the first non-foreach outgoing
+        # edge each time, until we hit a dead end or revisit ourselves.
+        chain_ids: List[str] = []
+        seen: set = set()
+        cursor = each_chain_start
+        while cursor and cursor not in seen and cursor != node_id:
+            seen.add(cursor)
+            if cursor not in all_nodes:
+                return self._fail(state, node_id, f"each-chain references unknown node '{cursor}'")
+            chain_ids.append(cursor)
+            # Find the next node — first outgoing edge
+            next_id = None
+            for e in all_edges:
+                if e.get("source") == cursor:
+                    next_id = e.get("target")
+                    break
+            cursor = next_id
+
+        if not chain_ids:
+            return self._fail(state, node_id, "each-chain is empty")
+
+        print(f"[ForEachNodeExecutor] each-chain resolved: {chain_ids}")
+
+        # Build executors for each chain node up front
+        chain_executors: List[tuple] = []  # (node_id, executor)
+        for cid in chain_ids:
+            cnode = all_nodes[cid]
+            try:
+                cconfig = _NodeConfig(**(cnode.get("config") or {}))
+                cexec = create_node_executor(NodeType(cnode.get("type")), cconfig)
+                chain_executors.append((cid, cexec))
+            except Exception as build_err:
+                return self._fail(state, node_id, f"Failed to build executor for chain node '{cid}': {build_err}")
+
+        results = []
+        errors = []
+        succeeded = 0
+        failed = 0
+
+        # Per-chain-node aggregation across all iterations.
+        # Lets the UI render execution details for nodes that run inside a ForEach.
+        chain_agg: Dict[str, Dict[str, Any]] = {
+            cid: {
+                "iterations": [],         # one entry per iteration: output or {"error": str}
+                "succeeded": 0,
+                "failed": 0,
+                "started_at": None,       # earliest iteration start (datetime)
+                "completed_at": None,     # latest iteration end (datetime)
+                "first_error": None,
+            }
+            for cid in chain_ids
+        }
+
+        total = len(items)
+        for index, item in enumerate(items):
+            iter_input = {**input_data, "item": item, "index": index, "total": total}
+            iter_outputs = {**node_outputs}
+            # Clear scratch space for chain nodes so each iteration starts clean
+            for cid in chain_ids:
+                iter_outputs.pop(cid, None)
+
+            iter_state = {
+                **state,
+                "input_data": iter_input,
+                "node_outputs": iter_outputs,
+            }
+
+            iter_failed_at_cid: Optional[str] = None
+            iter_failed_err: Optional[str] = None
+
+            try:
+                last_output = None
+                for cid, cexec in chain_executors:
+                    iter_state = {
+                        **iter_state,
+                        "current_node_id": cid,
+                    }
+                    cstart = datetime.utcnow()
+                    try:
+                        result_state = await cexec.execute(iter_state)
+                    except Exception as cnode_err:
+                        cend = datetime.utcnow()
+                        agg = chain_agg[cid]
+                        agg["failed"] += 1
+                        agg["iterations"].append({"error": str(cnode_err)})
+                        if agg["started_at"] is None or cstart < agg["started_at"]:
+                            agg["started_at"] = cstart
+                        if agg["completed_at"] is None or cend > agg["completed_at"]:
+                            agg["completed_at"] = cend
+                        if agg["first_error"] is None:
+                            agg["first_error"] = str(cnode_err)
+                        iter_failed_at_cid = cid
+                        iter_failed_err = str(cnode_err)
+                        raise
+                    cend = datetime.utcnow()
+                    iter_state = {**iter_state, **(result_state or {})}
+                    cnode_output = (result_state or {}).get("node_outputs", {}).get(cid)
+                    last_output = cnode_output
+
+                    agg = chain_agg[cid]
+                    agg["succeeded"] += 1
+                    agg["iterations"].append(cnode_output)
+                    if agg["started_at"] is None or cstart < agg["started_at"]:
+                        agg["started_at"] = cstart
+                    if agg["completed_at"] is None or cend > agg["completed_at"]:
+                        agg["completed_at"] = cend
+                results.append(last_output)
+                succeeded += 1
+            except Exception as iter_err:
+                failed += 1
+                err_str = iter_failed_err or str(iter_err)
+                print(f"[ForEachNodeExecutor] Iteration {index} failed at '{iter_failed_at_cid}': {err_str}")
+                if on_error == "fail":
+                    return self._fail(state, node_id, f"Iteration {index} failed: {err_str}")
+                results.append({"error": err_str})
+                errors.append({"index": index, "error": err_str})
+
+        print(f"[ForEachNodeExecutor] Node {node_id} complete: total={total} succeeded={succeeded} failed={failed}")
+
+        # Aggregate output. Surface per-chain-node aggregates so the UI can show
+        # execution details for nodes inside the ForEach. Without this, inner
+        # nodes appear "never run" because the engine only tracks state for
+        # nodes it dispatches via LangGraph.
+        new_outputs = {**node_outputs}
+        new_outputs[node_id] = {
+            "results": results,
+            "errors": errors,
+            "count": total,
+            "source_count": original_count,
+            "succeeded": succeeded,
+            "failed": failed,
+        }
+
+        # Write aggregated node_outputs and execution.node_states for chain nodes
+        execution = getattr(self, "_execution", None)
+        for cid in chain_ids:
+            agg = chain_agg[cid]
+            iterations = agg["iterations"]
+            sample = next((it for it in iterations if not (isinstance(it, dict) and "error" in it)), None)
+            agg_output = {
+                "foreach_aggregate": True,
+                "foreach_node_id": node_id,
+                "iterations": len(iterations),
+                "succeeded": agg["succeeded"],
+                "failed": agg["failed"],
+                "sample": sample,
+                "all": iterations,
+            }
+            new_outputs[cid] = agg_output
+
+            if execution is not None:
+                try:
+                    if agg["failed"] == 0:
+                        cstatus = ExecutionStatus.COMPLETED
+                    elif agg["succeeded"] == 0:
+                        cstatus = ExecutionStatus.FAILED
+                    else:
+                        # Mixed: keep COMPLETED but surface errors via output_data + error
+                        cstatus = ExecutionStatus.COMPLETED
+                    execution.node_states[cid] = NodeExecutionState(
+                        node_id=cid,
+                        status=cstatus,
+                        started_at=agg["started_at"],
+                        completed_at=agg["completed_at"],
+                        output_data=agg_output,
+                        error=agg["first_error"],
+                    )
+                except Exception as save_err:
+                    print(f"[ForEachNodeExecutor] Failed to record node_state for {cid}: {save_err}")
+
+        if execution is not None:
+            try:
+                await execution.save()
+            except Exception as save_err:
+                print(f"[ForEachNodeExecutor] Failed to save execution after recording chain states: {save_err}")
+
+        return {
+            **state,
+            "input_data": input_data,
+            "node_outputs": new_outputs,
+        }
+
+    def _fail(self, state, node_id, message):
+        print(f"[ForEachNodeExecutor] FAIL: {message}")
+        new_outputs = {**state.get("node_outputs", {})}
+        new_outputs[node_id] = {"error": message, "results": [], "count": 0, "succeeded": 0, "failed": 0}
+        return {
+            **state,
+            "node_outputs": new_outputs,
+            "error": message,
+        }
+
+
+# ============================================================================
 # HANA Table Node Executor
 # ============================================================================
 
@@ -1773,32 +2542,90 @@ class HANATableNodeExecutor(BaseNodeExecutor):
         table_name = self.config.hana_table_name
         custom_query = self.config.hana_query
         where_clause = self.config.hana_where_clause
-        limit = self.config.hana_limit or 100
+        limit = self.config.hana_limit or 10000
         columns = self.config.hana_columns
         conditions = self.config.conditions or []
 
+        # Parameter values for the WHERE clause that we build from `conditions`.
+        # Built alongside the SQL fragment, then passed to cursor.execute(sql, params)
+        # so values are never interpolated into the query string.
+        condition_params: List[Any] = []
+
         # Build WHERE clause from conditions if provided
         if conditions and len(conditions) > 0:
+            # Build a substitution map for user tokens from engine state
+            user_subs = {
+                "{{user.username}}": state.get("username") or "",
+                "{{user.email}}": state.get("user_email") or "",
+                "{{user.id}}": state.get("user_id") or "",
+            }
+            input_data = state.get("input_data", {}) or {}
+            node_outputs = state.get("node_outputs", {}) or {}
+
             condition_clauses = []
             for cond in conditions:
                 column = cond.get("column")
-                operator = cond.get("operator", "=")
+                operator = (cond.get("operator") or "=").upper()
                 value = cond.get("value")
 
-                if column and value is not None:
-                    # Quote the value if it's a string
-                    if isinstance(value, str):
-                        quoted_value = f"'{value}'"
-                    else:
-                        quoted_value = str(value)
+                # Substitute user tokens and any other {{...}} references in value.
+                # _substitute_variables raises on unresolved/empty placeholders or
+                # SQL-injection-shaped payloads — we let that bubble up so the
+                # iteration fails loudly instead of silently building bad SQL.
+                if isinstance(value, str):
+                    original_value = value
+                    for token, replacement in user_subs.items():
+                        if token in value:
+                            value = value.replace(token, str(replacement))
+                    value = self._substitute_variables(value, input_data, node_outputs, sql_context=True)
+                    if original_value != value:
+                        print(f"[HANATableNodeExecutor] Substituted condition value for '{column}': {original_value!r} -> {value!r} (type={type(value).__name__})")
 
-                    # Handle different operators
-                    if operator in ["IS NULL", "IS NOT NULL"]:
+                # IS NULL / IS NOT NULL take no value
+                if operator in ("IS NULL", "IS NOT NULL"):
+                    if column:
                         condition_clauses.append(f'"{column}" {operator}')
-                    elif operator == "IN":
-                        condition_clauses.append(f'"{column}" {operator} ({quoted_value})')
+                    continue
+
+                if not column or value is None:
+                    continue
+
+                # IN expects a list-like value; we expand to N placeholders.
+                if operator == "IN":
+                    if isinstance(value, str):
+                        stripped = value.strip()
+                        # Upstream {{node.field}} that resolved to a list comes
+                        # in as a JSON-array string (because _substitute_variables
+                        # always returns a string). Try parsing it first so we
+                        # don't shred the array on commas inside JSON literals.
+                        if stripped.startswith("[") and stripped.endswith("]"):
+                            try:
+                                parsed = json.loads(stripped)
+                            except json.JSONDecodeError:
+                                parsed = None
+                            if isinstance(parsed, list):
+                                items = parsed
+                            else:
+                                items = [v.strip() for v in value.split(",") if v.strip()]
+                        else:
+                            # Back-compat: comma-separated string like "a, b, c"
+                            items = [v.strip() for v in value.split(",") if v.strip()]
+                    elif isinstance(value, (list, tuple)):
+                        items = list(value)
                     else:
-                        condition_clauses.append(f'"{column}" {operator} {quoted_value}')
+                        items = [value]
+
+                    if not items:
+                        continue
+
+                    placeholders = ", ".join(["?"] * len(items))
+                    condition_clauses.append(f'"{column}" IN ({placeholders})')
+                    condition_params.extend(items)
+                    continue
+
+                # Standard binary operators (=, !=, <, >, LIKE, etc.) — bind value as ?
+                condition_clauses.append(f'"{column}" {operator} ?')
+                condition_params.append(value)
 
             # Combine with existing where_clause if present
             if condition_clauses:
@@ -1808,7 +2635,7 @@ class HANATableNodeExecutor(BaseNodeExecutor):
                 else:
                     where_clause = conditions_where
 
-                print(f"[HANATableNodeExecutor] Built WHERE clause from conditions: {where_clause}")
+                print(f"[HANATableNodeExecutor] Built parameterized WHERE clause: {where_clause} (params={condition_params})")
 
         # Validate configuration
         if not connection_id:
@@ -1868,6 +2695,8 @@ class HANATableNodeExecutor(BaseNodeExecutor):
                 sql += f" LIMIT {limit}"
 
             print(f"[HANATableNodeExecutor] Executing SQL: {sql}")
+            if not custom_query and condition_params:
+                print(f"[HANATableNodeExecutor] With params: {condition_params}")
 
             # Connect to HANA and execute query
             connection = None
@@ -1884,7 +2713,16 @@ class HANATableNodeExecutor(BaseNodeExecutor):
 
                 connection = dbapi.connect(**connection_params)
                 cursor = connection.cursor()
-                cursor.execute(sql)
+                # Custom queries are pass-through (no parameterization layer here);
+                # the SELECT-only check upstream is the guardrail. Everything built
+                # from `conditions[]` uses ? placeholders + bound params, so values
+                # cannot escape the value slot regardless of input.
+                if custom_query:
+                    cursor.execute(sql)
+                elif condition_params:
+                    cursor.execute(sql, condition_params)
+                else:
+                    cursor.execute(sql)
 
                 # Fetch results
                 column_names = [desc[0] for desc in cursor.description]
@@ -1898,11 +2736,21 @@ class HANATableNodeExecutor(BaseNodeExecutor):
 
                 print(f"[HANATableNodeExecutor] Query returned {len(results)} rows")
 
-                # Store query params for context-aware snapshots
+                if self.config.hana_fail_on_empty and not results:
+                    raise ValueError(
+                        f"HANA node failed: query returned 0 rows. "
+                        f"Table: {table_name}, where: {where_clause or 'none'}"
+                    )
+
+                # Store query params for context-aware snapshots.
+                # We include the bound parameter values so execution details
+                # show exactly what was sent to HANA — useful for debugging
+                # when a query returns 0 rows.
                 query_params = {
                     "connection_id": connection_id,
                     "table_name": table_name,
                     "where_clause": where_clause,
+                    "bound_params": condition_params if not custom_query else [],
                     "limit": limit
                 }
 
@@ -2032,6 +2880,235 @@ class HANATableNodeExecutor(BaseNodeExecutor):
 
 
 # ============================================================================
+# JQ Node Executor
+# ============================================================================
+
+class JQNodeExecutor(BaseNodeExecutor):
+    """Execute jq node - transform JSON using a jq expression."""
+
+    async def execute(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            import jq  # type: ignore
+        except ImportError:
+            return {
+                **state,
+                "node_outputs": {
+                    **state.get("node_outputs", {}),
+                    state["current_node_id"]: {
+                        "status": "error",
+                        "error": "The 'jq' Python package is not installed. Run: pip install jq",
+                    },
+                },
+            }
+
+        input_data = state.get("input_data", {})
+        node_outputs = state.get("node_outputs", {})
+        current_node_id = state["current_node_id"]
+
+        expression = (self.config.jq_expression or "").strip()
+        if not expression:
+            return {
+                **state,
+                "node_outputs": {
+                    **node_outputs,
+                    current_node_id: {
+                        "status": "error",
+                        "error": "jq node requires a non-empty expression",
+                    },
+                },
+            }
+
+        json_input = self._resolve_input(input_data, node_outputs)
+
+        try:
+            program = jq.compile(expression)
+            results = program.input(json_input).all()
+        except Exception as e:
+            hint = self._diagnose_input_mismatch(json_input, expression)
+            error_msg = f"jq evaluation failed: {e}"
+            if hint:
+                error_msg += f" — {hint}"
+            if self.config.jq_on_error == "null":
+                return {
+                    **state,
+                    "node_outputs": {
+                        **node_outputs,
+                        current_node_id: {
+                            "status": "jq_completed",
+                            "expression": expression,
+                            "result": None,
+                            "warning": error_msg,
+                            "input_type": type(json_input).__name__,
+                        },
+                    },
+                }
+            return {
+                **state,
+                "node_outputs": {
+                    **node_outputs,
+                    current_node_id: {
+                        "status": "error",
+                        "error": error_msg,
+                        "expression": expression,
+                        "input_type": type(json_input).__name__,
+                        "input_keys": list(json_input.keys()) if isinstance(json_input, dict) else None,
+                    },
+                },
+            }
+
+        mode = self.config.jq_output_mode or "first"
+        if mode == "all":
+            output_value: Any = results
+        else:
+            output_value = results[0] if results else None
+
+        return {
+            **state,
+            "node_outputs": {
+                **node_outputs,
+                current_node_id: {
+                    "status": "jq_completed",
+                    "expression": expression,
+                    "result": output_value,
+                    "result_count": len(results),
+                },
+            },
+        }
+
+    def _resolve_input(
+        self,
+        input_data: Dict[str, Any],
+        node_outputs: Dict[str, Any],
+    ) -> Any:
+        """Pick the JSON value to feed into jq.
+
+        Priority:
+        1. ``jq_input_source`` template (e.g. ``{{node-id.field}}``) if configured.
+        2. Most recently produced upstream node output.
+        3. Empty dict as a safe default.
+
+        Supports two configured shapes:
+        - **Single reference**: ``{{node-id}}`` or ``{{node-id.field}}`` — the
+          value is fetched directly and returned as-is (preserves dict/list).
+        - **Multi-input JSON literal**: a JSON object/array whose string values
+          are ``{{...}}`` placeholders, e.g.
+          ``{"campaigns": "{{hana-1.data}}", "accounts": "{{api-1.data}}"}``.
+          Each placeholder is resolved via ``_lookup_variable`` (no SQL screen,
+          no JSON round-trip), giving the jq expression named inputs to work
+          with.
+        """
+        source = (self.config.jq_input_source or "").strip()
+        if source:
+            # Fast path: when the source is a single {{...}} reference, resolve it
+            # directly so the value stays a dict/list. Going through
+            # _substitute_variables would round-trip via json.dumps -> json.loads
+            # and also subject the data to the SQL-injection screen, which
+            # legitimately rejects values like "Decision Maker;User" that have
+            # nothing to do with SQL.
+            import re as _re
+            single_ref = _re.fullmatch(r"\s*\{\{\s*([^{}]+?)\s*\}\}\s*", source)
+            if single_ref:
+                var_name = single_ref.group(1).strip()
+                resolved_direct = self._lookup_variable(var_name, input_data, node_outputs)
+                if resolved_direct is not _SENTINEL_UNRESOLVED:
+                    return resolved_direct
+                # Fall through to the legacy path so the user gets the existing
+                # "could not be resolved" diagnostics.
+
+            # Multi-input path: treat ``source`` as a JSON literal whose string
+            # leaves may be ``{{node-id[.path]}}`` placeholders.
+            stripped = source.strip()
+            if stripped.startswith("{") or stripped.startswith("["):
+                try:
+                    parsed = json.loads(stripped)
+                except json.JSONDecodeError:
+                    parsed = None
+                if parsed is not None:
+                    return self._resolve_placeholders(parsed, input_data, node_outputs)
+
+            try:
+                resolved = self._substitute_variables(source, input_data, node_outputs)
+            except ValueError:
+                resolved = source
+            if isinstance(resolved, str):
+                stripped = resolved.strip()
+                if stripped.startswith("{") or stripped.startswith("["):
+                    try:
+                        return json.loads(stripped)
+                    except json.JSONDecodeError:
+                        return resolved
+            return resolved
+
+        if node_outputs:
+            last_key = list(node_outputs.keys())[-1]
+            return node_outputs[last_key]
+
+        return input_data or {}
+
+    def _resolve_placeholders(
+        self,
+        value: Any,
+        input_data: Dict[str, Any],
+        node_outputs: Dict[str, Any],
+    ) -> Any:
+        """Recursively replace ``{{node-id[.path]}}`` strings with their resolved values.
+
+        - A string that is exactly one placeholder becomes the raw value
+          (dict / list / scalar) — never stringified.
+        - Strings with placeholders mixed into other text fall through to
+          ``_substitute_variables`` (which stringifies and applies the SQL screen).
+        - Dicts and lists are walked.
+        """
+        import re as _re
+        if isinstance(value, str):
+            single = _re.fullmatch(r"\s*\{\{\s*([^{}]+?)\s*\}\}\s*", value)
+            if single:
+                resolved = self._lookup_variable(single.group(1).strip(), input_data, node_outputs)
+                if resolved is _SENTINEL_UNRESOLVED:
+                    raise ValueError(
+                        f"jq_input_source placeholder {{{{ {single.group(1).strip()} }}}} could not be resolved"
+                    )
+                return resolved
+            if "{{" in value:
+                return self._substitute_variables(value, input_data, node_outputs)
+            return value
+        if isinstance(value, list):
+            return [self._resolve_placeholders(v, input_data, node_outputs) for v in value]
+        if isinstance(value, dict):
+            return {k: self._resolve_placeholders(v, input_data, node_outputs) for k, v in value.items()}
+        return value
+
+    @staticmethod
+    def _diagnose_input_mismatch(json_input: Any, expression: str) -> str:
+        """Produce a one-line hint when jq fails so users know what to fix.
+
+        The most common mistake is feeding a HANA/API result *envelope*
+        (e.g. ``{status, data: [...], row_count}``) into an expression that
+        expects the underlying array. jq's native error ("Cannot index
+        string with string") is not actionable; this hint is.
+        """
+        if isinstance(json_input, dict):
+            array_fields = [k for k, v in json_input.items() if isinstance(v, list)]
+            if array_fields:
+                # Prefer 'data' / 'rows' / 'items' / 'results' which are the conventional names
+                preferred = next(
+                    (k for k in ("data", "rows", "items", "results") if k in array_fields),
+                    array_fields[0],
+                )
+                return (
+                    f"input is an object with keys {sorted(json_input.keys())}; "
+                    f"if you meant to operate on the array, set jq_input_source to "
+                    f"'{{{{<node-id>.{preferred}}}}}'"
+                )
+        if isinstance(json_input, str):
+            return (
+                "input resolved to a string; check that jq_input_source is "
+                "'{{node-id}}' or '{{node-id.field}}' and that the upstream node has run"
+            )
+        return ""
+
+
+# ============================================================================
 # Node Executor Factory
 # ============================================================================
 
@@ -2061,10 +3138,13 @@ def create_node_executor(node_type: NodeType, config: NodeConfig) -> BaseNodeExe
         NodeType.TEMPLATE: TemplateNodeExecutor,
         NodeType.DELAY: DelayNodeExecutor,
         NodeType.WEBHOOK: WebhookNodeExecutor,
+        NodeType.EMAIL: EmailNodeExecutor,
         NodeType.API: APINodeExecutor,
         NodeType.SNAPSHOT: SnapshotNodeExecutor,
         NodeType.COMPARE: CompareNodeExecutor,
         NodeType.HANA_TABLE: HANATableNodeExecutor,
+        NodeType.FOREACH: ForEachNodeExecutor,
+        NodeType.JQ: JQNodeExecutor,
     }
 
     executor_class = executors.get(node_type)

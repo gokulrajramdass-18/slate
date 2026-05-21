@@ -254,11 +254,17 @@ export default function SettingsApiConnectionsPage() {
                     <SelectItem value="bearer">Bearer Token</SelectItem>
                     <SelectItem value="api_key">API Key</SelectItem>
                     <SelectItem value="basic">Basic Auth</SelectItem>
+                    <SelectItem value="client_credentials">Client Credentials (OAuth 2.0)</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
 
-              {formData.auth_type !== "none" && (
+              {formData.auth_type === "client_credentials" ? (
+                <ClientCredentialsForm
+                  value={formData.auth_config}
+                  onChange={(next) => setFormData({ ...formData, auth_config: next })}
+                />
+              ) : formData.auth_type !== "none" && (
                 <div className="space-y-2">
                   <Label htmlFor="auth_config">Auth Config (JSON)</Label>
                   <Textarea
@@ -479,6 +485,91 @@ export default function SettingsApiConnectionsPage() {
           </CardContent>
         </Card>
       )}
+    </div>
+  );
+}
+
+// ============================================================================
+// Client Credentials Sub-Form
+// ============================================================================
+
+interface ClientCredentialsFormProps {
+  /** JSON string holding {token_url, client_id, client_secret, scope, audience} */
+  value: string;
+  onChange: (next: string) => void;
+}
+
+function ClientCredentialsForm({ value, onChange }: ClientCredentialsFormProps) {
+  let parsed: Record<string, string> = {};
+  try {
+    parsed = JSON.parse(value || "{}") || {};
+  } catch {
+    parsed = {};
+  }
+
+  const update = (key: string, val: string) => {
+    const next = { ...parsed, [key]: val };
+    // Strip empty optional fields so we don't send '' for scope/audience
+    if (!val) delete next[key];
+    onChange(JSON.stringify(next));
+  };
+
+  return (
+    <div className="space-y-3 rounded-md border border-gray-200 dark:border-gray-800 p-3">
+      <div className="space-y-2">
+        <Label htmlFor="cc-token-url">Token URL *</Label>
+        <Input
+          id="cc-token-url"
+          value={parsed.token_url || ""}
+          onChange={(e) => update("token_url", e.target.value)}
+          placeholder="https://auth.example.com/oauth/token"
+        />
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <div className="space-y-2">
+          <Label htmlFor="cc-client-id">Client ID *</Label>
+          <Input
+            id="cc-client-id"
+            value={parsed.client_id || ""}
+            onChange={(e) => update("client_id", e.target.value)}
+            autoComplete="off"
+          />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="cc-client-secret">Client Secret *</Label>
+          <Input
+            id="cc-client-secret"
+            type="password"
+            value={parsed.client_secret || ""}
+            onChange={(e) => update("client_secret", e.target.value)}
+            autoComplete="off"
+          />
+        </div>
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <div className="space-y-2">
+          <Label htmlFor="cc-scope">Scope (optional)</Label>
+          <Input
+            id="cc-scope"
+            value={parsed.scope || ""}
+            onChange={(e) => update("scope", e.target.value)}
+            placeholder="read:data write:data"
+          />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="cc-audience">Audience (optional)</Label>
+          <Input
+            id="cc-audience"
+            value={parsed.audience || ""}
+            onChange={(e) => update("audience", e.target.value)}
+            placeholder="https://api.example.com"
+          />
+        </div>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        At execution time, Slate exchanges these credentials for an access token at the
+        token URL and sends it as <code className="font-mono">Authorization: Bearer ...</code>.
+      </p>
     </div>
   );
 }

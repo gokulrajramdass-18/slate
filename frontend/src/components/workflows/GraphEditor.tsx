@@ -125,9 +125,15 @@ export function GraphEditor({
   currentGraphState.nodes = nodes;
   currentGraphState.edges = edges;
 
-  // Subscribe to store changes - load nodes/edges when store is updated
-  const storeNodesVersion = useGraphStore((state) => state.nodes.length);
-  const storeEdgesVersion = useGraphStore((state) => state.edges.length);
+  // Subscribe to store changes - load nodes/edges when store is updated.
+  // We use signatures (not just lengths) so a refetch that returns the same
+  // node/edge counts but different IDs still triggers a re-sync.
+  const storeNodesSig = useGraphStore((state) =>
+    state.nodes.map((n: any) => n.id).join('|'),
+  );
+  const storeEdgesSig = useGraphStore((state) =>
+    state.edges.map((e: any) => `${e.id}:${e.source}->${e.target}`).join('|'),
+  );
 
   React.useEffect(() => {
     const storeState = useGraphStore.getState();
@@ -135,11 +141,16 @@ export function GraphEditor({
     console.log('[GraphEditor] Store changed - nodes:', storeState.nodes.length, 'edges:', storeState.edges.length);
     console.log('[GraphEditor] Current React Flow - nodes:', nodes.length, 'edges:', edges.length);
 
-    // Only update if store has different content
     const storeNodesStr = JSON.stringify(storeState.nodes.map((n: any) => n.id).sort());
     const currentNodesStr = JSON.stringify(nodes.map((n: any) => n.id).sort());
+    const storeEdgesStr = JSON.stringify(
+      storeState.edges.map((e: any) => `${e.id}:${e.source}->${e.target}`).sort(),
+    );
+    const currentEdgesStr = JSON.stringify(
+      edges.map((e: any) => `${e.id}:${e.source}->${e.target}`).sort(),
+    );
 
-    if (storeNodesStr !== currentNodesStr) {
+    if (storeNodesStr !== currentNodesStr || storeEdgesStr !== currentEdgesStr) {
       console.log('[GraphEditor] Loading nodes/edges from store');
       setNodesRef.current(storeState.nodes);
       setEdgesRef.current(storeState.edges);
@@ -154,12 +165,20 @@ export function GraphEditor({
 
     // Expose setNodes for PropertyPanel
     (useGraphStore.getState() as any).__setNodesFromReactFlow = setNodesRef.current;
-  }, [storeNodesVersion, storeEdgesVersion, reactFlowInstance]); // Re-run when store content changes
+  }, [storeNodesSig, storeEdgesSig, reactFlowInstance]); // Re-run when store content changes
 
   // Handle connection between nodes
   const onConnect = useCallback(
     (connection: Connection) => {
-      setEdges((eds) => addEdge(connection, eds));
+      setEdges((eds) => {
+        const next = addEdge(connection, eds);
+        // Mirror into the store so the save mutation, refetch syncs, and
+        // any other consumers see the new edge immediately.
+        requestAnimationFrame(() => {
+          useGraphStore.getState().setEdges(next);
+        });
+        return next;
+      });
     },
     [setEdges]
   );

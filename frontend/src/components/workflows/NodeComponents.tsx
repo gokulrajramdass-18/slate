@@ -8,9 +8,44 @@ import React from 'react';
 import { Handle, Position, type NodeProps } from '@xyflow/react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { Bot, Wrench, Split, ArrowDownCircle, ArrowUpCircle, Loader2, CheckCircle, XCircle, Sparkles, Users, BookOpen, Globe, Clock, Webhook, GitBranch, FileStack, Database } from 'lucide-react';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { Bot, Wrench, Split, ArrowDownCircle, ArrowUpCircle, Loader2, CheckCircle, XCircle, Sparkles, Users, BookOpen, Globe, Clock, Webhook, GitBranch, FileStack, Database, Repeat, Mail, Braces } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { NodeData } from '@/lib/stores/graph-store';
+
+// ============================================================================
+// Hover Detail Wrapper
+// ============================================================================
+
+/**
+ * Wraps content with a hover tooltip showing the full details.
+ * The trigger uses `truncate` and a fixed width so long content doesn't expand
+ * the parent node.
+ */
+function HoverDetail({
+  preview,
+  full,
+  className,
+}: {
+  preview: React.ReactNode;
+  full: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <Tooltip delayDuration={150}>
+      <TooltipTrigger asChild>
+        <div className={cn("min-w-0 cursor-help", className)}>{preview}</div>
+      </TooltipTrigger>
+      <TooltipContent
+        side="top"
+        align="start"
+        className="max-w-[480px] break-all whitespace-pre-wrap font-mono text-[11px] leading-relaxed"
+      >
+        {full}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
 
 // ============================================================================
 // Helper Functions
@@ -109,7 +144,7 @@ export function OutputNode({ data, selected }: any) {
       />
 
       <Card className={cn(
-        "min-w-[220px] transition-all duration-200",
+        "w-[220px] transition-all duration-200",
         "bg-gradient-to-br from-blue-50 to-cyan-50 dark:from-blue-950 dark:to-cyan-950",
         "border",
         selected ? "ring-2 ring-blue-500/50 border-blue-500 shadow-lg" : "border-blue-200 dark:border-blue-800 hover:border-blue-400 shadow"
@@ -149,7 +184,7 @@ export function LLMNode({ data, selected }: any) {
       />
 
       <Card className={cn(
-        "min-w-[240px] transition-all duration-200",
+        "w-[240px] transition-all duration-200",
         "bg-gradient-to-br from-purple-50 via-violet-50 to-fuchsia-50 dark:from-purple-950 dark:via-violet-950 dark:to-fuchsia-950",
         "border",
         selected ? "ring-2 ring-purple-500/50 border-purple-500 shadow-lg" : "border-purple-200 dark:border-purple-800 hover:border-purple-400 shadow"
@@ -217,7 +252,7 @@ export function ToolNode({ data, selected }: any) {
       />
 
       <Card className={cn(
-        "min-w-[220px] transition-all duration-200",
+        "w-[220px] transition-all duration-200",
         "bg-gradient-to-br from-orange-50 to-amber-50 dark:from-orange-950 dark:to-amber-950",
         "border",
         selected ? "ring-2 ring-orange-500/50 border-orange-500 shadow-lg" : "border-orange-200 dark:border-orange-800 hover:border-orange-400 shadow"
@@ -343,7 +378,7 @@ export function AgentNode({ data, selected }: any) {
       />
 
       <Card className={cn(
-        "min-w-[240px] transition-all duration-200",
+        "w-[240px] transition-all duration-200",
         "bg-gradient-to-br from-teal-50 via-cyan-50 to-sky-50 dark:from-teal-950 dark:via-cyan-950 dark:to-sky-950",
         "border",
         selected ? "ring-2 ring-teal-500/50 border-teal-500 shadow-lg" : "border-teal-200 dark:border-teal-800 hover:border-teal-400 shadow"
@@ -408,7 +443,7 @@ export function NotebookGeneratorNode({ data, selected }: any) {
       <Handle type="target" position={Position.Left} className="!bg-purple-500" style={handleStyle} />
 
       <Card className={cn(
-        "min-w-[240px] transition-all duration-200",
+        "w-[240px] transition-all duration-200",
         "bg-gradient-to-br from-purple-50 via-violet-50 to-indigo-50 dark:from-purple-950 dark:via-violet-950 dark:to-indigo-950",
         "border",
         selected ? "ring-2 ring-purple-500/50 border-purple-500 shadow-lg" : "border-purple-200 dark:border-purple-800 hover:border-purple-400 shadow"
@@ -460,7 +495,7 @@ export function MicrositeGeneratorNode({ data, selected }: any) {
       <Handle type="target" position={Position.Left} className="!bg-pink-500" style={handleStyle} />
 
       <Card className={cn(
-        "min-w-[240px] transition-all duration-200",
+        "w-[240px] transition-all duration-200",
         "bg-gradient-to-br from-pink-50 via-rose-50 to-fuchsia-50 dark:from-pink-950 dark:via-rose-950 dark:to-fuchsia-950",
         "border",
         selected ? "ring-2 ring-pink-500/50 border-pink-500 shadow-lg" : "border-pink-200 dark:border-pink-800 hover:border-pink-400 shadow"
@@ -530,7 +565,7 @@ export function HumanApprovalNode({ data, selected }: any) {
       />
 
       <Card className={cn(
-        "min-w-[220px] transition-all duration-200",
+        "w-[220px] transition-all duration-200",
         "bg-gradient-to-br from-amber-50 to-orange-50 dark:from-amber-950 dark:to-orange-950",
         "border",
         selected ? "ring-2 ring-amber-500/50 border-amber-500 shadow-lg" : "border-amber-200 dark:border-amber-800 hover:border-amber-400 shadow"
@@ -608,7 +643,7 @@ export function WorkspaceNode({ data, selected }: any) {
       <Handle type="target" position={Position.Left} className="!bg-indigo-500" style={handleStyle} />
 
       <Card className={cn(
-        "min-w-[220px] transition-all duration-200",
+        "w-[220px] transition-all duration-200",
         "bg-gradient-to-br from-indigo-50 to-violet-50 dark:from-indigo-950 dark:to-violet-950",
         "border",
         selected ? "ring-2 ring-indigo-500/50 border-indigo-500 shadow-lg" : "border-indigo-200 dark:border-indigo-800 hover:border-indigo-400 shadow"
@@ -666,7 +701,7 @@ export function TemplateNode({ data, selected }: any) {
       <Handle type="target" position={Position.Left} className="!bg-teal-500" style={handleStyle} />
 
       <Card className={cn(
-        "min-w-[220px] transition-all duration-200",
+        "w-[220px] transition-all duration-200",
         "bg-gradient-to-br from-teal-50 to-cyan-50 dark:from-teal-950 dark:to-cyan-950",
         "border",
         selected ? "ring-2 ring-teal-500/50 border-teal-500 shadow-lg" : "border-teal-200 dark:border-teal-800 hover:border-teal-400 shadow"
@@ -724,7 +759,7 @@ export function DelayNode({ data, selected }: any) {
       <Handle type="target" position={Position.Left} className="!bg-gray-500" style={handleStyle} />
 
       <Card className={cn(
-        "min-w-[220px] transition-all duration-200",
+        "w-[220px] transition-all duration-200",
         "bg-gradient-to-br from-gray-50 to-slate-50 dark:from-gray-950 dark:to-slate-950",
         "border",
         selected ? "ring-2 ring-gray-500/50 border-gray-500 shadow-lg" : "border-gray-200 dark:border-gray-800 hover:border-gray-400 shadow"
@@ -751,9 +786,14 @@ export function DelayNode({ data, selected }: any) {
               {delaySeconds}s ({Math.floor(delaySeconds / 60)}m)
             </div>
           ) : delayExpression ? (
-            <div className="text-[10px] bg-white/50 dark:bg-black/20 p-1.5 rounded truncate">
-              <span className="font-mono">{delayExpression}</span>
-            </div>
+            <HoverDetail
+              preview={
+                <div className="text-[10px] bg-white/50 dark:bg-black/20 p-1.5 rounded truncate">
+                  <span className="font-mono">{delayExpression}</span>
+                </div>
+              }
+              full={delayExpression}
+            />
           ) : (
             <div className="text-[10px] text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/30 p-1.5 rounded flex items-center gap-1">
               <XCircle className="h-3 w-3" />
@@ -782,7 +822,7 @@ export function WebhookNode({ data, selected }: any) {
       <Handle type="target" position={Position.Left} className="!bg-emerald-500" style={handleStyle} />
 
       <Card className={cn(
-        "min-w-[220px] transition-all duration-200",
+        "w-[220px] transition-all duration-200",
         "bg-gradient-to-br from-emerald-50 to-green-50 dark:from-emerald-950 dark:to-green-950",
         "border",
         selected ? "ring-2 ring-emerald-500/50 border-emerald-500 shadow-lg" : "border-emerald-200 dark:border-emerald-800 hover:border-emerald-400 shadow"
@@ -805,10 +845,15 @@ export function WebhookNode({ data, selected }: any) {
         <CardContent className="pt-0 pb-2 px-3 space-y-1">
           {webhookUrl ? (
             <>
-              <div className="text-[10px] bg-white/50 dark:bg-black/20 p-1.5 rounded">
-                <Badge variant="secondary" className="text-[9px] px-1 py-0 h-3.5 mb-0.5">{webhookMethod}</Badge>
-                <div className="font-mono truncate mt-0.5">{webhookUrl}</div>
-              </div>
+              <HoverDetail
+                preview={
+                  <div className="text-[10px] bg-white/50 dark:bg-black/20 p-1.5 rounded">
+                    <Badge variant="secondary" className="text-[9px] px-1 py-0 h-3.5 mb-0.5">{webhookMethod}</Badge>
+                    <div className="font-mono truncate mt-0.5">{webhookUrl}</div>
+                  </div>
+                }
+                full={`${webhookMethod} ${webhookUrl}`}
+              />
               {authType !== 'none' && (
                 <div className="text-[10px] text-muted-foreground flex items-center gap-1">
                   <CheckCircle className="h-2.5 w-2.5" />
@@ -831,6 +876,90 @@ export function WebhookNode({ data, selected }: any) {
 }
 
 // ============================================================================
+// Email Node
+// ============================================================================
+
+export function EmailNode({ data, selected }: any) {
+  const toList: string[] = data.config.email_to || [];
+  const subject: string = data.config.email_subject || '';
+  const cc: string[] = data.config.email_cc || [];
+  const bcc: string[] = data.config.email_bcc || [];
+  const primary = toList[0];
+  const extra = toList.length - 1;
+
+  return (
+    <>
+      <Handle type="target" position={Position.Left} className="!bg-rose-500" style={handleStyle} />
+
+      <Card className={cn(
+        "w-[220px] transition-all duration-200",
+        "bg-gradient-to-br from-rose-50 to-pink-50 dark:from-rose-950 dark:to-pink-950",
+        "border",
+        selected ? "ring-2 ring-rose-500/50 border-rose-500 shadow-lg" : "border-rose-200 dark:border-rose-800 hover:border-rose-400 shadow"
+      )}>
+        <CardHeader className="pb-2 pt-2 px-3">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 min-w-0">
+              <div className="p-1.5 rounded bg-rose-500 text-white shadow-sm flex-shrink-0">
+                <Mail className="h-3.5 w-3.5" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <CardTitle className="text-sm font-semibold truncate">{data.label}</CardTitle>
+                <p className="text-[10px] text-muted-foreground truncate">Send email</p>
+              </div>
+            </div>
+            {getStatusBadge(data.status)}
+          </div>
+        </CardHeader>
+
+        <CardContent className="pt-0 pb-2 px-3 space-y-1">
+          {primary ? (
+            <>
+              <HoverDetail
+                preview={
+                  <div className="text-[10px] bg-white/50 dark:bg-black/20 p-1.5 rounded">
+                    <div className="font-mono truncate">
+                      {primary}{extra > 0 ? ` +${extra}` : ''}
+                    </div>
+                    {(cc.length > 0 || bcc.length > 0) && (
+                      <div className="text-muted-foreground mt-0.5">
+                        {cc.length > 0 && <span>CC: {cc.length}</span>}
+                        {cc.length > 0 && bcc.length > 0 && <span> · </span>}
+                        {bcc.length > 0 && <span>BCC: {bcc.length}</span>}
+                      </div>
+                    )}
+                  </div>
+                }
+                full={
+                  <div className="space-y-1">
+                    <div><strong>To:</strong> {toList.join(', ')}</div>
+                    {cc.length > 0 && <div><strong>CC:</strong> {cc.join(', ')}</div>}
+                    {bcc.length > 0 && <div><strong>BCC:</strong> {bcc.join(', ')}</div>}
+                    {subject && <div><strong>Subject:</strong> {subject}</div>}
+                  </div>
+                }
+              />
+              {subject && (
+                <div className="text-[10px] text-muted-foreground truncate">
+                  {subject}
+                </div>
+              )}
+            </>
+          ) : (
+            <div className="text-[10px] text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/30 p-1.5 rounded flex items-center gap-1">
+              <XCircle className="h-3 w-3" />
+              No recipients
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Handle type="source" position={Position.Right} className="!bg-rose-500" style={handleStyle} />
+    </>
+  );
+}
+
+// ============================================================================
 // Hana Table Node
 // ============================================================================
 
@@ -844,7 +973,7 @@ export function HanaTableNode({ data, selected }: any) {
       <Handle type="target" position={Position.Left} className="!bg-cyan-500" style={handleStyle} />
 
       <Card className={cn(
-        "min-w-[220px] transition-all duration-200",
+        "w-[220px] transition-all duration-200",
         "bg-gradient-to-br from-cyan-50 to-blue-50 dark:from-cyan-950 dark:to-blue-950",
         "border",
         selected ? "ring-2 ring-cyan-500/50 border-cyan-500 shadow-lg" : "border-cyan-200 dark:border-cyan-800 hover:border-cyan-400 shadow"
@@ -867,9 +996,14 @@ export function HanaTableNode({ data, selected }: any) {
         <CardContent className="pt-0 pb-2 px-3 space-y-1">
           {tableName ? (
             <>
-              <div className="text-[10px] bg-white/50 dark:bg-black/20 p-1.5 rounded">
-                <div className="font-mono font-semibold truncate">{tableName}</div>
-              </div>
+              <HoverDetail
+                preview={
+                  <div className="text-[10px] bg-white/50 dark:bg-black/20 p-1.5 rounded">
+                    <div className="font-mono font-semibold truncate">{tableName}</div>
+                  </div>
+                }
+                full={tableName}
+              />
               {conditions.length > 0 && (
                 <div className="text-[10px] text-muted-foreground flex items-center gap-1">
                   <CheckCircle className="h-2.5 w-2.5" />
@@ -906,7 +1040,7 @@ export function APINode({ data, selected }: any) {
       <Handle type="target" position={Position.Left} className="!bg-violet-500" style={handleStyle} />
 
       <Card className={cn(
-        "min-w-[220px] transition-all duration-200",
+        "w-[220px] transition-all duration-200",
         "bg-gradient-to-br from-violet-50 to-purple-50 dark:from-violet-950 dark:to-purple-950",
         "border",
         selected ? "ring-2 ring-violet-500/50 border-violet-500 shadow-lg" : "border-violet-200 dark:border-violet-800 hover:border-violet-400 shadow"
@@ -929,13 +1063,18 @@ export function APINode({ data, selected }: any) {
         <CardContent className="pt-0 pb-2 px-3 space-y-1">
           {(connectionId || endpoint) ? (
             <>
-              <div className="text-[10px] bg-white/50 dark:bg-black/20 p-1.5 rounded">
-                <div className="font-mono font-semibold truncate">
-                  {connectionId ? (
-                    apiPath ? `...${apiPath}` : 'Connection configured'
-                  ) : endpoint}
-                </div>
-              </div>
+              <HoverDetail
+                preview={
+                  <div className="text-[10px] bg-white/50 dark:bg-black/20 p-1.5 rounded">
+                    <div className="font-mono font-semibold truncate">
+                      {connectionId ? (
+                        apiPath ? `...${apiPath}` : 'Connection configured'
+                      ) : endpoint}
+                    </div>
+                  </div>
+                }
+                full={connectionId ? (apiPath || 'Connection configured') : endpoint}
+              />
               {enableSnapshots && (
                 <div className="text-[10px] text-muted-foreground flex items-center gap-1">
                   <CheckCircle className="h-2.5 w-2.5 text-green-500" />
@@ -971,7 +1110,7 @@ export function SnapshotNode({ data, selected }: any) {
       <Handle type="target" position={Position.Left} className="!bg-cyan-500" style={handleStyle} />
 
       <Card className={cn(
-        "min-w-[220px] transition-all duration-200",
+        "w-[220px] transition-all duration-200",
         "bg-gradient-to-br from-cyan-50 to-sky-50 dark:from-cyan-950 dark:to-sky-950",
         "border",
         selected ? "ring-2 ring-cyan-500/50 border-cyan-500 shadow-lg" : "border-cyan-200 dark:border-cyan-800 hover:border-cyan-400 shadow"
@@ -1043,7 +1182,7 @@ export function CompareNode({ data, selected }: any) {
       <Handle type="target" position={Position.Left} className="!bg-violet-500" style={handleStyle} />
 
       <Card className={cn(
-        "min-w-[220px] transition-all duration-200",
+        "w-[220px] transition-all duration-200",
         "bg-gradient-to-br from-violet-50 to-purple-50 dark:from-violet-950 dark:to-purple-950",
         "border",
         selected ? "ring-2 ring-violet-500/50 border-violet-500 shadow-lg" : "border-violet-200 dark:border-violet-800 hover:border-violet-400 shadow"
@@ -1091,6 +1230,140 @@ export function CompareNode({ data, selected }: any) {
 }
 
 // ============================================================================
+// ForEach Node
+// ============================================================================
+
+export function ForEachNode({ data, selected }: any) {
+  const source = data.config.foreach_source;
+  const onError = data.config.foreach_on_error || 'continue';
+  const maxItems = data.config.foreach_max_items ?? 1000;
+
+  return (
+    <>
+      <Handle type="target" position={Position.Left} className="!bg-emerald-500" style={handleStyle} />
+
+      <Card className={cn(
+        "w-[240px] transition-all duration-200",
+        "bg-gradient-to-br from-emerald-50 to-teal-50 dark:from-emerald-950 dark:to-teal-950",
+        "border",
+        selected ? "ring-2 ring-emerald-500/50 border-emerald-500 shadow-lg" : "border-emerald-200 dark:border-emerald-800 hover:border-emerald-400 shadow"
+      )}>
+        <CardHeader className="pb-2 pt-2 px-3">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 min-w-0">
+              <div className="p-1.5 rounded bg-emerald-500 text-white shadow-sm flex-shrink-0">
+                <Repeat className="h-3.5 w-3.5" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <CardTitle className="text-sm font-semibold truncate">{data.label}</CardTitle>
+                <p className="text-[10px] text-muted-foreground truncate">For Each Item</p>
+              </div>
+            </div>
+            {getStatusBadge(data.status)}
+          </div>
+        </CardHeader>
+
+        <CardContent className="pt-0 pb-2 px-3 space-y-1">
+          {source ? (
+            <HoverDetail
+              preview={
+                <div className="text-[10px] bg-white/50 dark:bg-black/20 p-1.5 rounded font-mono truncate">{source}</div>
+              }
+              full={source}
+            />
+          ) : (
+            <div className="text-[10px] text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/30 p-1.5 rounded flex items-center gap-1">
+              <XCircle className="h-3 w-3" />
+              Source not configured
+            </div>
+          )}
+          <div className="text-[10px] text-muted-foreground">on error: {onError} · max: {maxItems}</div>
+          <div className="flex items-center justify-between text-[9px] uppercase tracking-wide pt-0.5">
+            <span className="text-emerald-600 dark:text-emerald-400 font-semibold">each →</span>
+            <span className="text-sky-600 dark:text-sky-400 font-semibold">done →</span>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Two source handles: each (per-item) and done (after all) */}
+      <Handle
+        type="source"
+        position={Position.Right}
+        id="each"
+        className="!bg-emerald-500"
+        style={{ ...handleStyle, top: '40%' }}
+      />
+      <Handle
+        type="source"
+        position={Position.Right}
+        id="done"
+        className="!bg-sky-500"
+        style={{ ...handleStyle, top: '70%' }}
+      />
+    </>
+  );
+}
+
+// ============================================================================
+// JQ Node
+// ============================================================================
+
+export function JQNode({ data, selected }: any) {
+  const expression = data.config.jq_expression as string | undefined;
+  const outputMode = data.config.jq_output_mode || 'first';
+
+  return (
+    <>
+      <Handle type="target" position={Position.Left} className="!bg-amber-500" style={handleStyle} />
+
+      <Card className={cn(
+        "w-[220px] transition-all duration-200",
+        "bg-gradient-to-br from-amber-50 to-yellow-50 dark:from-amber-950 dark:to-yellow-950",
+        "border",
+        selected ? "ring-2 ring-amber-500/50 border-amber-500 shadow-lg" : "border-amber-200 dark:border-amber-800 hover:border-amber-400 shadow"
+      )}>
+        <CardHeader className="pb-2 pt-2 px-3">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 min-w-0">
+              <div className="p-1.5 rounded bg-amber-500 text-white shadow-sm flex-shrink-0">
+                <Braces className="h-3.5 w-3.5" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <CardTitle className="text-sm font-semibold truncate">{data.label}</CardTitle>
+                <p className="text-[10px] text-muted-foreground truncate">
+                  jq · {outputMode === 'all' ? 'all results' : 'first result'}
+                </p>
+              </div>
+            </div>
+            {getStatusBadge(data.status)}
+          </div>
+        </CardHeader>
+
+        <CardContent className="pt-0 pb-2 px-3 space-y-1">
+          {expression ? (
+            <HoverDetail
+              preview={
+                <div className="text-[10px] bg-white/50 dark:bg-black/20 p-1.5 rounded font-mono truncate">
+                  {expression}
+                </div>
+              }
+              full={expression}
+            />
+          ) : (
+            <div className="text-[10px] text-amber-700 dark:text-amber-300 bg-amber-100/50 dark:bg-amber-950/40 p-1.5 rounded flex items-center gap-1">
+              <XCircle className="h-3 w-3" />
+              No expression
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Handle type="source" position={Position.Right} className="!bg-amber-500" style={handleStyle} />
+    </>
+  );
+}
+
+// ============================================================================
 // Node Type Map
 // ============================================================================
 
@@ -1108,8 +1381,11 @@ export const nodeTypes = {
   template: TemplateNode,
   delay: DelayNode,
   webhook: WebhookNode,
+  email: EmailNode,
   api: APINode,
   hana_table: HanaTableNode,
   snapshot: SnapshotNode,
   compare: CompareNode,
+  foreach: ForEachNode,
+  jq: JQNode,
 };

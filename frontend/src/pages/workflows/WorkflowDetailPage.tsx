@@ -30,6 +30,21 @@ import {
 } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { useLookupList } from "@/lib/hooks/use-lookup-list";
+
+const FALLBACK_CATEGORIES = [
+  { value: "custom", label: "Custom", sort_order: 99 },
+  { value: "data_processing", label: "Data Processing", sort_order: 1 },
+  { value: "automation", label: "Automation", sort_order: 2 },
+  { value: "analytics", label: "Analytics", sort_order: 3 },
+  { value: "integration", label: "Integration", sort_order: 4 },
+  { value: "ai_ml", label: "AI/ML", sort_order: 5 },
+];
+import {
+  InputFieldsPromptDialog,
+  hasRequiredInputFields,
+  getRequiredInputFields,
+} from '@/components/workflows/InputFieldsPromptDialog';
 
 // ============================================================================
 // Workflow Editor Page
@@ -170,6 +185,12 @@ export default function WorkflowDetailPage() {
     onSuccess: (data) => {
       toast.success(`Workflow ${isNew ? 'created' : 'updated'} successfully`);
 
+      // Force the canvas to re-sync from the freshly persisted server state on
+      // the next refetch (otherwise the load guard short-circuits and any
+      // post-save divergence between RF state and the store would leave stale
+      // visuals — e.g. a just-created edge briefly disappearing).
+      loadedWorkflowIdRef.current = null;
+
       queryClient.invalidateQueries({ queryKey: ['workflows'] });
       queryClient.invalidateQueries({ queryKey: ['workflow', workflowId] });
 
@@ -188,7 +209,8 @@ export default function WorkflowDetailPage() {
 
   // Execute mutation with polling
   const executeMutation = useMutation({
-    mutationFn: () => workflowsApi.execute(workflowId),
+    mutationFn: (inputData?: Record<string, any>) =>
+      workflowsApi.execute(workflowId, inputData),
     onSuccess: (execution) => {
       toast.success('Workflow execution started');
 
@@ -209,6 +231,12 @@ export default function WorkflowDetailPage() {
   const [templateDescription, setTemplateDescription] = React.useState('');
   const [templateCategory, setTemplateCategory] = React.useState('custom');
   const [templateIsPublic, setTemplateIsPublic] = React.useState(false);
+
+  // Admin-managed category options with safe fallback
+  const { options: categoryOptions } = useLookupList(
+    'workflow_template_categories',
+    FALLBACK_CATEGORIES
+  );
 
   // Save as template mutation
   const saveTemplateMutation = useMutation({
@@ -283,13 +311,20 @@ export default function WorkflowDetailPage() {
     saveMutation.mutate();
   };
 
+  const [showInputPrompt, setShowInputPrompt] = React.useState(false);
+
   const handleExecute = () => {
     if (isNew) {
       toast.error('Please save the workflow before executing');
       return;
     }
 
-    executeMutation.mutate();
+    if (hasRequiredInputFields(workflow)) {
+      setShowInputPrompt(true);
+      return;
+    }
+
+    executeMutation.mutate(undefined);
   };
 
   const handleSettings = () => {
@@ -478,6 +513,16 @@ export default function WorkflowDetailPage() {
               <Button
                 size="sm"
                 variant="outline"
+                onClick={() => (window as any).__workflowAddNode?.('email')}
+                disabled={isExecuting}
+                className="h-7 px-2 text-xs shrink-0"
+              >
+                <Plus className="h-3 w-3 mr-1" />
+                Email
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
                 onClick={() => (window as any).__workflowAddNode?.('hana_table')}
                 disabled={isExecuting}
                 className="h-7 px-2 text-xs shrink-0"
@@ -504,6 +549,26 @@ export default function WorkflowDetailPage() {
               >
                 <Plus className="h-3 w-3 mr-1" />
                 Compare
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => (window as any).__workflowAddNode?.('foreach')}
+                disabled={isExecuting}
+                className="h-7 px-2 text-xs shrink-0"
+              >
+                <Plus className="h-3 w-3 mr-1" />
+                ForEach
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => (window as any).__workflowAddNode?.('jq')}
+                disabled={isExecuting}
+                className="h-7 px-2 text-xs shrink-0"
+              >
+                <Plus className="h-3 w-3 mr-1" />
+                JQ
               </Button>
             </div>
           </div>
@@ -627,6 +692,21 @@ export default function WorkflowDetailPage() {
         )}
       </div>
 
+      {/* Required Input Fields Prompt Dialog */}
+      <InputFieldsPromptDialog
+        open={showInputPrompt}
+        onOpenChange={setShowInputPrompt}
+        fields={getRequiredInputFields(workflow)}
+        title="Provide Workflow Inputs"
+        description="This workflow requires input values before it can run."
+        submitLabel="Execute"
+        submitting={executeMutation.isPending}
+        onSubmit={(values) => {
+          setShowInputPrompt(false);
+          executeMutation.mutate(values);
+        }}
+      />
+
       {/* Save as Template Dialog */}
       <Dialog open={showTemplateDialog} onOpenChange={setShowTemplateDialog}>
         <DialogContent className="sm:max-w-[500px]">
@@ -664,12 +744,11 @@ export default function WorkflowDetailPage() {
                 onChange={(e) => setTemplateCategory(e.target.value)}
                 className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
-                <option value="custom">Custom</option>
-                <option value="data_processing">Data Processing</option>
-                <option value="automation">Automation</option>
-                <option value="analytics">Analytics</option>
-                <option value="integration">Integration</option>
-                <option value="ai_ml">AI/ML</option>
+                {categoryOptions.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
               </select>
             </div>
             <div className="flex items-center space-x-2 pt-2 pb-2 px-3 bg-muted/50 rounded-lg border border-dashed">

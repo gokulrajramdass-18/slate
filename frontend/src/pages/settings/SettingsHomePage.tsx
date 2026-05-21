@@ -18,7 +18,8 @@ import {
   UserCircle,
   Shield,
   Newspaper,
-  Activity
+  Activity,
+  List
 } from "lucide-react";
 
 const settingsCards = [
@@ -159,6 +160,14 @@ const settingsCards = [
     icon: Shield,
     color: "text-purple-600",
     bgColor: "bg-purple-50 dark:bg-purple-950"
+  },
+  {
+    href: "/settings/lookups",
+    title: "Lookup Lists",
+    description: "Manage admin-curated dropdown values used across the app",
+    icon: List,
+    color: "text-indigo-600",
+    bgColor: "bg-indigo-50 dark:bg-indigo-950"
   },
   {
     href: "/settings/smtp",

@@ -31,22 +31,51 @@ echo -e "${YELLOW}Stopping any existing processes...${NC}"
 ./stop.sh 2>/dev/null
 sleep 2
 
+# Belt and braces: free the ports in case stop.sh missed orphaned processes.
+for port in 5056 5055 3000; do
+    pids=$(lsof -ti tcp:$port 2>/dev/null)
+    if [ -n "$pids" ]; then
+        echo -e "${YELLOW}Port $port still in use (PIDs: $pids), killing...${NC}"
+        kill -9 $pids 2>/dev/null
+    fi
+done
+sleep 1
+
+# Helper: poll a URL until it responds or timeout. Args: url, max_seconds, label
+wait_for_http() {
+    local url=$1 max=$2 label=$3
+    local i=0
+    while [ $i -lt $max ]; do
+        if curl -s "$url" > /dev/null 2>&1; then
+            return 0
+        fi
+        sleep 1
+        i=$((i+1))
+    done
+    return 1
+}
+
 # Start SAP AI Core API
 echo -e "${GREEN}[1/3] Starting SAP AI Core API on port 5056...${NC}"
 cd sap-ai-core-api
-python main.py > ../sap-ai-core-api.log 2>&1 &
+# Prefer the local venv if present (it has gen-ai-hub deps installed)
+if [ -x venv/bin/python ]; then
+    SAP_PY=venv/bin/python
+else
+    SAP_PY=python
+fi
+$SAP_PY main.py > ../sap-ai-core-api.log 2>&1 &
 SAP_AI_CORE_PID=$!
 echo $SAP_AI_CORE_PID > ../.sap-ai-core-api.pid
 cd ..
-sleep 4
 
-# Check if SAP AI Core API started
-if curl -s http://localhost:5056/health > /dev/null 2>&1; then
+# Check if SAP AI Core API started (poll up to 30s)
+if wait_for_http http://localhost:5056/health 30 "SAP AI Core API"; then
     echo -e "${GREEN}✓ SAP AI Core API started (PID: $SAP_AI_CORE_PID)${NC}"
 else
     echo -e "${RED}✗ SAP AI Core API failed to start${NC}"
     echo -e "${YELLOW}Check logs: tail -f sap-ai-core-api.log${NC}"
-    tail -10 sap-ai-core-api.log
+    tail -20 sap-ai-core-api.log
     exit 1
 fi
 
@@ -57,15 +86,14 @@ uvicorn api.main:app --host 0.0.0.0 --port 5055 --reload > ../backend.log 2>&1 &
 BACKEND_PID=$!
 echo $BACKEND_PID > ../.backend.pid
 cd ..
-sleep 8
 
-# Check if Backend API started
-if curl -s http://localhost:5055/api/health > /dev/null 2>&1; then
+# Check if Backend API started (poll up to 45s — uvicorn cold start can be slow)
+if wait_for_http http://localhost:5055/api/health 45 "Backend API"; then
     echo -e "${GREEN}✓ Backend API started (PID: $BACKEND_PID)${NC}"
 else
     echo -e "${RED}✗ Backend API failed to start${NC}"
     echo -e "${YELLOW}Check logs: tail -f backend.log${NC}"
-    tail -20 backend.log
+    tail -30 backend.log
     exit 1
 fi
 
@@ -76,10 +104,9 @@ npm run dev > ../frontend.log 2>&1 &
 FRONTEND_PID=$!
 echo $FRONTEND_PID > ../.frontend.pid
 cd ..
-sleep 6
 
-# Check if Frontend started
-if curl -s http://localhost:3000 > /dev/null 2>&1; then
+# Check if Frontend started (poll up to 60s — Next.js dev compile)
+if wait_for_http http://localhost:3000 60 "Frontend"; then
     echo -e "${GREEN}✓ Frontend started (PID: $FRONTEND_PID)${NC}"
 else
     echo -e "${RED}✗ Frontend failed to start${NC}"

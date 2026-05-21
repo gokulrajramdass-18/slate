@@ -65,6 +65,7 @@ a2a-sdk[http-server,sqlite,telemetry]>=0.3.0
 # JSON/XML parsing
 jsonpath-ng>=1.6.0
 lxml>=5.0.0
+jq>=1.6.0
 
 # Development (optional)
 pytest>=7.4.0

@@ -30,6 +30,13 @@ import {
   Calendar,
   Copy,
   Workflow as WorkflowIcon,
+  BarChart,
+  Link as LinkIcon,
+  Megaphone,
+  DollarSign,
+  ShieldCheck,
+  Wrench,
+  type LucideIcon,
 } from 'lucide-react';
 import {
   DropdownMenu,
@@ -38,6 +45,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { cn } from '@/lib/utils';
+import { useLookupList } from '@/lib/hooks/use-lookup-list';
 
 // ============================================================================
 // Types
@@ -66,14 +74,68 @@ interface WorkflowTemplate {
 // Category Configuration
 // ============================================================================
 
-const categories = [
-  { id: 'all', name: 'All Templates', icon: Sparkles, color: 'from-purple-500 to-pink-500' },
-  { id: 'data', name: 'Data Processing', icon: Database, color: 'from-blue-500 to-cyan-500' },
-  { id: 'research', name: 'Research', icon: Brain, color: 'from-green-500 to-emerald-500' },
-  { id: 'automation', name: 'Automation', icon: Zap, color: 'from-yellow-500 to-orange-500' },
-  { id: 'content', name: 'Content Generation', icon: FileText, color: 'from-indigo-500 to-purple-500' },
-  { id: 'analysis', name: 'Analysis', icon: TrendingUp, color: 'from-red-500 to-pink-500' },
-  { id: 'other', name: 'Other', icon: Settings, color: 'from-gray-500 to-slate-500' },
+// Lucide icon names admins can reference from the Settings → Lookup Lists page.
+const ICON_MAP: Record<string, LucideIcon> = {
+  Sparkles,
+  Database,
+  Brain,
+  Zap,
+  FileText,
+  TrendingUp,
+  Settings,
+  BarChart,
+  Link: LinkIcon,
+  Megaphone,
+  DollarSign,
+  ShieldCheck,
+  Wrench,
+};
+
+// Tailwind gradient classes used by the chips. Key off the saved hex color so
+// admin-defined colors render predictably; fall back to a neutral gradient.
+const COLOR_GRADIENTS: Record<string, string> = {
+  '#2563eb': 'from-blue-500 to-cyan-500',
+  '#f59e0b': 'from-yellow-500 to-orange-500',
+  '#10b981': 'from-green-500 to-emerald-500',
+  '#8b5cf6': 'from-indigo-500 to-purple-500',
+  '#ec4899': 'from-pink-500 to-rose-500',
+  '#ef4444': 'from-red-500 to-pink-500',
+  '#14b8a6': 'from-teal-500 to-cyan-500',
+  '#6366f1': 'from-indigo-500 to-blue-500',
+  '#0ea5e9': 'from-sky-500 to-blue-500',
+  '#64748b': 'from-gray-500 to-slate-500',
+};
+
+interface CategoryChip {
+  id: string;
+  name: string;
+  icon: LucideIcon;
+  color: string;
+}
+
+const STATIC_ALL: CategoryChip = {
+  id: 'all',
+  name: 'All Templates',
+  icon: Sparkles,
+  color: 'from-purple-500 to-pink-500',
+};
+
+const STATIC_OTHER: CategoryChip = {
+  id: 'other',
+  name: 'Other',
+  icon: Settings,
+  color: 'from-gray-500 to-slate-500',
+};
+
+// Used when the lookup API is unreachable. Slugs match the seed in
+// schema_clean.sql so the chip ids align with template.category values.
+const FALLBACK_CATEGORIES = [
+  { value: 'data_processing', label: 'Data Processing', icon: 'Database', color: '#2563eb', sort_order: 1 },
+  { value: 'automation', label: 'Automation', icon: 'Zap', color: '#f59e0b', sort_order: 2 },
+  { value: 'analytics', label: 'Analytics', icon: 'BarChart', color: '#10b981', sort_order: 3 },
+  { value: 'integration', label: 'Integration', icon: 'Link', color: '#8b5cf6', sort_order: 4 },
+  { value: 'ai_ml', label: 'AI/ML', icon: 'Sparkles', color: '#ec4899', sort_order: 5 },
+  { value: 'custom', label: 'Custom', icon: 'Wrench', color: '#64748b', sort_order: 99 },
 ];
 
 // ============================================================================
@@ -82,13 +144,17 @@ const categories = [
 
 interface TemplateCardProps {
   template: WorkflowTemplate;
+  categories: CategoryChip[];
   onExecute: (template: WorkflowTemplate) => void;
   onView: (template: WorkflowTemplate) => void;
   onSchedule: (template: WorkflowTemplate) => void;
 }
 
-function FancyTemplateCard({ template, onExecute, onView, onSchedule }: TemplateCardProps) {
-  const category = categories.find(c => c.id === template.category) || categories[categories.length - 1];
+function FancyTemplateCard({ template, categories, onExecute, onView, onSchedule }: TemplateCardProps) {
+  const category =
+    categories.find((c) => c.id === template.category) ||
+    categories.find((c) => c.id === 'other') ||
+    STATIC_OTHER;
   const CategoryIcon = category.icon;
 
   return (
@@ -135,7 +201,7 @@ function FancyTemplateCard({ template, onExecute, onView, onSchedule }: Template
       </div>
 
       <CardHeader className="space-y-3 pb-3 relative z-10">
-        <CardTitle className="text-xl font-bold leading-tight line-clamp-2 group-hover:text-primary transition-colors">
+        <CardTitle className="text-xl font-bold leading-tight line-clamp-2 group-hover:text-primary transition-colors pr-32">
           {template.name}
         </CardTitle>
         <CardDescription className="line-clamp-2 text-sm leading-relaxed">
@@ -258,13 +324,43 @@ export function PublicGallery({
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [sortBy, setSortBy] = useState<'popular' | 'recent' | 'name'>('popular');
 
+  // Admin-curated category list with safe fallback
+  const { options: lookupCategories } = useLookupList(
+    'workflow_template_categories',
+    FALLBACK_CATEGORIES
+  );
+
+  const categories: CategoryChip[] = useMemo(() => {
+    const dynamic: CategoryChip[] = lookupCategories.map((opt) => ({
+      id: opt.value,
+      name: opt.label,
+      icon: (opt.icon && ICON_MAP[opt.icon]) || Settings,
+      color:
+        (opt.color && COLOR_GRADIENTS[opt.color.toLowerCase()]) ||
+        'from-slate-500 to-gray-500',
+    }));
+
+    const ensureOther = dynamic.some((c) => c.id === 'other')
+      ? []
+      : [STATIC_OTHER];
+
+    return [STATIC_ALL, ...dynamic, ...ensureOther];
+  }, [lookupCategories]);
+
   // Filter and sort templates
   const filteredTemplates = useMemo(() => {
     let filtered = templates;
 
     // Category filter
     if (selectedCategory !== 'all') {
-      filtered = filtered.filter(t => t.category === selectedCategory);
+      if (selectedCategory === 'other') {
+        const knownIds = new Set(
+          categories.filter((c) => c.id !== 'all' && c.id !== 'other').map((c) => c.id)
+        );
+        filtered = filtered.filter((t) => !t.category || !knownIds.has(t.category));
+      } else {
+        filtered = filtered.filter((t) => t.category === selectedCategory);
+      }
     }
 
     // Search filter
@@ -292,7 +388,7 @@ export function PublicGallery({
     });
 
     return filtered;
-  }, [templates, selectedCategory, searchQuery, sortBy]);
+  }, [templates, selectedCategory, searchQuery, sortBy, categories]);
 
   return (
     <div className="space-y-6">
@@ -381,7 +477,14 @@ export function PublicGallery({
               >
                 {category.id === 'all'
                   ? templates.length
-                  : templates.filter(t => t.category === category.id).length
+                  : category.id === 'other'
+                  ? (() => {
+                      const knownIds = new Set(
+                        categories.filter((c) => c.id !== 'all' && c.id !== 'other').map((c) => c.id)
+                      );
+                      return templates.filter((t) => !t.category || !knownIds.has(t.category)).length;
+                    })()
+                  : templates.filter((t) => t.category === category.id).length
                 }
               </Badge>
             </button>
@@ -426,6 +529,7 @@ export function PublicGallery({
             <FancyTemplateCard
               key={template.id}
               template={template}
+              categories={categories}
               onExecute={onExecute}
               onView={onView}
               onSchedule={onSchedule}

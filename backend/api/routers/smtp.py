@@ -5,10 +5,10 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, EmailStr
 from datetime import datetime
-from open_notebook.config import get_database
+from open_notebook.database.repository import repo_query, repo_execute
 from api.services.smtp_service import SMTPService
 
-router = APIRouter(prefix="/smtp", tags=["smtp"])
+router = APIRouter(prefix="/api/smtp", tags=["smtp"])
 
 
 class SMTPConfigCreate(BaseModel):
@@ -56,9 +56,8 @@ class SMTPTestRequest(BaseModel):
 @router.get("/config", response_model=Optional[SMTPConfigResponse])
 async def get_smtp_config():
     """Get current SMTP configuration (without password)"""
-    db = get_database()
     query = "SELECT * FROM smtp_config WHERE id = 'default'"
-    results = await db.query(query)
+    results = await repo_query(query)
 
     if not results:
         return None
@@ -83,11 +82,9 @@ async def get_smtp_config():
 @router.post("/config", response_model=SMTPConfigResponse, status_code=status.HTTP_201_CREATED)
 async def create_or_update_smtp_config(config_data: SMTPConfigCreate):
     """Create or update SMTP configuration"""
-    db = get_database()
-
     # Check if config exists
     check_query = "SELECT * FROM smtp_config WHERE id = 'default'"
-    existing = await db.query(check_query)
+    existing = await repo_query(check_query)
 
     now = datetime.utcnow().isoformat()
 
@@ -106,7 +103,7 @@ async def create_or_update_smtp_config(config_data: SMTPConfigCreate):
                 updated = :updated
             WHERE id = 'default'
         """
-        await db.execute(update_query, {
+        await repo_execute(update_query, {
             "smtp_host": config_data.smtp_host,
             "smtp_port": config_data.smtp_port,
             "smtp_username": config_data.smtp_username,
@@ -130,7 +127,7 @@ async def create_or_update_smtp_config(config_data: SMTPConfigCreate):
                 1, :created, :updated
             )
         """
-        await db.execute(insert_query, {
+        await repo_execute(insert_query, {
             "smtp_host": config_data.smtp_host,
             "smtp_port": config_data.smtp_port,
             "smtp_username": config_data.smtp_username,
@@ -162,11 +159,9 @@ async def create_or_update_smtp_config(config_data: SMTPConfigCreate):
 @router.put("/config", response_model=SMTPConfigResponse)
 async def update_smtp_config(update_data: SMTPConfigUpdate):
     """Partially update SMTP configuration"""
-    db = get_database()
-
     # Check if config exists
     check_query = "SELECT * FROM smtp_config WHERE id = 'default'"
-    existing = await db.query(check_query)
+    existing = await repo_query(check_query)
 
     if not existing:
         raise HTTPException(
@@ -218,10 +213,10 @@ async def update_smtp_config(update_data: SMTPConfigUpdate):
 
     if len(updates) > 1:  # More than just 'updated'
         query = f"UPDATE smtp_config SET {', '.join(updates)} WHERE id = 'default'"
-        await db.execute(query, params)
+        await repo_execute(query, params)
 
     # Fetch and return updated config
-    results = await db.query("SELECT * FROM smtp_config WHERE id = 'default'")
+    results = await repo_query("SELECT * FROM smtp_config WHERE id = 'default'")
     config = results[0]
 
     return SMTPConfigResponse(
@@ -242,9 +237,8 @@ async def update_smtp_config(update_data: SMTPConfigUpdate):
 @router.delete("/config", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_smtp_config():
     """Delete SMTP configuration"""
-    db = get_database()
     query = "DELETE FROM smtp_config WHERE id = 'default'"
-    await db.execute(query)
+    await repo_execute(query)
 
 
 @router.post("/test")

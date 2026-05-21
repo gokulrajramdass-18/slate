@@ -1,0 +1,16 @@
+node_modules
+.next
+dist
+build
+out
+.cache
+.parcel-cache
+.vite
+.turbo
+coverage
+.env*
+!.env.example
+*.log
+.DS_Store
+.vscode
+.idea

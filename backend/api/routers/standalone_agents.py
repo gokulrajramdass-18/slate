@@ -43,7 +43,11 @@ async def create_standalone_agent(agent: StandaloneAgentCreate):
     now = datetime.utcnow().isoformat()
 
     # Validate role
-    valid_roles = ["planner", "researcher", "analyst", "synthesizer", "custom"]
+    valid_roles = [
+        "planner", "researcher", "analyst", "synthesizer",
+        "writer", "strategist", "editor",
+        "custom",
+    ]
     if agent.role not in valid_roles:
         raise HTTPException(
             status_code=400,
@@ -464,8 +468,25 @@ async def execute_standalone_agent_stream(
                 # No skills - still show step 3
                 yield f"event: agent_step\ndata: {json.dumps({'step_number': 3, 'action': 'No skills configured', 'status': 'completed', 'result': 'Agent will respond without skills'})}\n\n"
 
-            # Build system prompt
+            # Build system prompt — prefer the linked role template if configured,
+            # so edits in Prompt Management → Agent Roles propagate to all agents of that role.
             system_prompt = agent_data.get("system_prompt") or f"You are a helpful {agent_data['role']} assistant."
+
+            try:
+                cfg_raw = agent_data.get("config")
+                cfg = json.loads(cfg_raw) if isinstance(cfg_raw, str) else (cfg_raw or {})
+                role_template_key = cfg.get("role_template_key")
+                if role_template_key:
+                    from api.services.prompt_loader import load_prompt
+                    template_text = await load_prompt(
+                        role_template_key,
+                        fallback=system_prompt,
+                    )
+                    if template_text:
+                        system_prompt = template_text
+            except Exception as _prompt_err:
+                # Non-fatal — fall back to the stored system_prompt
+                print(f"⚠️  Failed to load role template for agent {agent_id}: {_prompt_err}")
 
             # Add skills to system prompt if available
             if skills:

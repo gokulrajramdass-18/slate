@@ -15,11 +15,16 @@ async def init_db():
 
     print(f"Initializing database at {db_path}")
 
-    # Remove existing database to start fresh
+    # If DB already exists, leave it alone — preserves data across restarts.
+    # Force a re-init by setting SLATE_DB_RESET=1 (destructive).
     if os.path.exists(db_path):
-        print("Removing existing database for clean init...")
-        os.remove(db_path)
-        print("✅ Old database removed")
+        if os.getenv("SLATE_DB_RESET") == "1":
+            print("SLATE_DB_RESET=1 set — removing existing database...")
+            os.remove(db_path)
+            print("✅ Old database removed")
+        else:
+            print("✅ Existing database found, skipping init (set SLATE_DB_RESET=1 to wipe).")
+            return
 
     # Read schema file
     schema_file = os.path.join(os.path.dirname(__file__), "schema_clean.sql")

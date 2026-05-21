@@ -71,6 +71,8 @@ export interface Workflow {
   tags: string[];
   created_at?: string;
   updated_at?: string;
+  /** Input node fields (populated by GET /api/workflows list response). */
+  required_input_fields?: InputFieldDefinition[];
 }
 
 export interface WorkflowCreate {
@@ -126,6 +128,7 @@ export interface WorkflowSchedule {
   event_trigger?: EventTrigger;
   upstream_workflow_id?: string;
   enabled: boolean;
+  input_data?: Record<string, any>;
   last_run_at?: string;
   next_run_at?: string;
   created_at?: string;
@@ -138,6 +141,7 @@ export interface ScheduleCreate {
   event_trigger?: EventTrigger;
   upstream_workflow_id?: string;
   enabled?: boolean;
+  input_data?: Record<string, any>;
 }
 
 export interface ScheduleUpdate {
@@ -145,6 +149,7 @@ export interface ScheduleUpdate {
   event_trigger?: EventTrigger;
   upstream_workflow_id?: string;
   enabled?: boolean;
+  input_data?: Record<string, any>;
 }
 
 export interface SchedulerJob {
@@ -402,10 +407,11 @@ export const schedulerApi = {
  */
 export interface InputFieldDefinition {
   name: string;
-  type: 'string' | 'number' | 'boolean' | 'array' | 'object';
+  type: 'string' | 'number' | 'boolean' | 'array' | 'object' | 'dropdown';
   required: boolean;
   default_value?: any;
   description?: string;
+  options?: Array<string | { label: string; value: any }>;
 }
 
 export interface ToolSchema {

@@ -15,6 +15,16 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Plus, Play, Calendar, MoreVertical, Pencil, Trash2, Workflow as WorkflowIcon, Copy, Eye, TrendingUp, Users, Tag, Clock, ChevronDown, Globe, Share2 } from 'lucide-react';
+import { useLookupList } from '@/lib/hooks/use-lookup-list';
+
+const FALLBACK_TEMPLATE_CATEGORIES = [
+  { value: 'data_processing', label: 'Data Processing', sort_order: 1 },
+  { value: 'automation', label: 'Automation', sort_order: 2 },
+  { value: 'analytics', label: 'Analytics', sort_order: 3 },
+  { value: 'integration', label: 'Integration', sort_order: 4 },
+  { value: 'ai_ml', label: 'AI/ML', sort_order: 5 },
+  { value: 'custom', label: 'Custom', sort_order: 99 },
+];
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -47,6 +57,11 @@ import type { Workflow } from '@/lib/api/workflows';
 import { PublicGallery } from '@/components/workflows/PublicGallery';
 import { MyWorkflows } from '@/components/workflows/MyWorkflows';
 import { MyTemplates } from '@/components/workflows/MyTemplates';
+import {
+  InputFieldsPromptDialog,
+  hasRequiredInputFields,
+  getRequiredInputFields,
+} from '@/components/workflows/InputFieldsPromptDialog';
 
 // ============================================================================
 // Types
@@ -67,6 +82,7 @@ interface WorkflowSummary {
     template_name: string;
     template_is_public: boolean;
   };
+  required_input_fields?: import('@/lib/stores/graph-store').InputFieldDefinition[];
 }
 
 interface TemplateParameter {
@@ -118,6 +134,10 @@ function WorkflowCard({ workflow }: { workflow: WorkflowSummary }) {
   const [templateCategory, setTemplateCategory] = React.useState('');
   const [templateIsPublic, setTemplateIsPublic] = React.useState(false);
   const [templateTags, setTemplateTags] = React.useState('');
+  const { options: templateCategoryOptions } = useLookupList(
+    'workflow_template_categories',
+    FALLBACK_TEMPLATE_CATEGORIES
+  );
 
   const deleteMutation = useMutation({
     mutationFn: () => workflowsApi.delete(workflow.id),
@@ -128,8 +148,11 @@ function WorkflowCard({ workflow }: { workflow: WorkflowSummary }) {
   });
 
   const executeMutation = useMutation({
-    mutationFn: () => workflowsApi.execute(workflow.id),
+    mutationFn: (inputData?: Record<string, any>) =>
+      workflowsApi.execute(workflow.id, inputData),
   });
+
+  const [showInputPrompt, setShowInputPrompt] = React.useState(false);
 
   const saveAsTemplateMutation = useMutation({
     mutationFn: async () => {
@@ -173,8 +196,22 @@ function WorkflowCard({ workflow }: { workflow: WorkflowSummary }) {
   };
 
   const handleExecute = async () => {
+    if (hasRequiredInputFields(workflow)) {
+      setShowInputPrompt(true);
+      return;
+    }
     try {
-      await executeMutation.mutateAsync();
+      await executeMutation.mutateAsync(undefined);
+      router.push(`/workflows/${workflow.id}/executions`);
+    } catch (error) {
+      console.error('Failed to execute workflow:', error);
+    }
+  };
+
+  const handleExecuteWithInputs = async (values: Record<string, any>) => {
+    setShowInputPrompt(false);
+    try {
+      await executeMutation.mutateAsync(values);
       router.push(`/workflows/${workflow.id}/executions`);
     } catch (error) {
       console.error('Failed to execute workflow:', error);
@@ -346,12 +383,11 @@ function WorkflowCard({ workflow }: { workflow: WorkflowSummary }) {
                   <SelectValue placeholder="Select a category" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="data">Data Processing</SelectItem>
-                  <SelectItem value="research">Research</SelectItem>
-                  <SelectItem value="automation">Automation</SelectItem>
-                  <SelectItem value="content">Content Generation</SelectItem>
-                  <SelectItem value="analysis">Analysis</SelectItem>
-                  <SelectItem value="other">Other</SelectItem>
+                  {templateCategoryOptions.map((opt) => (
+                    <SelectItem key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
@@ -398,6 +434,17 @@ function WorkflowCard({ workflow }: { workflow: WorkflowSummary }) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <InputFieldsPromptDialog
+        open={showInputPrompt}
+        onOpenChange={setShowInputPrompt}
+        fields={getRequiredInputFields(workflow)}
+        title="Provide Workflow Inputs"
+        description={`"${workflow.name}" requires input values before it can run.`}
+        submitLabel="Execute"
+        submitting={executeMutation.isPending}
+        onSubmit={handleExecuteWithInputs}
+      />
     </>
   );
 }
@@ -950,6 +997,7 @@ export default function WorkflowsPage() {
         created_by: w.created_by,
         updated_at: w.updated_at,
         source_template: w.source_template,
+        required_input_fields: w.required_input_fields || [],
       }));
     },
   });
@@ -1022,7 +1070,14 @@ export default function WorkflowsPage() {
     router.push(`/workflows/${id}`);
   };
 
+  const [pendingExecuteWorkflow, setPendingExecuteWorkflow] = useState<WorkflowSummary | null>(null);
+
   const handleExecuteWorkflow = async (id: string) => {
+    const w = workflows?.find((x) => x.id === id);
+    if (w && hasRequiredInputFields(w)) {
+      setPendingExecuteWorkflow(w);
+      return;
+    }
     try {
       await workflowsApi.execute(id);
       router.push(`/workflows/${id}/executions`);
@@ -1240,6 +1295,30 @@ export default function WorkflowsPage() {
           )}
         </TabsContent>
       </Tabs>
+
+      <InputFieldsPromptDialog
+        open={pendingExecuteWorkflow !== null}
+        onOpenChange={(open) => { if (!open) setPendingExecuteWorkflow(null); }}
+        fields={getRequiredInputFields(pendingExecuteWorkflow)}
+        title="Provide Workflow Inputs"
+        description={pendingExecuteWorkflow ? `"${pendingExecuteWorkflow.name}" requires input values before it can run.` : ''}
+        submitLabel="Execute"
+        onSubmit={async (values) => {
+          const w = pendingExecuteWorkflow;
+          setPendingExecuteWorkflow(null);
+          if (!w) return;
+          try {
+            await workflowsApi.execute(w.id, values);
+            router.push(`/workflows/${w.id}/executions`);
+          } catch (error) {
+            toast({
+              title: "Error",
+              description: error instanceof Error ? error.message : "Failed to execute workflow",
+              variant: "destructive",
+            });
+          }
+        }}
+      />
     </div>
   );
 }

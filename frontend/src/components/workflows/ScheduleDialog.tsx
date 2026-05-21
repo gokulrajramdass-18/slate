@@ -32,6 +32,12 @@ import { schedulesApi, workflowsApi } from '@/lib/api/workflows';
 import type { WorkflowSchedule, ScheduleType, ScheduleCreate } from '@/lib/api/workflows';
 import { useToast } from '@/hooks/use-toast';
 import { CronBuilder } from './CronBuilder';
+import {
+  InputFieldsForm,
+  useInputFieldsFormState,
+  validateFieldValues,
+  getRequiredInputFields,
+} from './InputFieldsPromptDialog';
 
 // ============================================================================
 // Schedule Dialog Component
@@ -66,6 +72,17 @@ export function ScheduleDialog({
     schedule?.upstream_workflow_id || ''
   );
   const [enabled, setEnabled] = React.useState(schedule?.enabled ?? true);
+
+  // Load the workflow itself (needed to know its required input fields)
+  const { data: workflow } = useQuery({
+    queryKey: ['workflow', workflowId],
+    queryFn: () => workflowsApi.get(workflowId),
+    enabled: open,
+  });
+
+  const inputFields = React.useMemo(() => getRequiredInputFields(workflow), [workflow]);
+
+  const inputForm = useInputFieldsFormState(inputFields, schedule?.input_data);
 
   // Load available workflows for dependency selection
   const { data: workflows } = useQuery({
@@ -116,10 +133,30 @@ export function ScheduleDialog({
   });
 
   const handleSave = () => {
-    const baseData = {
+    // Validate input fields if any are required (skip for dependency schedules,
+    // which receive input from upstream workflow)
+    let validatedInput: Record<string, any> | undefined;
+    if (inputFields.length > 0 && scheduleType !== 'dependency') {
+      const result = validateFieldValues(inputFields, inputForm.values);
+      if (!result.ok) {
+        inputForm.setErrors(result.errors);
+        toast({
+          title: 'Missing input values',
+          description: 'Please fill in all required workflow inputs.',
+          variant: 'destructive',
+        });
+        return;
+      }
+      validatedInput = result.values;
+    }
+
+    const baseData: any = {
       schedule_type: scheduleType,
       enabled,
     };
+    if (validatedInput !== undefined) {
+      baseData.input_data = validatedInput;
+    }
 
     let scheduleData: ScheduleCreate | Partial<WorkflowSchedule>;
 
@@ -327,6 +364,24 @@ export function ScheduleDialog({
                   This workflow will only run when manually triggered. No automatic execution will occur.
                 </div>
               </div>
+            </div>
+          )}
+
+          {/* Workflow Input Fields (required values, captured once) */}
+          {inputFields.length > 0 && scheduleType !== 'dependency' && (
+            <div className="space-y-3 border rounded-lg p-4 bg-muted/30">
+              <div className="space-y-1">
+                <Label className="text-base">Workflow Inputs</Label>
+                <div className="text-xs text-muted-foreground">
+                  These values are captured once and reused on every scheduled run.
+                </div>
+              </div>
+              <InputFieldsForm
+                fields={inputFields}
+                values={inputForm.values}
+                errors={inputForm.errors}
+                onChange={inputForm.setValues}
+              />
             </div>
           )}
 

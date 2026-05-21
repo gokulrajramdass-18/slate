@@ -18,7 +18,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { Checkbox } from '@/components/ui/checkbox';
-import { Trash2, X, Sparkles, Code, List } from 'lucide-react';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
+import { Trash2, X, Sparkles, Code, List, Copy, Check, Maximize2 } from 'lucide-react';
 import { useGraphStore, useSelectedNode } from '@/lib/stores/graph-store';
 import { agentsApi } from '@/lib/api/agents';
 import { listStandaloneAgents } from '@/lib/api/standalone-agents';
@@ -30,6 +31,7 @@ import { MicrositeGeneratorProperties } from './MicrositeGeneratorProperties';
 import { HanaTablePropertyPanel } from './HanaTablePropertyPanel';
 import { APINodePropertyPanel } from './APINodePropertyPanel';
 import { CompareNodeWatchColumns } from './CompareNodeWatchColumns';
+import { RichTextEditor } from '@/components/microsites/RichTextEditor';
 import { getCurrentGraphState } from './GraphEditor';
 
 // ============================================================================
@@ -51,6 +53,40 @@ export function PropertyPanel() {
 
   // Check if node is agent type
   const isAgentNode = selectedNode?.data.type === 'agent';
+
+  // Find the immediate upstream node id (single inbound edge); used to prefill
+  // conditional field_path. If multiple inbound edges exist, we don't guess.
+  const upstreamNodeId = useGraphStore(
+    React.useCallback(
+      (state) => {
+        if (!selectedNodeId) return undefined;
+        const inbound = state.edges.filter((e: any) => e.target === selectedNodeId);
+        if (inbound.length !== 1) return undefined;
+        return inbound[0].source as string;
+      },
+      [selectedNodeId]
+    )
+  );
+
+  // Track "Copied!" feedback for the Node ID copy button
+  const [copiedId, setCopiedId] = React.useState(false);
+  const [emailBodyExpanded, setEmailBodyExpanded] = React.useState(false);
+  const handleCopyId = React.useCallback(async () => {
+    if (!selectedNode?.id) return;
+    try {
+      await navigator.clipboard.writeText(selectedNode.id);
+    } catch {
+      // Older browsers / non-secure contexts: fall back to a temp textarea.
+      const ta = document.createElement('textarea');
+      ta.value = selectedNode.id;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    }
+    setCopiedId(true);
+    setTimeout(() => setCopiedId(false), 1500);
+  }, [selectedNode?.id]);
 
   console.log('[PropertyPanel] Render - selectedNode:', selectedNode?.id, selectedNode?.data.type);
   console.log('[PropertyPanel] isAgentNode:', isAgentNode);
@@ -153,6 +189,19 @@ export function PropertyPanel() {
     useGraphStore.getState().setSelectedNode(null);
   };
 
+  // Auto-prefill conditional field_path with "<upstreamNodeId>." when blank.
+  // Only fires for conditional nodes that have exactly one inbound edge and
+  // no field_path set. The user can still edit or clear it freely.
+  React.useEffect(() => {
+    if (selectedNode.data.type !== 'conditional') return;
+    if (!upstreamNodeId) return;
+    const current = selectedNode.data.config?.field_path;
+    if (current && current.length > 0) return;
+    handleUpdate('field_path', `${upstreamNodeId}.`);
+    // handleUpdate intentionally omitted: it reads from refs/store, not props
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedNode.id, selectedNode.data.type, upstreamNodeId]);
+
   return (
     <Card className="w-80 h-full overflow-y-auto">
       <CardHeader>
@@ -188,6 +237,32 @@ export function PropertyPanel() {
             value={selectedNode.data.label}
             onChange={(e) => handleUpdate('label', e.target.value)}
           />
+        </div>
+
+        <div className="space-y-2">
+          <Label htmlFor="node-id">Node ID</Label>
+          <div className="flex gap-2">
+            <Input
+              id="node-id"
+              value={selectedNode.id}
+              readOnly
+              className="bg-muted font-mono text-xs"
+              onFocus={(e) => e.currentTarget.select()}
+            />
+            <Button
+              type="button"
+              variant="outline"
+              size="icon"
+              onClick={handleCopyId}
+              title={copiedId ? 'Copied!' : 'Copy Node ID'}
+              aria-label="Copy Node ID"
+            >
+              {copiedId ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+            </Button>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Use this ID in conditional or template field paths, e.g. <code>{`${selectedNode.id}.row_count`}</code>
+          </p>
         </div>
 
         <div className="space-y-2">
@@ -302,13 +377,28 @@ export function PropertyPanel() {
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="field-path">Field Path (JSONPath)</Label>
+              <Label htmlFor="field-path">Field Path</Label>
               <Input
                 id="field-path"
                 value={selectedNode.data.config.field_path || ''}
                 onChange={(e) => handleUpdate('field_path', e.target.value)}
-                placeholder="$.status"
+                placeholder={upstreamNodeId ? `${upstreamNodeId}.fieldName` : 'nodeId.fieldName'}
               />
+              <p className="text-xs text-muted-foreground">
+                Format: <code>nodeId.fieldName</code> reads from another node's output. A name without a dot reads from workflow input.
+                {upstreamNodeId && (
+                  <>
+                    {' '}
+                    <button
+                      type="button"
+                      className="underline underline-offset-2 hover:text-foreground"
+                      onClick={() => handleUpdate('field_path', `${upstreamNodeId}.`)}
+                    >
+                      Use upstream node
+                    </button>
+                  </>
+                )}
+              </p>
             </div>
 
             <div className="space-y-2">
@@ -733,6 +823,84 @@ export function PropertyPanel() {
           </>
         )}
 
+        {/* JQ Node */}
+        {selectedNode.data.type === 'jq' && (
+          <>
+            <div className="space-y-2">
+              <Label htmlFor="jq-expression">jq Expression</Label>
+              <Textarea
+                id="jq-expression"
+                value={selectedNode.data.config.jq_expression || ''}
+                onChange={(e) => handleUpdate('jq_expression', e.target.value)}
+                rows={4}
+                placeholder=".items | map(select(.active)) | .[].name"
+                className="font-mono text-xs"
+              />
+              <p className="text-xs text-muted-foreground">
+                Standard jq syntax. Examples: <code className="font-mono">.</code>,{' '}
+                <code className="font-mono">.users[].email</code>,{' '}
+                <code className="font-mono">{'{name, count: (.items | length)}'}</code>
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="jq-input-source">Input Source (optional)</Label>
+              <Input
+                id="jq-input-source"
+                value={selectedNode.data.config.jq_input_source || ''}
+                onChange={(e) => handleUpdate('jq_input_source', e.target.value)}
+                placeholder="{{hana_table-XXX.data}}"
+                className="font-mono text-xs"
+              />
+              <p className="text-xs text-muted-foreground">
+                Template selecting which JSON to feed in. Leave empty to use the most recent upstream node output.
+              </p>
+              <p className="text-xs text-amber-600 dark:text-amber-400">
+                Tip: HANA / API nodes return an envelope like{' '}
+                <code className="font-mono">{'{data: [...], row_count, ...}'}</code>. To run filters
+                like <code className="font-mono">group_by</code> or <code className="font-mono">map</code>{' '}
+                on the rows, point at the array directly:{' '}
+                <code className="font-mono">{'{{node-id.data}}'}</code>.
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="jq-output-mode">Output Mode</Label>
+              <Select
+                value={selectedNode.data.config.jq_output_mode || 'first'}
+                onValueChange={(value) => handleUpdate('jq_output_mode', value)}
+              >
+                <SelectTrigger id="jq-output-mode">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="first">First result</SelectItem>
+                  <SelectItem value="all">All results (array)</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                jq filters can yield multiple values. Pick one or collect them all.
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="jq-on-error">On Error</Label>
+              <Select
+                value={selectedNode.data.config.jq_on_error || 'fail'}
+                onValueChange={(value) => handleUpdate('jq_on_error', value)}
+              >
+                <SelectTrigger id="jq-on-error">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="fail">Fail the workflow</SelectItem>
+                  <SelectItem value="null">Return null and continue</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </>
+        )}
+
         {/* Webhook Node */}
         {selectedNode.data.type === 'webhook' && (
           <>
@@ -824,6 +992,142 @@ export function PropertyPanel() {
                 />
               </div>
             )}
+          </>
+        )}
+
+        {/* Email Node */}
+        {selectedNode.data.type === 'email' && (
+          <>
+            <div className="rounded-md bg-muted/50 border border-dashed p-2 text-xs text-muted-foreground">
+              Uses the SMTP server configured under <span className="font-medium">Settings → SMTP</span>.
+              Make sure it is set and tested before running this workflow.
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="email-to">To</Label>
+              <Input
+                id="email-to"
+                value={(selectedNode.data.config.email_to || []).join(', ')}
+                onChange={(e) =>
+                  handleUpdate(
+                    'email_to',
+                    e.target.value.split(',').map((s: string) => s.trim()).filter(Boolean)
+                  )
+                }
+                placeholder="user@example.com, {{input-1.email}}"
+              />
+              <p className="text-xs text-muted-foreground">
+                Comma-separated. Supports <code>{'{{node-id.field}}'}</code> templates.
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="email-cc">CC (optional)</Label>
+              <Input
+                id="email-cc"
+                value={(selectedNode.data.config.email_cc || []).join(', ')}
+                onChange={(e) =>
+                  handleUpdate(
+                    'email_cc',
+                    e.target.value.split(',').map((s: string) => s.trim()).filter(Boolean)
+                  )
+                }
+                placeholder="cc@example.com"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="email-bcc">BCC (optional)</Label>
+              <Input
+                id="email-bcc"
+                value={(selectedNode.data.config.email_bcc || []).join(', ')}
+                onChange={(e) =>
+                  handleUpdate(
+                    'email_bcc',
+                    e.target.value.split(',').map((s: string) => s.trim()).filter(Boolean)
+                  )
+                }
+                placeholder="bcc@example.com"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="email-subject">Subject</Label>
+              <Input
+                id="email-subject"
+                value={selectedNode.data.config.email_subject || ''}
+                onChange={(e) => handleUpdate('email_subject', e.target.value)}
+                placeholder="Hello {{input-1.name}}"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label className="flex items-center gap-2">
+                <Checkbox
+                  checked={selectedNode.data.config.email_is_html !== false}
+                  onCheckedChange={(checked) => handleUpdate('email_is_html', checked === true)}
+                />
+                Send as HTML
+              </Label>
+              <p className="text-xs text-muted-foreground">
+                When off, the body is sent as plain text.
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label>Body</Label>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="h-6 px-2 text-xs"
+                  onClick={() => setEmailBodyExpanded(true)}
+                >
+                  <Maximize2 className="h-3 w-3 mr-1" />
+                  Expand
+                </Button>
+              </div>
+              <div className="border rounded-md overflow-hidden">
+                {emailBodyExpanded ? (
+                  <div className="p-4 text-xs text-muted-foreground italic">
+                    Editing in expanded view…
+                  </div>
+                ) : (
+                  <RichTextEditor
+                    content={selectedNode.data.config.email_body || ''}
+                    onChange={(html) => handleUpdate('email_body', html)}
+                    placeholder="Compose your email…"
+                  />
+                )}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Supports <code>{'{{node-id.field}}'}</code> templates inline.
+              </p>
+            </div>
+
+            <Dialog open={emailBodyExpanded} onOpenChange={setEmailBodyExpanded}>
+              <DialogContent className="max-w-5xl w-[90vw] h-[85vh] flex flex-col p-0 gap-0">
+                <DialogHeader className="px-6 pt-5 pb-3 border-b">
+                  <DialogTitle>Email Body</DialogTitle>
+                </DialogHeader>
+                <div className="flex-1 overflow-auto px-6 py-4">
+                  <div className="border rounded-md overflow-hidden h-full">
+                    <RichTextEditor
+                      content={selectedNode.data.config.email_body || ''}
+                      onChange={(html) => handleUpdate('email_body', html)}
+                      placeholder="Compose your email…"
+                    />
+                  </div>
+                </div>
+                <DialogFooter className="px-6 py-3 border-t">
+                  <p className="text-xs text-muted-foreground mr-auto">
+                    Supports <code>{'{{node-id.field}}'}</code> templates inline.
+                  </p>
+                  <Button onClick={() => setEmailBodyExpanded(false)}>Done</Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
           </>
         )}
 
@@ -929,6 +1233,63 @@ export function PropertyPanel() {
               selectedNode={selectedNode}
               handleUpdate={handleUpdate}
             />
+          </>
+        )}
+
+        {/* ForEach Node */}
+        {selectedNode.data.type === 'foreach' && (
+          <>
+            <div className="space-y-2">
+              <Label htmlFor="foreach-source">Source (template referencing a list)</Label>
+              <Input
+                id="foreach-source"
+                value={selectedNode.data.config.foreach_source || ''}
+                onChange={(e) => handleUpdate('foreach_source', e.target.value)}
+                placeholder="{{hana-NODE-ID.rows}}"
+                className="font-mono text-xs"
+              />
+              <p className="text-[11px] text-muted-foreground">
+                Must resolve to a list. Example: <code>{'{{hana-NODE-ID.rows}}'}</code> or <code>{'{{api-NODE-ID.data}}'}</code>.
+              </p>
+            </div>
+
+            <div className="rounded border border-emerald-200 dark:border-emerald-800 bg-emerald-50/50 dark:bg-emerald-950/30 p-2 text-[11px] space-y-1">
+              <div className="font-semibold text-emerald-700 dark:text-emerald-300">Wiring</div>
+              <p className="text-muted-foreground">
+                Connect the <strong className="text-emerald-600 dark:text-emerald-400">each</strong> handle to the chain that should run once per item, and the <strong className="text-sky-600 dark:text-sky-400">done</strong> handle to whatever runs after all items finish.
+              </p>
+              <p className="text-muted-foreground">
+                Inside the each-chain, templates can use <code>{'{{item.FIELD}}'}</code>, <code>{'{{index}}'}</code>, <code>{'{{total}}'}</code>.
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="foreach-on-error">On iteration error</Label>
+              <Select
+                value={selectedNode.data.config.foreach_on_error || 'continue'}
+                onValueChange={(value) => handleUpdate('foreach_on_error', value)}
+              >
+                <SelectTrigger id="foreach-on-error">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="continue">Continue (record error, keep going)</SelectItem>
+                  <SelectItem value="fail">Fail (stop the whole node)</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="foreach-max">Max items</Label>
+              <Input
+                id="foreach-max"
+                type="number"
+                min={1}
+                value={selectedNode.data.config.foreach_max_items ?? 1000}
+                onChange={(e) => handleUpdate('foreach_max_items', parseInt(e.target.value || '0', 10) || 0)}
+              />
+              <p className="text-[11px] text-muted-foreground">Hard cap on iterations. Extra rows are dropped.</p>
+            </div>
           </>
         )}
       </CardContent>
