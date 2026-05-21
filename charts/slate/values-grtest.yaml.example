@@ -33,12 +33,15 @@ sapAiCoreApi:
     requests:
       cpu: 500m
       memory: 1Gi
+  # SAP AI Core service-key values. Copy this file to values-grtest.yaml
+  # (which is gitignored) and fill in real credentials from BTP cockpit.
+  # Do NOT commit real credentials to git.
   credentials:
-    authUrl: https://sapit-core-playground-vole.authentication.eu10.hana.ondemand.com
-    clientId: ***REMOVED-AICORE-CLIENT-ID***
-    clientSecret: ***REMOVED-AICORE-CLIENT-SECRET***
-    baseUrl: https://api.ai.prod.eu-central-1.aws.ml.hana.ondemand.com
-    resourceGroup: ***REMOVED-AICORE-RESOURCE-GROUP***
+    authUrl: https://<your-subaccount>.authentication.<region>.hana.ondemand.com
+    clientId: <REPLACE_WITH_AICORE_CLIENT_ID>
+    clientSecret: <REPLACE_WITH_AICORE_CLIENT_SECRET>
+    baseUrl: https://api.ai.<region>.<provider>.ml.hana.ondemand.com
+    resourceGroup: <REPLACE_WITH_AICORE_RESOURCE_GROUP>
 frontend:
   enabled: true
   replicaCount: 1

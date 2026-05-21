@@ -49,3 +49,8 @@ Thumbs.db
 # XSUAA credentials
 **/default-env.json
 default-env.json
+
+# SAP AI Core / tenant-specific Helm values (contain credentials)
+# Copy values-grtest.yaml.example to values-grtest.yaml and fill in real values.
+charts/slate/values-grtest.yaml
+docker/compose/charts/slate/values-grtest.yaml
