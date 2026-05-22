@@ -9,7 +9,7 @@ import { Handle, Position, type NodeProps } from '@xyflow/react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import { Bot, Wrench, Split, ArrowDownCircle, ArrowUpCircle, Loader2, CheckCircle, XCircle, Sparkles, Users, BookOpen, Globe, Clock, Webhook, GitBranch, FileStack, Database, Repeat, Mail, Braces } from 'lucide-react';
+import { Bot, Wrench, Split, ArrowDownCircle, ArrowUpCircle, Loader2, CheckCircle, XCircle, Sparkles, Users, BookOpen, Globe, Clock, Webhook, GitBranch, FileStack, Database, Repeat, Mail, Braces, Bell } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { NodeData } from '@/lib/stores/graph-store';
 
@@ -1367,6 +1367,55 @@ export function JQNode({ data, selected }: any) {
 // Node Type Map
 // ============================================================================
 
+export function NotifyNode({ data, selected }: any) {
+  const title = data.config.notify_title;
+  const message = data.config.notify_message;
+  const priority = data.config.notify_priority || 'normal';
+
+  return (
+    <>
+      <Handle type="target" position={Position.Left} className="!bg-amber-500" style={handleStyle} />
+
+      <Card className={cn(
+        "w-[220px] transition-all duration-200",
+        "bg-gradient-to-br from-amber-50 to-yellow-50 dark:from-amber-950 dark:to-yellow-950",
+        "border",
+        selected ? "ring-2 ring-amber-500/50 border-amber-500 shadow-lg" : "border-amber-200 dark:border-amber-800 hover:border-amber-400 shadow"
+      )}>
+        <CardHeader className="pb-2 pt-2 px-3">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 min-w-0">
+              <div className="p-1.5 rounded bg-amber-500 text-white shadow-sm flex-shrink-0">
+                <Bell className="h-3.5 w-3.5" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <CardTitle className="text-sm font-semibold truncate">{data.label}</CardTitle>
+                <p className="text-[10px] text-muted-foreground truncate">Notify · {priority}</p>
+              </div>
+            </div>
+            {getStatusBadge(data.status)}
+          </div>
+        </CardHeader>
+
+        <CardContent className="pt-0 pb-2 px-3 space-y-1">
+          {title ? (
+            <div className="text-[10px] bg-white/50 dark:bg-black/20 p-1.5 rounded truncate">
+              {title}
+            </div>
+          ) : (
+            <div className="text-[10px] text-muted-foreground italic">No title set</div>
+          )}
+          {message && (
+            <div className="text-[10px] text-muted-foreground line-clamp-2">{message}</div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Handle type="source" position={Position.Right} className="!bg-amber-500" style={handleStyle} />
+    </>
+  );
+}
+
 export const nodeTypes = {
   input: InputNode,
   output: OutputNode,
@@ -1388,4 +1437,5 @@ export const nodeTypes = {
   compare: CompareNode,
   foreach: ForEachNode,
   jq: JQNode,
+  notify: NotifyNode,
 };

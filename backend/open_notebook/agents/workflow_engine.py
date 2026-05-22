@@ -99,20 +99,25 @@ class WorkflowState(BaseModel):
     node_outputs: Annotated[Dict[str, Any], _merge_dicts] = Field(default_factory=dict)
 
     # Input/output
-    input_data: Dict[str, Any] = Field(default_factory=dict)
+    # input_data is seeded once at workflow start and not mutated by nodes,
+    # but parallel branches still pass it through — needs a reducer or LangGraph
+    # raises INVALID_CONCURRENT_GRAPH_UPDATE on fan-out.
+    input_data: Annotated[Dict[str, Any], _last_write_wins] = Field(default_factory=dict)
     final_output: Annotated[Optional[Any], _last_write_wins] = None
 
     # Execution tracking — visited list grows, iteration counts up
     visited_nodes: Annotated[list[str], _append_unique] = Field(default_factory=list)
     iteration: Annotated[int, _max_int] = 0
-    max_iterations: int = 50  # Safety limit
+    # Constants seeded at workflow start; parallel branches all carry them
+    # forward, so they need reducers or LangGraph raises INVALID_CONCURRENT_GRAPH_UPDATE.
+    max_iterations: Annotated[int, _last_write_wins] = 50  # Safety limit
 
     # Workflow and execution IDs for approval tracking
-    workflow_id: Optional[str] = None
-    execution_id: Optional[str] = None
-    user_id: Optional[str] = None
-    username: Optional[str] = None
-    user_email: Optional[str] = None
+    workflow_id: Annotated[Optional[str], _last_write_wins] = None
+    execution_id: Annotated[Optional[str], _last_write_wins] = None
+    user_id: Annotated[Optional[str], _last_write_wins] = None
+    username: Annotated[Optional[str], _last_write_wins] = None
+    user_email: Annotated[Optional[str], _last_write_wins] = None
 
     # Pause tracking (for human approval nodes)
     paused: Annotated[bool, _last_write_wins] = False

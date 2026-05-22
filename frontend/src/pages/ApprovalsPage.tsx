@@ -275,6 +275,158 @@ export default function ApprovalsPage() {
     return prompt.replace(/CHANGE_DETAILS_START[\s\S]*?CHANGE_DETAILS_END/, '').trim();
   };
 
+  type BeautifiedSection = {
+    heading: string;
+    fields: { key: string; value: string }[];
+    bullets: string[];
+    paragraph?: string;
+  };
+
+  type BeautifiedPrompt = {
+    subject: string;
+    summary: string;
+    sections: BeautifiedSection[];
+    bullets: string[];
+    signoff?: string;
+    raw: string;
+  };
+
+  const beautifyPrompt = (prompt: string): BeautifiedPrompt => {
+    const cleaned = formatPromptForDisplay(prompt);
+
+    let subject = "";
+    let body = cleaned;
+    const subjectMatch = cleaned.match(/^\s*Subject:\s*([^\n\-]+?)(?=\s+(?:Dear|Hello|Hi|This is|---|Campaign\s+\d|[A-Z][a-z]+,))/);
+    if (subjectMatch) {
+      subject = subjectMatch[1].trim().replace(/\s+/g, " ");
+      body = cleaned.slice(subjectMatch[0].length).trim();
+    } else {
+      const lineMatch = cleaned.match(/^\s*Subject:\s*(.+?)(?:\n|$)/);
+      if (lineMatch) {
+        subject = lineMatch[1].trim();
+        body = cleaned.slice(lineMatch[0].length).trim();
+      }
+    }
+
+    body = body.replace(/\s+---\s+/g, "\n\n---\n\n");
+
+    const blocks = body
+      .split(/\n\n+|(?:\s*---\s*)/)
+      .map((b) => b.trim())
+      .filter(Boolean);
+
+    let summary = "";
+    const sections: BeautifiedSection[] = [];
+    const looseBullets: string[] = [];
+    let signoff: string | undefined;
+
+    const headingRegex = /^(Campaign\s+\d+|Record\s+\d+|Item\s+\d+|Additional\s+Context|Context|Notes?|Summary|Details?)\s*[:\-]?\s*/i;
+
+    const splitInlineSections = (text: string): string[] => {
+      const parts: string[] = [];
+      const re = /(Campaign\s+\d+:|Record\s+\d+:|Item\s+\d+:|Additional\s+Context:|Context:|Summary:|Notes?:|Details?:)/gi;
+      let lastIdx = 0;
+      let match: RegExpExecArray | null;
+      const matches: { idx: number }[] = [];
+      while ((match = re.exec(text)) !== null) {
+        matches.push({ idx: match.index });
+      }
+      if (matches.length === 0) return [text];
+      if (matches[0].idx > 0) parts.push(text.slice(0, matches[0].idx).trim());
+      for (let i = 0; i < matches.length; i++) {
+        const start = matches[i].idx;
+        const end = i + 1 < matches.length ? matches[i + 1].idx : text.length;
+        parts.push(text.slice(start, end).trim());
+        lastIdx = end;
+      }
+      if (lastIdx < text.length) {
+        const tail = text.slice(lastIdx).trim();
+        if (tail) parts.push(tail);
+      }
+      return parts.filter(Boolean);
+    };
+
+    const expandedBlocks: string[] = [];
+    for (const block of blocks) {
+      const pieces = splitInlineSections(block);
+      expandedBlocks.push(...pieces);
+    }
+
+    const parseFieldsAndBullets = (text: string): { fields: { key: string; value: string }[]; bullets: string[]; paragraph: string } => {
+      const fields: { key: string; value: string }[] = [];
+      const bullets: string[] = [];
+      let paragraphParts: string[] = [];
+
+      const segments = text
+        .split(/\s+-\s+(?=[A-Z])/g)
+        .map((s) => s.trim())
+        .filter(Boolean);
+
+      for (const seg of segments) {
+        const kv = seg.match(/^([A-Z][A-Za-z0-9 _\/\-\.]{1,40}?):\s*(.+)$/s);
+        if (kv) {
+          fields.push({ key: kv[1].trim(), value: kv[2].trim().replace(/\s+/g, " ") });
+        } else if (/^[A-Z]/.test(seg) && seg.length < 240) {
+          bullets.push(seg.replace(/\s+/g, " "));
+        } else {
+          paragraphParts.push(seg);
+        }
+      }
+
+      return { fields, bullets, paragraph: paragraphParts.join(" ").trim() };
+    };
+
+    for (const block of expandedBlocks) {
+      const headMatch = block.match(headingRegex);
+
+      if (/^(Best regards|Regards|Sincerely|Thanks|Thank you)/i.test(block)) {
+        signoff = block;
+        continue;
+      }
+
+      if (headMatch) {
+        const heading = headMatch[1].replace(/\s+/g, " ").trim();
+        const rest = block.slice(headMatch[0].length).trim();
+        const { fields, bullets, paragraph } = parseFieldsAndBullets(rest);
+        sections.push({
+          heading,
+          fields,
+          bullets,
+          paragraph: paragraph || undefined,
+        });
+      } else if (/^\s*-\s+/.test(block) || / - [A-Z]/.test(block)) {
+        const { fields, bullets, paragraph } = parseFieldsAndBullets(block);
+        if (fields.length > 0 || bullets.length > 0) {
+          if (!summary && paragraph) summary = paragraph;
+          looseBullets.push(...bullets);
+          if (fields.length > 0) {
+            sections.push({ heading: "Details", fields, bullets: [], paragraph: undefined });
+          }
+        } else {
+          if (!summary) summary = block;
+          else looseBullets.push(block);
+        }
+      } else {
+        if (!summary) summary = block;
+        else looseBullets.push(block);
+      }
+    }
+
+    if (summary) summary = summary.replace(/\s+/g, " ").trim();
+
+    return {
+      subject,
+      summary,
+      sections,
+      bullets: looseBullets,
+      signoff,
+      raw: cleaned,
+    };
+  };
+
+  const truncate = (text: string, max: number) =>
+    text.length > max ? text.slice(0, max).trimEnd() + "…" : text;
+
   const filteredApprovals = approvals.filter(approval => {
     if (!searchQuery) return true;
     const query = searchQuery.toLowerCase();
@@ -404,7 +556,14 @@ export default function ApprovalsPage() {
               {paginatedApprovals.map((approval) => {
                 const isExpanded = expandedCards.has(approval.id);
                 const changeDetails = parseChangeDetails(approval.approval_prompt);
-                const displayPrompt = formatPromptForDisplay(approval.approval_prompt);
+                const beautified = beautifyPrompt(approval.approval_prompt);
+                const headerTitle =
+                  beautified.subject ||
+                  truncate(beautified.summary || beautified.raw, 120) ||
+                  "Approval requested";
+                const headerPreview = beautified.subject
+                  ? truncate(beautified.summary || "", 160)
+                  : "";
 
                 return (
                   <Card key={approval.id} className="hover:shadow-lg transition-all duration-300 hover:scale-[1.01] border-gray-200 dark:border-gray-800">
@@ -413,7 +572,14 @@ export default function ApprovalsPage() {
                         <div className="flex-1 min-w-0">
                           <div className="flex items-start gap-2">
                             <div className="flex-1 min-w-0">
-                              <CardTitle className="text-base mb-1 font-semibold">{displayPrompt}</CardTitle>
+                              <CardTitle className="text-base mb-1 font-semibold leading-snug">
+                                {headerTitle}
+                              </CardTitle>
+                              {headerPreview && (
+                                <p className="text-sm text-muted-foreground mb-2 line-clamp-2">
+                                  {headerPreview}
+                                </p>
+                              )}
                               <CardDescription className="flex items-center gap-2 text-xs">
                                 <Calendar className="h-3 w-3 flex-shrink-0" />
                                 {formatDate(approval.created_at)}
@@ -422,6 +588,12 @@ export default function ApprovalsPage() {
                                     <span className="mx-1">•</span>
                                     <Clock className="h-3 w-3 flex-shrink-0" />
                                     {getTimeRemaining(approval.timeout_at)}
+                                  </>
+                                )}
+                                {beautified.sections.length > 0 && (
+                                  <>
+                                    <span className="mx-1">•</span>
+                                    <span>{beautified.sections.length} {beautified.sections.length === 1 ? "section" : "sections"}</span>
                                   </>
                                 )}
                               </CardDescription>
@@ -443,7 +615,83 @@ export default function ApprovalsPage() {
                     </CardHeader>
 
                     {isExpanded && (
-                      <CardContent className="space-y-3 pt-0">
+                      <CardContent className="space-y-4 pt-4">
+                        {beautified.summary && (
+                          <p className="text-sm text-foreground leading-relaxed">
+                            {beautified.summary}
+                          </p>
+                        )}
+
+                        {beautified.sections.length > 0 && (
+                          <div className="grid gap-3 sm:grid-cols-2">
+                            {beautified.sections.map((section, sIdx) => (
+                              <div
+                                key={`${section.heading}-${sIdx}`}
+                                className="rounded-lg border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-950 overflow-hidden"
+                              >
+                                <div className="px-3 py-2 bg-gradient-to-r from-teal-50 to-cyan-50 dark:from-teal-950/40 dark:to-cyan-950/40 border-b border-gray-200 dark:border-gray-800">
+                                  <h4 className="text-sm font-semibold text-teal-800 dark:text-teal-200">
+                                    {section.heading}
+                                  </h4>
+                                </div>
+                                <div className="p-3 space-y-2">
+                                  {section.paragraph && (
+                                    <p className="text-xs text-muted-foreground leading-relaxed">
+                                      {section.paragraph}
+                                    </p>
+                                  )}
+                                  {section.fields.length > 0 && (
+                                    <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1.5 text-xs">
+                                      {section.fields.map((f, fIdx) => (
+                                        <React.Fragment key={`${f.key}-${fIdx}`}>
+                                          <dt className="font-medium text-muted-foreground whitespace-nowrap">
+                                            {f.key}
+                                          </dt>
+                                          <dd className="font-mono text-foreground break-words">
+                                            {f.value}
+                                          </dd>
+                                        </React.Fragment>
+                                      ))}
+                                    </dl>
+                                  )}
+                                  {section.bullets.length > 0 && (
+                                    <ul className="list-disc list-inside text-xs space-y-1 text-foreground">
+                                      {section.bullets.map((b, bIdx) => (
+                                        <li key={bIdx}>{b}</li>
+                                      ))}
+                                    </ul>
+                                  )}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        {beautified.bullets.length > 0 && (
+                          <div className="rounded-lg border border-gray-200 dark:border-gray-800 bg-muted/30 p-3">
+                            <ul className="list-disc list-inside text-sm space-y-1 text-foreground">
+                              {beautified.bullets.map((b, bIdx) => (
+                                <li key={bIdx}>{b}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+
+                        {beautified.signoff && (
+                          <p className="text-xs italic text-muted-foreground border-t border-gray-200 dark:border-gray-800 pt-3">
+                            {beautified.signoff}
+                          </p>
+                        )}
+
+                        {!beautified.subject &&
+                          beautified.sections.length === 0 &&
+                          beautified.bullets.length === 0 &&
+                          !beautified.summary && (
+                            <p className="text-sm text-foreground whitespace-pre-wrap leading-relaxed">
+                              {beautified.raw}
+                            </p>
+                          )}
+
                         {changeDetails && (changeDetails.modified.length > 0 || changeDetails.added.length > 0 || changeDetails.removed.length > 0) && (
                           <div className="border rounded-lg overflow-hidden">
                             {changeDetails.modified.length > 0 && (

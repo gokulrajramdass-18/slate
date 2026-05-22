@@ -212,7 +212,7 @@ def validate_server_config(server: MCPServerCreate) -> None:
 # CRUD Endpoints
 # ============================================================================
 
-@router.post("/", status_code=status.HTTP_201_CREATED, response_model=MCPServerResponse)
+@router.post("", status_code=status.HTTP_201_CREATED, response_model=MCPServerResponse)
 async def create_server(server: MCPServerCreate):
     """Create new MCP server connection"""
 
@@ -280,7 +280,7 @@ async def create_server(server: MCPServerCreate):
     return format_server(server_data)
 
 
-@router.get("/", response_model=List[MCPServerResponse])
+@router.get("", response_model=List[MCPServerResponse])
 async def list_servers():
     """List all MCP servers"""
     rows = await repo_query("SELECT * FROM mcp_servers ORDER BY name")

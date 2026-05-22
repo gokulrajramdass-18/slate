@@ -604,66 +604,147 @@ class ConditionalNodeExecutor(BaseNodeExecutor):
 # ============================================================================
 
 class AgentNodeExecutor(BaseNodeExecutor):
-    """Execute agent node - invoke intelligent agent."""
+    """Execute agent node — invoke a standalone agent or a legacy registered agent."""
 
     async def execute(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        """Invoke agent."""
-        # Get agent configuration
         agent_type = self.config.agent_type
+        agent_id = self.config.agent_id
         agent_name = self.config.agent_name
         prompt = self.config.prompt or ""
 
-        # Substitute variables in prompt
         input_data = state.get("input_data", {})
         node_outputs = state.get("node_outputs", {})
-        prompt = self._substitute_variables(prompt, input_data, node_outputs)
+        current_node_id = state["current_node_id"]
 
-        # Get agent class
-        agent_class = get_agent_class(agent_type)
-        if not agent_class:
-            return {
-                **state,
-                "node_outputs": {
-                    **state.get("node_outputs", {}),
-                    state["current_node_id"]: {
-                        "error": f"Unknown agent type: {agent_type}"
-                    }
+        # Build the user query. If `prompt` is set use it (with substitution).
+        # Otherwise, fall back to the workflow's input_data (most common shape:
+        # input node feeds the agent directly), serialized to a readable string.
+        if prompt:
+            user_query = self._substitute_variables(prompt, input_data, node_outputs)
+        elif input_data:
+            user_query = (
+                input_data.get("query")
+                or input_data.get("prompt")
+                or input_data.get("text")
+                or json.dumps(input_data, indent=2, default=str)
+            )
+        else:
+            user_query = "Please proceed with your analysis based on the available context."
+
+        # ---------- Standalone-agent path (DB-backed agent record) ----------
+        if agent_type == "standalone" and agent_id:
+            try:
+                from open_notebook.database.repository import repo_query
+                from api.services.settings import get_setting
+                from api.routers.credentials import _credentials_store
+
+                rows = await repo_query(
+                    "SELECT * FROM standalone_agents WHERE id = :id AND status = 'active'",
+                    {"id": agent_id},
+                )
+                if not rows:
+                    raise RuntimeError(f"Standalone agent not found or inactive: {agent_id}")
+                agent_row = rows[0]
+
+                system_prompt = agent_row.get("system_prompt") or f"You are a helpful {agent_row.get('role') or 'assistant'}."
+
+                # Resolve model: agent override → workspace default
+                language_model_id = await get_setting("language_model_id", "")
+                model_id = agent_row.get("model_name") or language_model_id
+                credential = _credentials_store.get(model_id) if model_id else None
+                if not credential and language_model_id:
+                    credential = _credentials_store.get(language_model_id)
+                if not credential:
+                    raise RuntimeError(
+                        "No LLM credential resolved for agent — set a default model in Settings → Models."
+                    )
+
+                # Optional config overrides on the agent row
+                cfg_raw = agent_row.get("config")
+                cfg = json.loads(cfg_raw) if isinstance(cfg_raw, str) else (cfg_raw or {})
+                temperature = float(cfg.get("temperature", self.config.temperature or 0.3))
+                max_tokens = int(cfg.get("max_tokens", self.config.max_tokens or 2000))
+
+                import httpx
+                payload = {
+                    "model": credential["model_name"],
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_query},
+                    ],
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                    "stream": False,
                 }
-            }
+                endpoint = f"{credential['base_url'].rstrip('/')}/chat/completions"
+                async with httpx.AsyncClient(timeout=120.0) as client:
+                    resp = await client.post(
+                        endpoint,
+                        headers={
+                            "Authorization": f"Bearer {credential['api_key']}",
+                            "Content-Type": "application/json",
+                        },
+                        json=payload,
+                    )
+                    if resp.status_code != 200:
+                        raise RuntimeError(f"LLM API {resp.status_code}: {resp.text[:500]}")
+                    data = resp.json()
 
-        # Create agent instance
+                text = ""
+                try:
+                    text = data["choices"][0]["message"]["content"] or ""
+                except (KeyError, IndexError, TypeError):
+                    text = json.dumps(data)[:2000]
+
+                return {
+                    **state,
+                    "node_outputs": {
+                        **node_outputs,
+                        current_node_id: {
+                            "agent_type": "standalone",
+                            "agent_id": agent_id,
+                            "agent_name": agent_name or agent_row.get("name"),
+                            "text": text,
+                            "result": text,
+                        },
+                    },
+                }
+
+            except Exception as e:
+                print(f"[AgentNodeExecutor] standalone agent error: {e}")
+                import traceback
+                traceback.print_exc()
+                raise
+
+        # ---------- Legacy registered-agent path ----------
+        agent_class = get_agent_class(agent_type) if agent_type else None
+        if not agent_class:
+            raise RuntimeError(
+                f"Agent node misconfigured: agent_type='{agent_type}' agent_id='{agent_id}'. "
+                f"Set agent_type='standalone' and pick an agent in the property panel."
+            )
+
         try:
             agent = agent_class(
                 name=agent_name or agent_type,
-                user_id=state.get("user_id", "system")
+                user_id=state.get("user_id", "system"),
             )
-
-            # Execute agent
-            result = await agent.execute(prompt)
-
+            result = await agent.execute(user_query)
             return {
                 **state,
                 "node_outputs": {
-                    **state.get("node_outputs", {}),
-                    state["current_node_id"]: {
+                    **node_outputs,
+                    current_node_id: {
                         "agent_type": agent_type,
-                        "result": result
-                    }
-                }
+                        "result": result,
+                    },
+                },
             }
         except Exception as e:
-            print(f"[AgentNodeExecutor] Error: {e}")
+            print(f"[AgentNodeExecutor] legacy agent error: {e}")
             import traceback
             traceback.print_exc()
-            return {
-                **state,
-                "node_outputs": {
-                    **state.get("node_outputs", {}),
-                    state["current_node_id"]: {
-                        "error": str(e)
-                    }
-                }
-            }
+            raise
 
 
 # ============================================================================
@@ -675,8 +756,7 @@ class NotebookGeneratorNodeExecutor(BaseNodeExecutor):
 
     async def execute(self, state: Dict[str, Any]) -> Dict[str, Any]:
         """Generate notebook/workspace."""
-        from open_notebook.domain.notebook import Notebook
-        from open_notebook.domain.source import Source
+        from open_notebook.domain.notebook import Notebook, Source
 
         # Get configuration
         notebook_name = self.config.notebook_name
@@ -699,54 +779,48 @@ class NotebookGeneratorNodeExecutor(BaseNodeExecutor):
         # Create notebook
         try:
             notebook = Notebook(
-                id=str(uuid4()),
                 name=notebook_name or "Generated Notebook",
                 description=notebook_description,
-                created_by=user_id,
                 folder_id=folder_id,
                 tags=tags
             )
             await notebook.save()
 
-            # Handle source mode
-            source_mode = self.config.source_mode  # "extract" | "existing"
+            # Handle source mode — accept legacy ("extract" | "existing") and
+            # workflow-template values ("create_from_content" | ...).
+            source_mode = self.config.source_mode
 
-            if source_mode == "extract":
+            if source_mode in ("extract", "create_from_content"):
                 # Extract content from previous node output
                 content_source_node_id = self.config.content_source_node_id
                 if content_source_node_id and content_source_node_id in node_outputs:
                     content = node_outputs[content_source_node_id]
 
-                    # Extract based on mode
-                    extraction_mode = self.config.content_extraction_mode  # "full" | "field"
+                    extraction_mode = self.config.content_extraction_mode
                     if extraction_mode == "field":
                         field_path = self.config.content_extraction_path
                         if field_path and isinstance(content, dict):
                             content = content.get(field_path, content)
+                    elif extraction_mode == "full_output" and isinstance(content, dict):
+                        # Prefer the LLM "text" field if present; else dump whole dict
+                        content = content.get("text", content)
 
-                    # Create source from extracted content
                     source_title = self.config.source_title_template or "Extracted Content"
                     source_title = self._substitute_variables(source_title, input_data, node_outputs)
 
                     source = Source(
-                        id=str(uuid4()),
-                        notebook_id=notebook.id,
-                        type=self.config.source_type or "text",
-                        url=None,
                         title=source_title,
-                        content=json.dumps(content) if not isinstance(content, str) else content,
-                        created_by=user_id
+                        source_type=self.config.source_type or "text",
+                        full_text=content if isinstance(content, str) else json.dumps(content),
                     )
                     await source.save()
+                    await notebook.add_source(source.id)
 
             elif source_mode == "existing":
-                # Link existing sources to notebook
+                # Link existing sources to notebook via junction table
                 existing_source_ids = self.config.existing_source_ids or []
                 for source_id in existing_source_ids:
-                    source = await Source.get(source_id)
-                    if source:
-                        source.notebook_id = notebook.id
-                        await source.save()
+                    await notebook.add_source(source_id)
 
             return {
                 **state,
@@ -811,7 +885,7 @@ class MicrositeGeneratorNodeExecutor(BaseNodeExecutor):
             # Get sources from notebook
             notebook_id = notebook_id_template
             if notebook_id:
-                from open_notebook.domain.source import Source
+                from open_notebook.domain.notebook import Source
                 sources = await Source.get_all(
                     filters={"notebook_id": notebook_id}
                 )
@@ -3112,6 +3186,101 @@ class JQNodeExecutor(BaseNodeExecutor):
 # Node Executor Factory
 # ============================================================================
 
+class NotifyNodeExecutor(BaseNodeExecutor):
+    """Fire-and-forget user notification — inbox entry + WebSocket toast.
+
+    Unlike HumanApprovalNodeExecutor, this does NOT pause the workflow.
+    Used to inform a human ("brief is ready", "anomaly detected") while
+    the graph keeps executing.
+    """
+
+    async def execute(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        from open_notebook.domain.notification import (
+            Notification,
+            NotificationCategory,
+            NotificationPriority,
+            NotificationType,
+        )
+        from api.services.notification_service import get_notification_service
+
+        input_data = state.get("input_data", {})
+        node_outputs = state.get("node_outputs", {})
+        current_node_id = state["current_node_id"]
+
+        title = self._substitute_variables(self.config.notify_title or "Workflow notification", input_data, node_outputs)
+        message = self._substitute_variables(self.config.notify_message or "", input_data, node_outputs)
+        action_url = self._substitute_variables(self.config.notify_action_url or "", input_data, node_outputs) or None
+        action_label = self.config.notify_action_label
+
+        priority_map = {
+            "low": NotificationPriority.LOW,
+            "normal": NotificationPriority.NORMAL,
+            "high": NotificationPriority.HIGH,
+            "urgent": NotificationPriority.URGENT,
+        }
+        priority = priority_map.get((self.config.notify_priority or "normal").lower(), NotificationPriority.NORMAL)
+
+        # Recipients: explicit override → workflow user fallback
+        recipients = self.config.notify_user_ids or []
+        if not recipients:
+            workflow_user = state.get("user_id")
+            if workflow_user and workflow_user != "system":
+                recipients = [workflow_user]
+
+        if not recipients:
+            return {
+                **state,
+                "node_outputs": {
+                    **node_outputs,
+                    current_node_id: {
+                        "status": "skipped",
+                        "reason": "no recipient resolved (workflow user unknown and notify_user_ids empty)",
+                    },
+                },
+            }
+
+        sent: List[str] = []
+        failed: List[Dict[str, str]] = []
+        notification_service = get_notification_service()
+
+        for user_id in recipients:
+            try:
+                notification = await Notification.create(
+                    user_id=user_id,
+                    type=NotificationType.SYSTEM,
+                    title=title,
+                    message=message,
+                    category=NotificationCategory.WORKFLOW,
+                    priority=priority,
+                    entity_type="workflow_execution",
+                    entity_id=state.get("execution_id"),
+                    action_url=action_url,
+                    action_label=action_label,
+                    metadata={
+                        "workflow_id": state.get("workflow_id"),
+                        "node_id": current_node_id,
+                    },
+                )
+                await notification_service.broadcast_notification(notification)
+                sent.append(user_id)
+            except Exception as e:
+                print(f"[NotifyNodeExecutor] Failed for user {user_id}: {e}")
+                failed.append({"user_id": user_id, "error": str(e)})
+
+        return {
+            **state,
+            "node_outputs": {
+                **node_outputs,
+                current_node_id: {
+                    "status": "notified" if sent and not failed else ("partial" if sent else "failed"),
+                    "title": title,
+                    "sent_to": sent,
+                    "failed": failed,
+                },
+            },
+        }
+
+
 def create_node_executor(node_type: NodeType, config: NodeConfig) -> BaseNodeExecutor:
     """
     Create node executor for given type.
@@ -3145,6 +3314,7 @@ def create_node_executor(node_type: NodeType, config: NodeConfig) -> BaseNodeExe
         NodeType.HANA_TABLE: HANATableNodeExecutor,
         NodeType.FOREACH: ForEachNodeExecutor,
         NodeType.JQ: JQNodeExecutor,
+        NodeType.NOTIFY: NotifyNodeExecutor,
     }
 
     executor_class = executors.get(node_type)

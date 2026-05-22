@@ -197,7 +197,11 @@ export const NotificationCenter: React.FC = () => {
     markAsRead,
     markAllAsRead,
     deleteNotification,
-  } = useNotifications(user?.id ? { userId: user.id, autoConnect: true } : undefined);
+  } = useNotifications(
+    (user as any)?.uuid || user?.id
+      ? { userId: (user as any)?.uuid || user!.id, autoConnect: true }
+      : undefined
+  );
 
   const [isOpen, setIsOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<string>("all");

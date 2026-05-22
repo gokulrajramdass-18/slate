@@ -706,6 +706,83 @@ export function PropertyPanel() {
           </>
         )}
 
+        {/* Notify Node — fire-and-forget user notification, does NOT pause workflow */}
+        {selectedNode.data.type === 'notify' && (
+          <>
+            <div className="space-y-2">
+              <Label htmlFor="notify-title">Title</Label>
+              <Input
+                id="notify-title"
+                value={selectedNode.data.config.notify_title || ''}
+                onChange={(e) => handleUpdate('notify_title', e.target.value)}
+                placeholder="e.g. Account brief ready: {{input.company_name}}"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="notify-message">Message</Label>
+              <Textarea
+                id="notify-message"
+                value={selectedNode.data.config.notify_message || ''}
+                onChange={(e) => handleUpdate('notify_message', e.target.value)}
+                rows={3}
+                placeholder="Body shown in inbox + toast. Supports {{node-id.field}}."
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="notify-priority">Priority</Label>
+              <Select
+                value={selectedNode.data.config.notify_priority || 'normal'}
+                onValueChange={(value) => handleUpdate('notify_priority', value)}
+              >
+                <SelectTrigger id="notify-priority">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="low">Low</SelectItem>
+                  <SelectItem value="normal">Normal</SelectItem>
+                  <SelectItem value="high">High</SelectItem>
+                  <SelectItem value="urgent">Urgent</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="notify-action-url">Action URL (optional)</Label>
+              <Input
+                id="notify-action-url"
+                value={selectedNode.data.config.notify_action_url || ''}
+                onChange={(e) => handleUpdate('notify_action_url', e.target.value)}
+                placeholder="/workspaces/{{notebook-save.notebook_id}}"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="notify-action-label">Action Label (optional)</Label>
+              <Input
+                id="notify-action-label"
+                value={selectedNode.data.config.notify_action_label || ''}
+                onChange={(e) => handleUpdate('notify_action_label', e.target.value)}
+                placeholder="Open workspace"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="notify-user-ids">User IDs (optional, comma-separated)</Label>
+              <Input
+                id="notify-user-ids"
+                value={selectedNode.data.config.notify_user_ids?.join(', ') || ''}
+                onChange={(e) => handleUpdate(
+                  'notify_user_ids',
+                  e.target.value.split(',').map((s) => s.trim()).filter(Boolean)
+                )}
+                placeholder="Defaults to the workflow's running user"
+              />
+            </div>
+          </>
+        )}
+
         {/* Workspace Node */}
         {selectedNode.data.type === 'workspace' && (
           <>

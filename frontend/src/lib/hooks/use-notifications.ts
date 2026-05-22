@@ -52,8 +52,11 @@ export const useNotifications = (
       if (authStorage) {
         try {
           const authState = JSON.parse(authStorage);
-          if (authState.state?.user?.id) {
-            userIdRef.current = authState.state.user.id;
+          // Prefer the real user UUID — backend keys notifications by uuid,
+          // not by `id` (which under XSUAA is the username string).
+          const u = authState.state?.user;
+          if (u?.uuid || u?.id) {
+            userIdRef.current = u.uuid || u.id;
           }
         } catch (e) {
           console.error("Failed to parse auth-storage from localStorage:", e);

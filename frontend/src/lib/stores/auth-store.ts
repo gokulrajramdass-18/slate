@@ -16,6 +16,7 @@ interface Permission {
 
 interface User {
   id: string;
+  uuid?: string;  // Backend's real user UUID — used for notification routing
   username: string;
   email?: string;
   full_name?: string;

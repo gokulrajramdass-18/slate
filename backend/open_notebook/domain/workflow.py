@@ -41,6 +41,7 @@ class NodeType(str, Enum):
     API = "api"                 # REST API endpoint with snapshots
     FOREACH = "foreach"         # Iterate over a list, run a body node per item
     JQ = "jq"                   # Process / transform JSON with a jq expression
+    NOTIFY = "notify"           # Fire-and-forget user notification (inbox + toast)
 
 
 class ExecutionStatus(str, Enum):
@@ -203,6 +204,16 @@ class NodeConfig(BaseModel):
     email_subject: Optional[str] = None
     email_body: Optional[str] = None            # HTML body produced by the rich-text editor
     email_is_html: Optional[bool] = True
+
+    # Notify node config — fire-and-forget user notification (inbox + toast).
+    # Recipient defaults to the workflow's running user; supports {{var}} substitution
+    # in title/message/action_url. Workflow continues immediately — does NOT pause.
+    notify_title: Optional[str] = None
+    notify_message: Optional[str] = None
+    notify_priority: Optional[Literal["low", "normal", "high", "urgent"]] = "normal"
+    notify_action_url: Optional[str] = None
+    notify_action_label: Optional[str] = None
+    notify_user_ids: Optional[List[str]] = None  # Override recipients; defaults to workflow user
 
     # Snapshot node config
     snapshot_mode: Optional[Literal["store", "compare"]] = "store"

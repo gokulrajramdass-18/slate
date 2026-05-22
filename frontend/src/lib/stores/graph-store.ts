@@ -29,7 +29,7 @@ export interface InputFieldDefinition {
 
 export interface NodeData {
   label: string;
-  type: 'input' | 'llm' | 'tool' | 'conditional' | 'agent' | 'output' | 'notebook_generator' | 'microsite_generator' | 'api' | 'human_approval' | 'workspace' | 'template' | 'delay' | 'webhook' | 'email' | 'snapshot' | 'compare' | 'hana_table' | 'foreach' | 'jq';
+  type: 'input' | 'llm' | 'tool' | 'conditional' | 'agent' | 'output' | 'notebook_generator' | 'microsite_generator' | 'api' | 'human_approval' | 'workspace' | 'template' | 'delay' | 'webhook' | 'email' | 'snapshot' | 'compare' | 'hana_table' | 'foreach' | 'jq' | 'notify';
   config: {
     // LLM config
     model_name?: string;
@@ -97,6 +97,14 @@ export interface NodeData {
     jq_input_source?: string;
     jq_output_mode?: 'first' | 'all';
     jq_on_error?: 'fail' | 'null';
+
+    // Notify config — fire-and-forget user notification
+    notify_title?: string;
+    notify_message?: string;
+    notify_priority?: 'low' | 'normal' | 'high' | 'urgent';
+    notify_action_url?: string;
+    notify_action_label?: string;
+    notify_user_ids?: string[];
   };
   // Execution state
   status?: 'pending' | 'running' | 'completed' | 'failed';

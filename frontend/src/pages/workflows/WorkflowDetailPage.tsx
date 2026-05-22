@@ -570,6 +570,16 @@ export default function WorkflowDetailPage() {
                 <Plus className="h-3 w-3 mr-1" />
                 JQ
               </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => (window as any).__workflowAddNode?.('notify')}
+                disabled={isExecuting}
+                className="h-7 px-2 text-xs shrink-0"
+              >
+                <Plus className="h-3 w-3 mr-1" />
+                Notify
+              </Button>
             </div>
           </div>
 
