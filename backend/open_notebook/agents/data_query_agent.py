@@ -105,6 +105,10 @@ class DataQueryAgent:
         # Agent execution steps for UI display
         self.agent_steps: List[Dict[str, Any]] = []
 
+        # Tracks whether the underlying model supports tool calling.
+        # Flipped to False inside _create_model if bind_tools raises NotImplementedError.
+        self.tools_supported: bool = bool(tools)
+
         # Create LLM with tools
         self.model = self._create_model()
 
@@ -161,7 +165,11 @@ class DataQueryAgent:
 
             # Rebind tools to model
             if self.tools:
-                self.model = self.model.bind_tools(self.tools)
+                try:
+                    self.model = self.model.bind_tools(self.tools)
+                except NotImplementedError:
+                    print(f"[DataQueryAgent] Model {self.model_name} does not support bind_tools(), skipping tool rebinding")
+                    self.tools_supported = False
 
     def _create_model(self):
         """Create LLM model with tool binding"""
@@ -320,9 +328,14 @@ class DataQueryAgent:
                     **model_kwargs
                 )
 
-        # Bind tools to model if available
+        # Bind tools to model if available and supported
         if self.tools:
-            model = model.bind_tools(self.tools)
+            try:
+                model = model.bind_tools(self.tools)
+            except NotImplementedError:
+                print(f"[DataQueryAgent] Model {self.model_name} does not support bind_tools(), skipping tool binding")
+                # Model doesn't support tool binding - will work in basic chat mode without tools
+                self.tools_supported = False
 
         return model
 
@@ -627,6 +640,22 @@ class DataQueryAgent:
         """
         messages = state["messages"]
 
+        # If tools were configured but the model can't bind them, surface that
+        # to the user once and steer the model away from claiming tool calls.
+        tools_unsupported = bool(self.tools) and not self.tools_supported
+        if tools_unsupported and not any(
+            s.get("step_type") == "tools_unavailable" for s in self.agent_steps
+        ):
+            self._record_step(
+                step_type="tools_unavailable",
+                content=(
+                    f"The selected model ({self.model_name}) does not support tool calling. "
+                    "Responding without tools."
+                ),
+                status="completed",
+                metadata={"model": self.model_name, "tool_count": len(self.tools)},
+            )
+
         # Record thinking step
         self._record_step(
             step_type="thinking",
@@ -637,24 +666,40 @@ class DataQueryAgent:
         # Add system message if provided
         if self.system_message and (not messages or messages[0].type != "system"):
             from langchain_core.messages import SystemMessage
-            messages = [SystemMessage(content=self.system_message)] + messages
+            system_text = self.system_message
+            if tools_unsupported:
+                system_text += (
+                    "\n\nIMPORTANT: Tool calling is not available for the currently selected model. "
+                    "Do NOT claim you will run a search, query, or any other tool — you cannot. "
+                    "Answer directly from your own knowledge, and if the user explicitly asked for a "
+                    "tool to be used, briefly tell them that tools are unavailable with this model "
+                    "and suggest switching to a tool-capable model in Settings."
+                )
+            messages = [SystemMessage(content=system_text)] + messages
+        elif tools_unsupported and (not messages or messages[0].type != "system"):
+            from langchain_core.messages import SystemMessage
+            messages = [SystemMessage(content=(
+                "Tool calling is not available for the currently selected model. "
+                "Do NOT claim you will run a search, query, or any other tool — you cannot. "
+                "Answer directly from your own knowledge, and if the user explicitly asked for a "
+                "tool to be used, briefly tell them that tools are unavailable with this model "
+                "and suggest switching to a tool-capable model in Settings."
+            ))] + messages
 
-        # Use streaming invocation to enable token-level streaming in astream_events
-        # Collect all chunks into a single response
+        # Stream chunks and aggregate via AIMessageChunk addition. Per-chunk
+        # `tool_calls` is computed from that chunk's own partial
+        # `tool_call_chunks`, so reading it before merging yields garbage; the
+        # `+` operator concatenates `tool_call_chunks` by index and re-runs
+        # `init_tool_calls` on the merged result.
         from langchain_core.messages import AIMessage, AIMessageChunk
 
-        response_content = ""
-        response_tool_calls = []
-        final_chunk = None
-
+        merged: Optional[AIMessageChunk] = None
         async for chunk in self.model.astream(messages):
-            final_chunk = chunk
-            if hasattr(chunk, "content") and chunk.content:
-                response_content += chunk.content
-            if hasattr(chunk, "tool_calls") and chunk.tool_calls:
-                response_tool_calls.extend(chunk.tool_calls)
+            merged = chunk if merged is None else merged + chunk
 
-        # Create final response message
+        response_content = merged.content if merged is not None else ""
+        response_tool_calls = list(merged.tool_calls) if merged is not None else []
+
         if response_tool_calls:
             response = AIMessage(content=response_content, tool_calls=response_tool_calls)
         else:

@@ -52,29 +52,25 @@ Internet
   ↓
 Kyma APIRule (Ingress)
   ↓
-AppRouter (2 replicas)
-  ├─→ Static Frontend Files (embedded)
-  └─→ Backend API (via destination)
-        ↓
-      Backend (1 replica)
-        ├─→ SQLite Database (persistent volume)
-        └─→ SAP AI Core Proxy (for chat/embeddings)
-              ↓
-            SAP AI Core Proxy (1 replica)
+AppRouter (2 replicas)  ── XSUAA OAuth flow + session
+  ├─→ Frontend (1 replica, nginx + Vite static bundle)   for "/", "/assets/*"
+  └─→ Backend (1 replica)                                 for "/api/*"
+        ├─→ SQLite Database (PVC, RWO)
+        └─→ SAP AI Core Proxy (1 replica)
               ↓
             External SAP AI Core API
 
-XSUAA Service (OAuth 2.0)
-  ↓
-AppRouter + Backend
+XSUAA Service (OAuth 2.0) ── consumed by AppRouter + Backend
 ```
+
+> **Topology choice:** the chart supports two layouts. The current `grtest-ns` deployment runs the **frontend as a separate container**. Alternatively you can build the frontend into the approuter image and set `frontend.enabled: false` — see the optional Step 4 in [Prepare Docker Images](#prepare-docker-images).
 
 ### Key Features
 
-- **No Separate Frontend Container**: Frontend built as static files embedded in AppRouter
+- **Frontend Topology**: Separate nginx container serving the Vite bundle is the default; embedding into the approuter is also supported as an alternative
 - **XSUAA Authentication**: Enterprise SSO via SAP BTP
 - **Session Affinity**: Sticky sessions on AppRouter via cookies
-- **Persistent Storage**: Database persisted across pod restarts
+- **Persistent Storage**: SQLite database persisted across pod restarts on a 20Gi `ReadWriteOnce` PVC
 - **Auto-scaling**: Can scale AppRouter replicas independently
 - **SAP AI Core Integration**: Dedicated proxy service for chat and embedding models
   - Isolated Python environment with gen-ai-hub SDK
@@ -144,28 +140,44 @@ docker build --platform linux/amd64 \
 - **sap-ai-core-api v1.0.10+** - Required for embeddings support
 - **backend kyma-v1.0.10+** - Required for auto-configuration and embedding generation
 
-### 3. Build Frontend with XSUAA Mode
+### 3. Build Frontend Image
 
-**CRITICAL**: Frontend must be built with `VITE_XSUAA_ENABLED=true` for Kyma deployment.
+The current `grtest-ns` deployment runs the frontend as a **separate container** (nginx serving Vite static files), not embedded in the approuter. Build with `docker/frontend/Dockerfile` and pass XSUAA + API URL as build args — they are baked into the bundle at build time.
+
+> **Do NOT use** the `frontend/Dockerfile` in the project root — it is a stale Next.js Dockerfile from before the Vite migration. Always use `docker/frontend/Dockerfile`.
 
 ```bash
-cd frontend
+cd /path/to/slate-v1
 
-# Build with XSUAA enabled
-VITE_XSUAA_ENABLED=true VITE_API_URL="" npm run build
+docker build --platform linux/amd64 \
+  -f docker/frontend/Dockerfile \
+  --build-arg VITE_API_URL="" \
+  --build-arg VITE_XSUAA_ENABLED=true \
+  -t YOUR_REGISTRY/slate-frontend:TAG \
+  frontend/
 
-cd ..
+# Example:
+# docker build --platform linux/amd64 \
+#   -f docker/frontend/Dockerfile \
+#   --build-arg VITE_API_URL="" \
+#   --build-arg VITE_XSUAA_ENABLED=true \
+#   -t gokulraj18/slate-frontend:kyma-v1.0.9 \
+#   frontend/
 ```
 
-### 4. Build AppRouter with Embedded Frontend
+`VITE_API_URL=""` makes the frontend issue same-origin requests to `/api/*`, which the approuter routes to the backend after the XSUAA check.
 
-**CRITICAL**: Remove any hardcoded `default-env.json` to avoid conflicts with Kyma XSUAA secrets.
+### 4. (Optional) Build AppRouter with Embedded Frontend
+
+The current production topology uses a **separate frontend container** (Step 3) and an approuter that only handles XSUAA auth + API routing. Skip this step unless you are switching to the embedded-frontend topology.
+
+If you do want to embed the frontend in the approuter image (and set `frontend.enabled: false` in values), build the frontend with `npm run build` first (`VITE_XSUAA_ENABLED=true VITE_API_URL="" npm run build` from `frontend/`), then:
 
 ```bash
-# Ensure default-env.json is NOT in docker/approuter/
+# Ensure default-env.json is NOT in docker/approuter/ — it can override XSUAA service binding values
 rm -f docker/approuter/default-env.json
 
-# Copy frontend build to approuter resources
+# Copy frontend build into approuter resources
 rm -rf docker/approuter/resources/*
 cp -r frontend/dist/* docker/approuter/resources/
 
@@ -174,12 +186,6 @@ docker build --platform linux/amd64 \
   -f docker/approuter/Dockerfile \
   -t YOUR_REGISTRY/slate-approuter:TAG \
   docker/approuter/
-
-# Example:
-# docker build --platform linux/amd64 \
-#   -f docker/approuter/Dockerfile \
-#   -t gokulraj18/slate-approuter:kyma-v1.0.7 \
-#   docker/approuter/
 ```
 
 ### 5. Push Images to Registry
@@ -187,11 +193,14 @@ docker build --platform linux/amd64 \
 ```bash
 # Push all images
 docker push YOUR_REGISTRY/slate-backend:TAG
-docker push YOUR_REGISTRY/slate-sap-ai-core-api:TAG
-docker push YOUR_REGISTRY/slate-approuter:TAG
+docker push YOUR_REGISTRY/slate-frontend:TAG
+docker push YOUR_REGISTRY/slate-sap-ai-core-api:TAG   # only if rebuilt
+docker push YOUR_REGISTRY/slate-approuter:TAG         # only if rebuilt
 
 # Make sure images are publicly accessible or configure imagePullSecrets
 ```
+
+> Skip rebuilding/pushing `sap-ai-core-api` and `approuter` if their source did not change — the running cluster pulls existing tags. Only rebuild what you actually changed.
 
 **Important**: If using Docker Hub, ensure repositories are **public** or configure image pull secrets in Kyma.
 
@@ -214,12 +223,13 @@ backend:
     repository: YOUR_REGISTRY/slate-backend
     tag: TAG
     pullPolicy: Always
-  
+
   # Enable persistent storage for production
   persistence:
     enabled: true
-    size: 10Gi
-  
+    size: 20Gi
+    accessMode: ReadWriteOnce
+
   env:
     xsuaaEnabled: "true"
 
@@ -248,11 +258,17 @@ sapAiCoreApi:
     baseUrl: https://api.ai.prod.REGION.aws.ml.hana.ondemand.com
     resourceGroup: YOUR_RESOURCE_GROUP
 
-# Frontend - DISABLED (embedded in approuter)
+# Frontend - separate nginx container serving Vite static bundle
+# (Set enabled: false only if embedding the frontend in the approuter image instead.)
 frontend:
-  enabled: false
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: YOUR_REGISTRY/slate-frontend
+    tag: TAG
+    pullPolicy: Always
 
-# AppRouter with embedded frontend
+# AppRouter (XSUAA + API routing)
 approuter:
   enabled: true
   replicaCount: 2
@@ -787,26 +803,128 @@ kubectl delete serviceinstance slate-xsuaa -n your-namespace
 helm upgrade slate ./charts/slate --namespace your-namespace --values ./charts/slate/values-production.yaml
 ```
 
+### Helm field-ownership conflicts
+
+**Symptom**: `helm upgrade` fails with errors like:
+
+```
+conflict occurred while applying object ...: Apply failed with N conflicts:
+- conflicts with "kubectl-set" using apps/v1: .spec.template.spec.containers[name="backend"].image
+- conflicts with "kubectl-patch" using apps/v1: .spec.template.spec.containers[name="backend"].env[name="..."]
+```
+
+**Cause**: Server-side apply tracks per-field ownership. Past `kubectl set image`, `kubectl patch`, or `kubectl apply` commands took ownership of fields that Helm now wants to manage. Helm refuses to overwrite fields it doesn't own.
+
+**Fix**: Re-run the upgrade with `--force-conflicts`. This tells server-side apply to take ownership of the contested fields back into the Helm release.
+
+```bash
+helm upgrade slate ./charts/slate \
+  --namespace your-namespace \
+  --values ./charts/slate/values-production.yaml \
+  --force-conflicts
+```
+
+> `--force` is **not** the right flag here — it has been deprecated in favor of `--force-replace`, and `--force-replace` is incompatible with server-side apply. Always use `--force-conflicts`.
+
+### Adopting resources that were applied with kubectl
+
+**Symptom**: `helm upgrade` fails with:
+
+```
+ServiceBinding "slate-objectstore-binding" in namespace "..." exists and cannot be imported into the current release:
+invalid ownership metadata; label validation error: missing key "app.kubernetes.io/managed-by"...
+```
+
+**Cause**: A resource the chart wants to manage was previously created via `kubectl apply` (or any other tool) and lacks the Helm ownership annotations.
+
+**Fix**: Annotate and label the resource so Helm will adopt it on the next upgrade.
+
+```bash
+NS=your-namespace
+RELEASE=slate
+
+for resource in serviceinstance/slate-objectstore servicebinding/slate-objectstore-binding; do
+  kubectl -n $NS annotate $resource \
+    meta.helm.sh/release-name=$RELEASE \
+    meta.helm.sh/release-namespace=$NS \
+    --overwrite
+  kubectl -n $NS label $resource app.kubernetes.io/managed-by=Helm --overwrite
+done
+
+helm upgrade $RELEASE ./charts/slate --namespace $NS --values ./your-values.yaml --force-conflicts
+```
+
+This is non-destructive — the resource keeps its current spec and any backing secrets stay intact.
+
 ---
 
 ## Maintenance
+
+### Database Initialization
+
+The backend container initializes its SQLite database on first boot using `python -m open_notebook.database.init_clean_db`, which loads `backend/open_notebook/database/schema_clean.sql` directly. This **bypasses** the migration runner in `backend/open_notebook/database/migrations/`.
+
+**Why bypass migrations?** The migration tree on disk is currently inconsistent — for example, `104_orchestration_lineage.sql` creates an index on `orchestration_schedules.template_id`, but no earlier migration adds that column. Running `async_migrate migrate` against a fresh DB fails. `schema_clean.sql` is the source of truth for new deployments and is kept up to date with all current columns (including ones from migrations that never made it into the migration files).
+
+**Implications:**
+- A new backend pod that mounts an empty PVC will produce a fully-formed schema from `schema_clean.sql` and start cleanly.
+- A pod that mounts an existing PVC with a database file will skip init and use the file as-is.
+- To force a re-init on the existing PVC without deleting it, set `SLATE_DB_RESET=1` on the deployment, restart, then unset. **Destructive.**
+- Do NOT switch the Dockerfile `CMD` to `async_migrate migrate` until the migration tree is repaired.
+
+### Clean Redeploy (wipe database)
+
+When you want to rebuild from a fresh DB — for example, after large schema changes locally — wipe the PVC before the helm upgrade. **This destroys all users, workflows, notebooks, sources, and notification history.** XSUAA users will be auto-recreated on next login.
+
+```bash
+export KUBECONFIG=/path/to/your/kubeconfig.yaml
+NS=your-namespace
+
+# 1. Scale backend to 0 so nothing has the PVC mounted
+kubectl -n $NS scale deployment slate-backend --replicas=0
+kubectl -n $NS wait --for=delete pod -l component=backend --timeout=120s
+
+# 2. Delete the PVC
+kubectl -n $NS delete pvc slate-backend-data
+
+# 3. Helm upgrade — recreates the PVC empty and brings backend back up
+helm upgrade slate ./charts/slate \
+  --namespace $NS \
+  --values ./charts/slate/values-production.yaml \
+  --force-conflicts
+
+# 4. Watch rollout
+kubectl -n $NS rollout status deployment/slate-backend --timeout=300s
+kubectl -n $NS logs deployment/slate-backend -c backend --tail=50
+```
+
+> If after step 3 the backend pod stays in `Pending` with `persistentvolumeclaim "slate-backend-data" not found`, run `helm upgrade` once more — Helm sometimes needs a second pass to materialize the PVC after a delete.
 
 ### Update Application
 
 ```bash
 # 1. Build new images with new tags
 docker build --platform linux/amd64 -f docker/backend/Dockerfile -t YOUR_REGISTRY/slate-backend:v1.0.1 backend/
-docker build --platform linux/amd64 -f docker/approuter/Dockerfile -t YOUR_REGISTRY/slate-approuter:v1.0.1 docker/approuter/
+docker build --platform linux/amd64 -f docker/frontend/Dockerfile \
+  --build-arg VITE_API_URL="" --build-arg VITE_XSUAA_ENABLED=true \
+  -t YOUR_REGISTRY/slate-frontend:v1.0.1 frontend/
+# Only rebuild approuter if its source actually changed:
+# docker build --platform linux/amd64 -f docker/approuter/Dockerfile -t YOUR_REGISTRY/slate-approuter:v1.0.1 docker/approuter/
 
 # 2. Push images
 docker push YOUR_REGISTRY/slate-backend:v1.0.1
-docker push YOUR_REGISTRY/slate-approuter:v1.0.1
+docker push YOUR_REGISTRY/slate-frontend:v1.0.1
+# docker push YOUR_REGISTRY/slate-approuter:v1.0.1
 
-# 3. Update values file with new tags
+# 3. Update values file with new tags (backend.image.tag, frontend.image.tag, etc.)
 
 # 4. Upgrade deployment
-helm upgrade slate ./charts/slate --namespace your-namespace --values ./charts/slate/values-production.yaml
+helm upgrade slate ./charts/slate --namespace your-namespace \
+  --values ./charts/slate/values-production.yaml \
+  --force-conflicts
 ```
+
+> `--force-conflicts` is needed when prior `kubectl set image`, `kubectl patch`, or `kubectl apply` commands have claimed field ownership on resources Helm now wants to manage. See [Helm field-ownership conflicts](#helm-field-ownership-conflicts) below.
 
 ### Scale AppRouter
 
