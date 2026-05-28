@@ -180,7 +180,7 @@ class ChatSAPAICore(BaseChatModel):
         # Build request parameters
         params = {
             "temperature": kwargs.get("temperature", self.temperature),
-            "max_tokens": kwargs.get("max_tokens", self.max_tokens),
+            "max_completion_tokens": kwargs.get("max_tokens", self.max_tokens),
         }
 
         # Add stop sequences if provided
@@ -268,7 +268,7 @@ class ChatSAPAICore(BaseChatModel):
         # Build request parameters
         params = {
             "temperature": kwargs.get("temperature", self.temperature),
-            "max_tokens": kwargs.get("max_tokens", self.max_tokens),
+            "max_completion_tokens": kwargs.get("max_tokens", self.max_tokens),
             "stream": True,  # Enable streaming
         }
 

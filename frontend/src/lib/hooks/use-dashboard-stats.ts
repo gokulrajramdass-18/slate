@@ -3,7 +3,7 @@ import { useDashboardWebSocket } from "./use-dashboard-websocket";
 import { useAuthStore } from "@/lib/stores/auth-store";
 import { apiClient } from "@/lib/api/client";
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:5055/api";
+const API_BASE_URL = import.meta.env.VITE_API_URL || "/api";
 
 export interface DashboardStats {
   hero_metrics: {

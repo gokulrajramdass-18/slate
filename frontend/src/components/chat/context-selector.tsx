@@ -56,7 +56,7 @@ export function ContextSelector({
     console.log("[ContextSelector] Notes fetch effect triggered:", { notebookId, hasCallback: !!onNoteIdsChange });
     if (notebookId) {
       setNotesLoading(true);
-      fetch(`http://localhost:5055/api/notes?notebook_id=${notebookId}`)
+      fetch(`/api/notes?notebook_id=${notebookId}`)
         .then(res => res.json())
         .then(data => {
           console.log("[ContextSelector] Notes loaded:", data.length, "notes");

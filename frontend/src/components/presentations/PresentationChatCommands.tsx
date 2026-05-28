@@ -40,7 +40,7 @@ interface PresentationIntent {
  */
 export async function detectPresentationIntentWithAI(message: string): Promise<PresentationIntent> {
   try {
-    const response = await fetch('http://localhost:5055/api/presentations/detect-intent', {
+    const response = await fetch('/api/presentations/detect-intent', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message })

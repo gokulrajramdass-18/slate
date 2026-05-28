@@ -52,7 +52,7 @@ export function WorkspaceProgressCharts({ workspaceId }: WorkspaceProgressCharts
     const fetchChartData = async () => {
       try {
         setLoading(true);
-        const response = await fetch(`http://localhost:5055/api/workspaces/${workspaceId}/charts`);
+        const response = await fetch(`/api/workspaces/${workspaceId}/charts`);
 
         if (!response.ok) {
           throw new Error("Failed to fetch chart data");

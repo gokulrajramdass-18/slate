@@ -52,7 +52,7 @@ export function DeepResearchProgress({
 
   useEffect(() => {
     // Connect to SSE stream
-    const baseUrl = import.meta.env.VITE_API_URL || 'http://localhost:5055/api';
+    const baseUrl = import.meta.env.VITE_API_URL || '/api';
     const eventSource = new EventSource(
       `${baseUrl}/chat/deep-research/jobs/${jobId}/stream`
     );

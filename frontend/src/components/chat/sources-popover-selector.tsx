@@ -52,7 +52,7 @@ export function SourcesPopoverSelector({
   useEffect(() => {
     if (notebookId) {
       setNotesLoading(true);
-      fetch(`http://localhost:5055/api/notes?notebook_id=${notebookId}`)
+      fetch(`/api/notes?notebook_id=${notebookId}`)
         .then(res => res.json())
         .then(data => {
           setNotes(data);

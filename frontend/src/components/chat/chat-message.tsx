@@ -112,7 +112,7 @@ export function ChatMessage({ message, isStreaming = false, notebookId }: ChatMe
 
     setIsSaving(true);
     try {
-      const response = await fetch(`http://localhost:5055/api/notes`, {
+      const response = await fetch(`/api/notes`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

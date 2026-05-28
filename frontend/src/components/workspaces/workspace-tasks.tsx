@@ -212,7 +212,7 @@ export function WorkspaceTasks({ workspaceId, refreshKey = 0 }: WorkspaceTasksPr
 
     try {
       // Find the note that matches this task
-      const response = await fetch(`http://localhost:5055/api/notes?notebook_id=${workspaceId}`);
+      const response = await fetch(`/api/notes?notebook_id=${workspaceId}`);
       if (response.ok) {
         const notes = await response.json();
         // Match note by title containing task name

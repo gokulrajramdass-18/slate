@@ -45,7 +45,7 @@ export function MicrositeDialog({ open, onOpenChange, notebookId, notebookTitle 
   const fetchMicrosites = async () => {
     try {
       setLoading(true);
-      const response = await fetch(`http://localhost:5055/api/microsites?notebook_id=${notebookId}`);
+      const response = await fetch(`/api/microsites?notebook_id=${notebookId}`);
       if (response.ok) {
         const data = await response.json();
         setMicrosites(data);
@@ -60,7 +60,7 @@ export function MicrositeDialog({ open, onOpenChange, notebookId, notebookTitle 
   const handleCreate = async () => {
     try {
       setCreating(true);
-      const response = await fetch("http://localhost:5055/api/microsites", {
+      const response = await fetch("/api/microsites", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -94,7 +94,7 @@ export function MicrositeDialog({ open, onOpenChange, notebookId, notebookTitle 
     }
 
     try {
-      const response = await fetch(`http://localhost:5055/api/microsites/${micrositeId}/access`, {
+      const response = await fetch(`/api/microsites/${micrositeId}/access`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email: newEmail }),
@@ -114,7 +114,7 @@ export function MicrositeDialog({ open, onOpenChange, notebookId, notebookTitle 
 
   const handleRemoveEmail = async (micrositeId: string, email: string) => {
     try {
-      const response = await fetch(`http://localhost:5055/api/microsites/${micrositeId}/access/${email}`, {
+      const response = await fetch(`/api/microsites/${micrositeId}/access/${email}`, {
         method: "DELETE",
       });
 
@@ -135,7 +135,7 @@ export function MicrositeDialog({ open, onOpenChange, notebookId, notebookTitle 
     }
 
     try {
-      const response = await fetch(`http://localhost:5055/api/microsites/${micrositeId}`, {
+      const response = await fetch(`/api/microsites/${micrositeId}`, {
         method: "DELETE",
       });
 

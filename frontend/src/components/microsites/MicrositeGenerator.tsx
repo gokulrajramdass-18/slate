@@ -86,7 +86,7 @@ export function MicrositeGenerator({
   useEffect(() => {
     if (selectedNotebookId) {
       setNotesLoading(true);
-      fetch(`http://localhost:5055/api/notes?notebook_id=${selectedNotebookId}`)
+      fetch(`/api/notes?notebook_id=${selectedNotebookId}`)
         .then(res => res.json())
         .then(data => {
           setNotes(data);

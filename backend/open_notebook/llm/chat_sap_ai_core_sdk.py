@@ -94,7 +94,7 @@ class ChatSAPAICore(BaseChatModel):
             "deployment_id": self.deployment_id,
             "stream": stream,
             "temperature": self.temperature,
-            "max_tokens": self.max_tokens,
+            "max_completion_tokens": self.max_tokens,
         }
         if tools:
             payload["tools"] = tools

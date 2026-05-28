@@ -120,10 +120,10 @@ async def chat(request: ChatRequest):
     create_kwargs: Dict[str, Any] = {
         "model": default_model,
         "messages": request.messages,
-        # gpt-5.x rejects `max_tokens`; use `max_completion_tokens` instead.
-        "max_completion_tokens": request.max_tokens,
         "temperature": request.temperature,
     }
+    # Note: max_completion_tokens not supported by gen-ai-hub SDK 4.12.4
+    # Omit it to use model defaults
     if request.tools:
         create_kwargs["tools"] = request.tools
     if request.tool_choice is not None:

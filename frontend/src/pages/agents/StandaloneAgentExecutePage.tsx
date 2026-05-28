@@ -103,7 +103,7 @@ export default function StandaloneAgentExecutePage() {
   // Cleanup abandoned executions on mount
   const cleanupMutation = useMutation({
     mutationFn: async () => {
-      const response = await fetch("http://localhost:5055/api/standalone-agents/executions/cleanup?timeout_minutes=10", {
+      const response = await fetch("/api/standalone-agents/executions/cleanup?timeout_minutes=10", {
         method: "POST",
       });
       if (!response.ok) throw new Error("Failed to cleanup");
@@ -123,7 +123,7 @@ export default function StandaloneAgentExecutePage() {
   const { data: promptsData } = useQuery({
     queryKey: ["user-query-prompts"],
     queryFn: async () => {
-      const response = await fetch("http://localhost:5055/api/user-query-prompts");
+      const response = await fetch("/api/user-query-prompts");
       if (!response.ok) throw new Error("Failed to fetch prompts");
       return response.json();
     },
@@ -132,7 +132,7 @@ export default function StandaloneAgentExecutePage() {
   // Mutations for prompt management
   const createPromptMutation = useMutation({
     mutationFn: async (data: { name: string; query_text: string; description?: string; category?: string }) => {
-      const response = await fetch("http://localhost:5055/api/user-query-prompts", {
+      const response = await fetch("/api/user-query-prompts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(data),
@@ -154,7 +154,7 @@ export default function StandaloneAgentExecutePage() {
 
   const deletePromptMutation = useMutation({
     mutationFn: async (promptId: string) => {
-      const response = await fetch(`http://localhost:5055/api/user-query-prompts/${promptId}`, {
+      const response = await fetch(`/api/user-query-prompts/${promptId}`, {
         method: "DELETE",
       });
       if (!response.ok) throw new Error("Failed to delete prompt");

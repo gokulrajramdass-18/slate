@@ -123,8 +123,8 @@ export function NoteEditor({
       };
 
       const url = note
-        ? `http://localhost:5055/api/notes/${note.id}`
-        : "http://localhost:5055/api/notes";
+        ? `/api/notes/${note.id}`
+        : "/api/notes";
       const method = note ? "PUT" : "POST";
 
       const response = await fetch(url, {

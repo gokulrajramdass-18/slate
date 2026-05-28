@@ -1,0 +1,70 @@
+{
+  "version": "2.7",
+  "children": [],
+  "variables": {
+    "font-body": {
+      "type": "string",
+      "value": "Inter"
+    },
+    "font-display": {
+      "type": "string",
+      "value": "Inter"
+    },
+    "ink-300": {
+      "type": "color",
+      "value": "#A9B4BE"
+    },
+    "ink-500": {
+      "type": "color",
+      "value": "#5B738B"
+    },
+    "ink-700": {
+      "type": "color",
+      "value": "#32363A"
+    },
+    "ink-900": {
+      "type": "color",
+      "value": "#0A2540"
+    },
+    "line": {
+      "type": "color",
+      "value": "#E1E8EE"
+    },
+    "sap-blue": {
+      "type": "color",
+      "value": "#0070F2"
+    },
+    "sap-blue-dark": {
+      "type": "color",
+      "value": "#003D8F"
+    },
+    "sap-blue-deep": {
+      "type": "color",
+      "value": "#0A2540"
+    },
+    "sap-cyan": {
+      "type": "color",
+      "value": "#1B90FF"
+    },
+    "sap-gold": {
+      "type": "color",
+      "value": "#E9730C"
+    },
+    "sap-mint": {
+      "type": "color",
+      "value": "#36A41D"
+    },
+    "surface": {
+      "type": "color",
+      "value": "#FFFFFF"
+    },
+    "surface-card": {
+      "type": "color",
+      "value": "#FAFCFE"
+    },
+    "surface-soft": {
+      "type": "color",
+      "value": "#F5F8FB"
+    }
+  }
+}

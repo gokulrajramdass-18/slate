@@ -43,7 +43,7 @@ export default function SettingsSmtpPage() {
 
   const fetchConfig = async () => {
     try {
-      const response = await fetch("http://localhost:5055/api/smtp/config");
+      const response = await fetch("/api/smtp/config");
       if (response.ok) {
         const data: SMTPConfig = await response.json();
         if (data) {
@@ -92,7 +92,7 @@ export default function SettingsSmtpPage() {
         payload.smtp_password = smtpPassword;
       }
 
-      const response = await fetch("http://localhost:5055/api/smtp/config", {
+      const response = await fetch("/api/smtp/config", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -128,7 +128,7 @@ export default function SettingsSmtpPage() {
     try {
       setTesting(true);
 
-      const response = await fetch("http://localhost:5055/api/smtp/test", {
+      const response = await fetch("/api/smtp/test", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ test_email: testEmail }),
@@ -153,7 +153,7 @@ export default function SettingsSmtpPage() {
     }
 
     try {
-      const response = await fetch("http://localhost:5055/api/smtp/config", {
+      const response = await fetch("/api/smtp/config", {
         method: "DELETE",
       });
 
