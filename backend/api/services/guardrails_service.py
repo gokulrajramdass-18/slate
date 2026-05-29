@@ -135,46 +135,42 @@ class GuardrailsService:
         analysis_content = content[:8000] if len(content) > 8000 else content
 
         try:
-            from api.routers.credentials import _credentials_store
+            from api.services.llm_client import resolve_llm_credential, call_llm_chat
             from api.services.settings import get_setting
-
-            model_id = await get_setting("language_model_id", "")
-            if not model_id:
-                return {
-                    "score": 0.5,
-                    "status": "warning",
-                    "issues": [{
-                        "type": "configuration_error",
-                        "description": "No language model configured for AI content filtering",
-                        "severity": "medium",
-                        "location": "system",
-                    }],
-                }
-
-            credential = _credentials_store.get(model_id)
-            if not credential:
-                return {
-                    "score": 0.5,
-                    "status": "warning",
-                    "issues": [{
-                        "type": "configuration_error",
-                        "description": f"Language model '{model_id}' not found in credentials",
-                        "severity": "medium",
-                        "location": "system",
-                    }],
-                }
-
-            api_url = credential["base_url"]
-            api_key = credential["api_key"]
-            model_name = credential.get("model_name", credential.get("name", "gpt-4"))
-
         except ImportError:
             return {
                 "score": 0.5,
                 "status": "warning",
                 "issues": [{
                     "type": "system_error",
-                    "description": "Credentials store not available",
+                    "description": "LLM client not available",
+                    "severity": "medium",
+                    "location": "system",
+                }],
+            }
+
+        model_id = await get_setting("language_model_id", "")
+        if not model_id:
+            return {
+                "score": 0.5,
+                "status": "warning",
+                "issues": [{
+                    "type": "configuration_error",
+                    "description": "No language model configured for AI content filtering",
+                    "severity": "medium",
+                    "location": "system",
+                }],
+            }
+
+        try:
+            credential = await resolve_llm_credential(model_id)
+        except RuntimeError as e:
+            return {
+                "score": 0.5,
+                "status": "warning",
+                "issues": [{
+                    "type": "configuration_error",
+                    "description": str(e),
                     "severity": "medium",
                     "location": "system",
                 }],
@@ -188,54 +184,41 @@ class GuardrailsService:
         )
 
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(
-                    f"{api_url}/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json={
-                        "model": model_name,
-                        "messages": [
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": f"Analyze this content:\n\n{analysis_content}"},
-                        ],
-                        "temperature": 0.1,
-                        "max_tokens": 1000,
-                    },
-                )
+            ai_response = await call_llm_chat(
+                credential,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f"Analyze this content:\n\n{analysis_content}"},
+                ],
+                temperature=0.1,
+                max_tokens=1000,
+                timeout=30.0,
+            )
 
-                if response.status_code != 200:
-                    raise Exception(f"API error: {response.status_code}")
+            # Parse JSON from AI response
+            parsed = self._parse_ai_response(ai_response)
+            score = parsed.get("score", 0.5)
+            issues = parsed.get("issues", [])
 
-                result = response.json()
-                ai_response = result["choices"][0]["message"]["content"]
+            # Normalize issues
+            normalized_issues = []
+            for issue in issues:
+                normalized_issues.append({
+                    "type": issue.get("type", "general"),
+                    "description": issue.get("message", issue.get("description", "Issue detected")),
+                    "severity": issue.get("severity", "medium"),
+                    "location": issue.get("location", ""),
+                })
 
-                # Parse JSON from AI response
-                parsed = self._parse_ai_response(ai_response)
-                score = parsed.get("score", 0.5)
-                issues = parsed.get("issues", [])
+            # Determine status
+            if score >= 0.8:
+                status = "passed"
+            elif score >= 0.5:
+                status = "warning"
+            else:
+                status = "blocked"
 
-                # Normalize issues
-                normalized_issues = []
-                for issue in issues:
-                    normalized_issues.append({
-                        "type": issue.get("type", "general"),
-                        "description": issue.get("message", issue.get("description", "Issue detected")),
-                        "severity": issue.get("severity", "medium"),
-                        "location": issue.get("location", ""),
-                    })
-
-                # Determine status
-                if score >= 0.8:
-                    status = "passed"
-                elif score >= 0.5:
-                    status = "warning"
-                else:
-                    status = "blocked"
-
-                return {"score": score, "status": status, "issues": normalized_issues}
+            return {"score": score, "status": status, "issues": normalized_issues}
 
         except Exception as e:
             return {

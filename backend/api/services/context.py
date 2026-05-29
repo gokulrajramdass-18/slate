@@ -526,6 +526,7 @@ async def get_llm_for_credential(credential_id: str):
     # SAP AI Core provider - calls standalone API via HTTP
     if provider == "sap_ai_core":
         from open_notebook.llm.chat_sap_ai_core_sdk import ChatSAPAICore
+        from api.services.llm_client import _resolve_sap_ai_core_base
 
         # Get deployment ID and SDK model name from credential
         deployment_id = credential.get("deployment_id")
@@ -536,7 +537,8 @@ async def get_llm_for_credential(credential_id: str):
                 f"Missing deployment_id for SAP AI Core credential {credential_id}"
             )
 
-        logger.info(f"[SAP AI Core] Using deployment {deployment_id} with SDK model {sdk_model_name}")
+        api_base_url = _resolve_sap_ai_core_base()
+        logger.info(f"[SAP AI Core] Using deployment {deployment_id} with SDK model {sdk_model_name} at {api_base_url}")
 
         # Create ChatSAPAICore instance - calls standalone API on port 5056
         # Pass SDK model name (e.g., "gpt-4o") not deployment model name (e.g., "gpt-5.4")
@@ -545,7 +547,7 @@ async def get_llm_for_credential(credential_id: str):
             deployment_id=deployment_id,
             temperature=0.7,
             max_tokens=4096,
-            api_base_url="http://localhost:5056"
+            api_base_url=api_base_url
         )
 
     # LiteLLM provider - always use OpenAI-compatible endpoint

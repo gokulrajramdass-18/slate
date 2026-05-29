@@ -127,10 +127,13 @@ class MicrositeGenerationService:
             from api.services.guardrails_service import GuardrailsService
             guardrails = GuardrailsService()
             all_html = "\n".join(s.get("content_html", "") for s in generated_sections)
+
+            valid_source_ids = await self._filter_existing_source_ids(source_ids)
+
             raw_report = await guardrails.moderate_content(
                 microsite_id=microsite_id,
                 content=all_html,
-                source_ids=source_ids,
+                source_ids=valid_source_ids,
             )
 
             # Convert layers from dict to list if needed (to match ModerationReport.layers: List[ModerationLayerResult])
@@ -310,6 +313,16 @@ class MicrositeGenerationService:
             include_notes=True,
         )
         return context.get("content", "")
+
+    async def _filter_existing_source_ids(self, source_ids: List[str]) -> List[str]:
+        if not source_ids:
+            return []
+        placeholders = ",".join(f":id_{i}" for i in range(len(source_ids)))
+        params = {f"id_{i}": sid for i, sid in enumerate(source_ids)}
+        rows = await repo_query(
+            f"SELECT id FROM sources WHERE id IN ({placeholders})", params
+        )
+        return [r["id"] for r in rows]
 
     async def _generate_section_content(
         self,
@@ -561,55 +574,19 @@ class MicrositeGenerationService:
         )
 
     async def _call_llm(self, system_prompt: str, user_message: str) -> str:
-        """
-        Call the LLM via LiteLLM proxy pattern.
+        """Call the configured LLM via the shared llm_client helper."""
+        from api.services.llm_client import resolve_llm_credential, call_llm_chat
 
-        Follows the same credential retrieval pattern as embedding_service.py.
-        """
-        try:
-            from api.routers.credentials import _credentials_store
-            from api.services.settings import get_setting
-
-            model_id = await get_setting("language_model_id", "")
-            if not model_id:
-                raise ValueError("No language model configured. Please configure in Settings.")
-
-            credential = _credentials_store.get(model_id)
-            if not credential:
-                raise ValueError(f"Language model '{model_id}' not found in credentials")
-
-            api_url = credential["base_url"]
-            api_key = credential["api_key"]
-            model_name = credential.get("model_name", credential.get("name", self.model))
-
-        except ImportError:
-            raise ValueError("Credentials store not available")
-
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.post(
-                f"{api_url}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": model_name,
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_message},
-                    ],
-                    "temperature": self.temperature,
-                    "max_tokens": 2000,
-                },
-            )
-
-            if response.status_code != 200:
-                raise Exception(
-                    f"LLM API error: {response.status_code} - {response.text}"
-                )
-
-            result = response.json()
-            return result["choices"][0]["message"]["content"]
+        credential = await resolve_llm_credential()
+        return await call_llm_chat(
+            credential,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
+            ],
+            temperature=self.temperature,
+            max_tokens=2000,
+        )
 
     def _convert_markdown_tables(self, text: str) -> str:
         """

@@ -215,6 +215,8 @@ Focus on completing this specific task and providing detailed, actionable result
             capture_tool_results=True,
             api_key=credential.get("api_key"),
             base_url=credential.get("base_url"),
+            provider=credential.get("provider"),
+            credential=credential,
             enable_tool_filtering=True,
             task_description=task['description']
         )

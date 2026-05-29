@@ -60,27 +60,15 @@ async def chat_with_microsite_editor(
 
     # Get credentials for AI model
     try:
-        from api.routers.credentials import _credentials_store
-        from api.services.settings import get_setting
+        from api.services.llm_client import resolve_llm_credential
 
-        model_id = await get_setting("language_model_id", "")
-        if not model_id:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="No language model configured"
-            )
+        credential = await resolve_llm_credential()
 
-        credential = _credentials_store.get(model_id)
-        if not credential:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Model '{model_id}' not found"
-            )
-
-        api_url = credential["base_url"]
-        api_key = credential["api_key"]
-        model_name = credential.get("model_name", credential.get("name", "gpt-4"))
-
+    except RuntimeError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -134,32 +122,19 @@ Remember: Always use microsite_id="{microsite_id}" in all tool calls.
     iteration = 0
 
     async with httpx.AsyncClient(timeout=60.0) as client:
+        from api.services.llm_client import call_llm_chat_message
         while iteration < max_iterations:
             iteration += 1
 
-            # Call AI
-            response = await client.post(
-                f"{api_url}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": model_name,
-                    "messages": messages,
-                    "tools": tools,
-                    "temperature": 0.7,
-                }
+            # Call AI (provider-aware: SAP AI Core or OpenAI-compat)
+            assistant_message = await call_llm_chat_message(
+                credential,
+                messages,
+                temperature=0.7,
+                max_tokens=2000,
+                timeout=60.0,
+                extra_payload={"tools": tools} if tools else None,
             )
-
-            if response.status_code != 200:
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=f"AI API error: {response.status_code} - {response.text}"
-                )
-
-            result = response.json()
-            assistant_message = result["choices"][0]["message"]
 
             # Add assistant response to messages
             messages.append(assistant_message)

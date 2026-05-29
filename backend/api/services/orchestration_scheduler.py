@@ -255,8 +255,18 @@ class OrchestrationScheduler:
 
             logger.info(f"Final config: model_name={model_name}, api_key={'<set>' if api_key else None}, base_url={base_url}")
 
+            # Build provider-aware LangChain LLM (handles SAP AI Core + Docker base URL)
+            llm = None
+            if credential:
+                try:
+                    from api.services.llm_client import build_langchain_chat_model
+                    llm = build_langchain_chat_model(credential, temperature=0.0)
+                except Exception as exc:
+                    logger.warning(f"Failed to build provider-aware LLM, falling back: {exc}")
+
             # Create orchestrator
             orchestrator = AutonomousOrchestrator(
+                llm=llm,
                 model_name=model_name or "gpt-4",
                 api_key=api_key,
                 base_url=base_url

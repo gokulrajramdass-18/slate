@@ -318,6 +318,7 @@ class PresentationGenerationService:
         model_name = language_model_id
         api_key = None
         api_base = None
+        credential: Optional[Dict[str, Any]] = None
 
         if language_model_id and len(language_model_id) == 36 and language_model_id.count('-') == 4:
             # It's a credential ID, resolve the actual model name and API key
@@ -450,28 +451,25 @@ Context/Source Material:
 Generate exactly {target_count} slides with professional, engaging content. Return ONLY the JSON array."""
 
         try:
-            # Use LangChain's ChatOpenAI which handles LiteLLM proxy correctly
-            llm = ChatOpenAI(
-                model=model_name,
-                openai_api_base=api_base if api_base else "http://localhost:6655/litellm/v1",
-                openai_api_key=api_key if api_key else "dummy-key-for-proxy",
-                temperature=0.7,
-                max_tokens=2000
-            )
+            from api.services.llm_client import call_llm_chat
 
             logger.info(f"[PresentationGen] Calling AI with model: {model_name}")
-            logger.info(f"[PresentationGen] API Base: {api_base}")
+            logger.info(f"[PresentationGen] Provider: {credential.get('provider') if credential else 'unknown'}")
 
-            # Call LLM using LangChain with retry logic
             messages = [
-                SystemMessage(content=system_prompt),
-                HumanMessage(content=user_prompt)
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
             ]
 
             async def call_llm():
-                return await llm.ainvoke(messages)
+                return await call_llm_chat(
+                    credential or {"provider": "openai_compat", "model_name": model_name, "api_key": api_key, "base_url": api_base},
+                    messages,
+                    temperature=0.7,
+                    max_tokens=2000,
+                )
 
-            response = await retry_with_backoff(
+            response_content = await retry_with_backoff(
                 call_llm,
                 max_retries=3,
                 initial_delay=1.0,
@@ -481,7 +479,7 @@ Generate exactly {target_count} slides with professional, engaging content. Retu
             logger.info(f"[PresentationGen] AI response received successfully")
 
             # Extract and parse JSON with validation
-            content = response.content.strip()
+            content = response_content.strip()
 
             # Remove markdown code blocks if present
             if content.startswith("```"):

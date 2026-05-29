@@ -142,21 +142,16 @@ class TemplateExecutionService:
         try:
             # 7. Execute phases with configured model
             from api.routers.chat import get_model_credential
-            from langchain_openai import ChatOpenAI
+            from api.services.llm_client import build_langchain_chat_model
 
             # Get credential for the configured model
             credential = get_model_credential(language_model_id)
             if not credential:
                 raise ValueError(f"Credential not found for model {language_model_id}")
 
-            # Create LangChain LLM instance from credential
-            # Using ChatOpenAI with base_url works for LiteLLM proxy and supports all providers
-            llm = ChatOpenAI(
-                model=credential["model_name"],
-                api_key=credential["api_key"],
-                base_url=credential["base_url"],
-                temperature=0
-            )
+            # Build LangChain chat model with provider-aware routing
+            # (handles SAP AI Core deployment_id + Docker host.docker.internal)
+            llm = build_langchain_chat_model(credential, temperature=0)
 
             # Execute with configured model
             orchestrator = AutonomousOrchestrator(llm=llm)

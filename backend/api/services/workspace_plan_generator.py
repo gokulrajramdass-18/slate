@@ -64,41 +64,6 @@ class WorkspacePlanGeneratorService:
     """Service for generating execution plans for existing workspaces"""
 
     @staticmethod
-    async def _get_llm_config() -> Dict[str, str]:
-        """
-        Resolve LLM credentials from the settings / credentials store.
-
-        Returns:
-            Dict with base_url, api_key, model_name.
-
-        Raises:
-            RuntimeError: When no language model is configured.
-        """
-        from api.routers.credentials import _credentials_store
-        from api.services.settings import get_setting
-
-        model_id = await get_setting("language_model_id", "")
-        if not model_id:
-            raise RuntimeError(
-                "No language model configured. "
-                "Please select a model in Settings -> Models."
-            )
-
-        credential = _credentials_store.get(model_id)
-        if not credential:
-            raise RuntimeError(
-                f"Language model '{model_id}' not found in credentials."
-            )
-
-        return {
-            "base_url": credential["base_url"],
-            "api_key": credential["api_key"],
-            "model_name": credential.get(
-                "model_name", credential.get("name", "gpt-4")
-            ),
-        }
-
-    @staticmethod
     async def _call_llm(prompt: str, system_prompt: str) -> str:
         """
         Call the configured LLM with a prompt and return the raw text response.
@@ -110,36 +75,19 @@ class WorkspacePlanGeneratorService:
         Returns:
             Raw assistant message content
         """
-        config = await WorkspacePlanGeneratorService._get_llm_config()
+        from api.services.llm_client import resolve_llm_credential, call_llm_chat
 
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            response = await client.post(
-                f"{config['base_url']}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {config['api_key']}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": config["model_name"],
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": prompt},
-                    ],
-                    "temperature": 0.7,
-                    "max_tokens": 2000,
-                },
-            )
-
-            if response.status_code != 200:
-                logger.error(
-                    "LLM API error %d: %s",
-                    response.status_code,
-                    response.text[:500],
-                )
-                raise RuntimeError(f"LLM API error: {response.status_code}")
-
-            result = response.json()
-            return result["choices"][0]["message"]["content"]
+        credential = await resolve_llm_credential()
+        return await call_llm_chat(
+            credential,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.7,
+            max_tokens=2000,
+            timeout=120.0,
+        )
 
     @staticmethod
     def _parse_json_response(text: str) -> Dict[str, Any]:

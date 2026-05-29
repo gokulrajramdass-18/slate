@@ -7,7 +7,6 @@ are most relevant to answering the question.
 
 from typing import List, Dict, Any, Optional
 import re
-from langchain_openai import ChatOpenAI
 from api.services.settings import get_setting
 
 
@@ -108,31 +107,20 @@ class IntelligentSourceSelector:
 Respond with ONLY the JSON object, no other text."""
 
         try:
-            # Resolve model from configured settings
-            from api.routers.credentials import _credentials_store
+            from api.services.llm_client import resolve_llm_credential, call_llm_chat
 
-            model_id = await get_setting("language_model_id", "")
-            if not model_id:
-                print("[IntelligentSourceSelector] No language model configured, using fallback")
+            try:
+                credential = await resolve_llm_credential()
+            except RuntimeError as exc:
+                print(f"[IntelligentSourceSelector] {exc}, using fallback")
                 return self._fallback_selection(query, available_sources, available_notes, max_sources)
 
-            credential = _credentials_store.get(model_id)
-            if not credential:
-                print(f"[IntelligentSourceSelector] Credential not found for {model_id}, using fallback")
-                return self._fallback_selection(query, available_sources, available_notes, max_sources)
-
-            model_name = credential["model_name"]
-            api_key = credential["api_key"]
-            base_url = credential.get("base_url", "https://api.openai.com/v1")
-
-            llm = ChatOpenAI(
-                model=model_name,
-                api_key=api_key,
-                base_url=base_url,
+            response_text = await call_llm_chat(
+                credential,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+                max_tokens=1500,
             )
-
-            response = await llm.ainvoke(prompt)
-            response_text = response.content
 
             # Parse JSON response
             import json
