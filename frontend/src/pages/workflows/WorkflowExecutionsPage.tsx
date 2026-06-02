@@ -55,6 +55,8 @@ export default function WorkflowExecutionsPage() {
     queryKey: ['executions', workflowId],
     queryFn: () => workflowsApi.getExecutions(workflowId),
     refetchInterval: 5000, // Refetch every 5 seconds for running executions
+    refetchOnMount: 'always', // Always refetch when the page is opened
+    staleTime: 0, // Treat data as stale immediately so navigating back triggers a refetch
   });
 
   const statusConfig = {

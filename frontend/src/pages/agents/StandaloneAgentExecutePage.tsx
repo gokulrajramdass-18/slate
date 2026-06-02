@@ -6,7 +6,7 @@
 
 import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { queryKeys } from "@/lib/query-client";
 import * as standaloneAgentsApi from "@/lib/api/standalone-agents";
 import type { StandaloneAgent, StandaloneAgentExecutionStep } from "@/lib/types";
@@ -52,8 +52,10 @@ import {
   XCircle,
   ChevronDown,
   ChevronUp,
+  BarChart3,
 } from "lucide-react";
 import { toast } from "sonner";
+import { AgentEvaluationTab } from "@/components/agents/evaluation";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
@@ -62,6 +64,7 @@ import "highlight.js/styles/github-dark.css";
 export default function StandaloneAgentExecutePage() {
   const { id: agentId } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const queryClient = useQueryClient();
 
   const [query, setQuery] = useState("");
@@ -398,7 +401,16 @@ export default function StandaloneAgentExecutePage() {
         </div>
       </div>
 
-      <Tabs defaultValue="execute" className="space-y-4">
+      <Tabs
+        value={searchParams.get("tab") || "execute"}
+        onValueChange={(v) => {
+          const next = new URLSearchParams(searchParams);
+          if (v === "execute") next.delete("tab");
+          else next.set("tab", v);
+          setSearchParams(next, { replace: true });
+        }}
+        className="space-y-4"
+      >
         <TabsList>
           <TabsTrigger value="execute">
             <Play className="w-4 h-4 mr-2" />
@@ -411,6 +423,10 @@ export default function StandaloneAgentExecutePage() {
           <TabsTrigger value="history">
             <History className="w-4 h-4 mr-2" />
             History ({executions.length})
+          </TabsTrigger>
+          <TabsTrigger value="evaluations">
+            <BarChart3 className="w-4 h-4 mr-2" />
+            Evaluations
           </TabsTrigger>
         </TabsList>
 
@@ -1204,6 +1220,10 @@ export default function StandaloneAgentExecutePage() {
               )}
             </CardContent>
           </Card>
+        </TabsContent>
+
+        <TabsContent value="evaluations" className="space-y-4">
+          <AgentEvaluationTab agentId={agent.id} agentName={agent.name} />
         </TabsContent>
       </Tabs>
 

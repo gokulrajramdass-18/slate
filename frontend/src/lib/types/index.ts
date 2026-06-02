@@ -797,6 +797,8 @@ export interface Agent {
   status: AgentStatus;
   capabilities?: string[];
   config?: Record<string, any>;  // Backend stores capabilities here
+  standalone_agent_id?: string;  // Back-reference to a reusable standalone agent
+  order_index?: number;          // Position in the team (sequential pattern)
   last_active?: string;
   created: string;
   updated?: string;  // Optional since backend doesn't have it
@@ -810,6 +812,8 @@ export interface AgentTeam {
   agents: Agent[];
   status: TeamStatus;
   current_task?: string;
+  orchestration_pattern?: OrchestrationPattern;
+  pattern_config?: PatternConfig;
   created: string;
   updated: string;
 }
@@ -839,9 +843,29 @@ export interface AgentMessage {
   from_agent_name: string;
   to_agent_id?: string;
   to_agent_name?: string;
+  // Backend (pattern executors) emits sender_id / recipient_id; the frontend
+  // SSE layer mirrors them into from_/to_ above for legacy renderers, but
+  // keep the raw fields available for components that want them.
+  sender_id?: string;
+  recipient_id?: string;
   content: string;
-  message_type: "task_assignment" | "result" | "question" | "feedback" | "status_update" | "broadcast";
+  message_type:
+    | "task_assignment"
+    | "result"
+    | "question"
+    | "feedback"
+    | "status_update"
+    | "broadcast"
+    // Pattern-executor message kinds:
+    | "task_assign"
+    | "task_result"
+    | "control"
+    | "chat"
+    | "tool_call"
+    | "tool_result";
   timestamp: string;
+  // Backend column name; kept alongside `timestamp` for legacy renderers.
+  created?: string;
   metadata?: Record<string, any>;
 }
 
@@ -880,7 +904,14 @@ export interface TeamCreateRequest {
   name: string;
   description?: string;
   notebook_id?: string;  // Optional - team can be global or tied to a notebook
-  agent_configs: AgentConfig[];
+  // New shape: compose the team from existing standalone agents.
+  agent_ids?: string[];
+  // How the agents collaborate. See backend/open_notebook/agents/patterns/.
+  orchestration_pattern?: OrchestrationPattern;
+  pattern_config?: PatternConfig;
+  // Legacy inline-agent shape — accepted by the backend for back-compat.
+  agent_configs?: AgentConfig[];
+  config?: Record<string, any>;
 }
 
 export interface AgentConfig {
@@ -891,6 +922,85 @@ export interface AgentConfig {
   tools?: string[];
   capabilities?: string[];
 }
+
+// ---------------------------------------------------------------------------
+// Team architecture patterns
+// ---------------------------------------------------------------------------
+
+export type OrchestrationPattern =
+  | "orchestrator_worker"
+  | "sequential"
+  | "parallel"
+  | "review_critique"
+  | "router"
+  | "group_chat";
+
+export interface PatternConfig {
+  // orchestrator_worker, router
+  orchestrator_agent_id?: string;
+  // review_critique
+  producer_agent_id?: string;
+  reviewer_agent_id?: string;
+  max_rounds?: number;
+  // parallel (optional aggregator)
+  aggregator_agent_id?: string;
+  // group_chat
+  max_turns?: number;
+  // free-form for future patterns / advanced overrides
+  [key: string]: any;
+}
+
+export interface OrchestrationPatternMeta {
+  key: OrchestrationPattern;
+  label: string;
+  tagline: string;
+  description: string;
+}
+
+export const ORCHESTRATION_PATTERNS: OrchestrationPatternMeta[] = [
+  {
+    key: "orchestrator_worker",
+    label: "Orchestrator-Worker",
+    tagline: "Supervisor / Subagents",
+    description:
+      "One orchestrator decomposes the goal into subtasks, dispatches each to a worker, then synthesizes results.",
+  },
+  {
+    key: "sequential",
+    label: "Sequential",
+    tagline: "The Assembly Line",
+    description:
+      "Agents run in order — each agent's output becomes the next agent's input.",
+  },
+  {
+    key: "parallel",
+    label: "Parallel",
+    tagline: "Fan-Out / Fan-In",
+    description:
+      "All agents run concurrently on the same query; an aggregator combines their answers.",
+  },
+  {
+    key: "review_critique",
+    label: "Review & Critique",
+    tagline: "The Multi-Agent Loop",
+    description:
+      "Producer drafts → reviewer critiques → producer revises, looping until approved or max rounds reached.",
+  },
+  {
+    key: "router",
+    label: "Router",
+    tagline: "The Concierge",
+    description:
+      "A router agent classifies the query and forwards it to one specialist.",
+  },
+  {
+    key: "group_chat",
+    label: "Group Chat / Swarm",
+    tagline: "Collaborative Networks",
+    description:
+      "All agents share a turn-based chat for several rounds, then a synthesizer summarizes.",
+  },
+];
 
 // ============================================================================
 // EVALUATION TYPES

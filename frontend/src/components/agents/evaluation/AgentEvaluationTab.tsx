@@ -20,6 +20,7 @@ import {
 import { DatasetUploadModal } from "./DatasetUploadModal";
 import { RunEvaluationModal } from "./RunEvaluationModal";
 import { EvaluationResultsModal } from "./EvaluationResultsModal";
+import { EvaluationTrendChart } from "./EvaluationTrendChart";
 
 interface AgentEvaluationTabProps {
   agentId: string;
@@ -133,6 +134,19 @@ export function AgentEvaluationTab({ agentId, agentName }: AgentEvaluationTabPro
             </CardContent>
           </Card>
         </div>
+      )}
+
+      {/* Trend chart — only renders once at least two completed runs exist */}
+      {runs.length >= 2 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm font-medium">Accuracy over time</CardTitle>
+            <CardDescription>Pass rate and avg score across recent runs</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <EvaluationTrendChart runs={runs} />
+          </CardContent>
+        </Card>
       )}
 
       {/* Datasets Section */}

@@ -354,8 +354,7 @@ class LLMNodeExecutor(BaseNodeExecutor):
         """Call LLM with prompt."""
         from api.services.settings import get_setting
         from api.routers.credentials import _credentials_store
-        from langchain_openai import ChatOpenAI
-        from langchain_core.messages import SystemMessage, HumanMessage
+        from api.services.llm_client import call_llm_chat
 
         # Get input data
         input_data = state.get("input_data", {})
@@ -385,49 +384,42 @@ class LLMNodeExecutor(BaseNodeExecutor):
         print(f"[LLMNodeExecutor] System prompt: {system_prompt[:100]}...")
         print(f"[LLMNodeExecutor] User prompt: {user_prompt[:100]}...")
 
-        # Get language model from settings
-        language_model_id = await get_setting("language_model_id", "gpt-4o-mini")
+        # Resolve credential the same way chat does. Prefer the model the node
+        # was configured with; fall back to the global language_model_id setting.
+        # Going through llm_client.call_llm_chat means sap_ai_core deployments
+        # hit POST /chat on the standalone proxy (chat_sap_ai_core_sdk path),
+        # while other providers go through the OpenAI-compatible /chat/completions.
+        # This is the same branching the rest of the app uses — see
+        # backend/api/services/llm_client.py.
+        configured_model_id = self.config.model_name
+        credential: Optional[Dict[str, Any]] = None
+        if configured_model_id and len(configured_model_id) == 36 and configured_model_id.count('-') == 4:
+            credential = _credentials_store.get(configured_model_id)
 
-        # Resolve model name and API key from credential if it's a UUID
-        model_name = self.config.model_name or language_model_id
-        api_key = None
-        api_base = None
+        if credential is None:
+            language_model_id = await get_setting("language_model_id", "")
+            if language_model_id:
+                credential = _credentials_store.get(language_model_id)
 
-        # Check if language_model_id is a credential ID (UUID format)
-        if language_model_id and len(language_model_id) == 36 and language_model_id.count('-') == 4:
-            credential = _credentials_store.get(language_model_id)
-            if credential:
-                # If node doesn't have model_name configured, use credential's model
-                if not self.config.model_name:
-                    model_name = credential.get("model_name", language_model_id)
-                api_key = credential.get("api_key")
-                api_base = credential.get("base_url")
-            else:
-                # Fallback to default
-                if not self.config.model_name:
-                    model_name = "gpt-4o-mini"
-        elif not model_name:
-            model_name = "gpt-4o-mini"
+        if credential is None:
+            raise RuntimeError(
+                "LLM node has no usable credential: configure a model on the node "
+                "or set a default in Settings -> Models."
+            )
 
-        # Create LLM with LiteLLM proxy support
-        llm = ChatOpenAI(
-            model=model_name,
-            openai_api_base=api_base if api_base else "http://localhost:6655/litellm/v1",
-            openai_api_key=api_key if api_key else "dummy-key-for-proxy",
-            temperature=self.config.temperature or 0.7,
-            max_tokens=self.config.max_tokens or 4096,
-        )
-
-        # Build messages
         messages = [
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=user_prompt)
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
         ]
 
-        # Call LLM
+        # Call LLM via the shared helper
         try:
-            response = await llm.ainvoke(messages)
-            result = response.content
+            result = await call_llm_chat(
+                credential,
+                messages,
+                temperature=self.config.temperature if self.config.temperature is not None else 0.7,
+                max_tokens=self.config.max_tokens or 4096,
+            )
 
             return {
                 **state,
@@ -435,21 +427,19 @@ class LLMNodeExecutor(BaseNodeExecutor):
                     **node_outputs,
                     state["current_node_id"]: {
                         "text": result,
-                        "model": self.config.model_name
+                        "model": credential.get("model_name") or self.config.model_name,
                     }
                 }
             }
         except Exception as e:
+            # Surface the LLM failure to the workflow engine so the node is
+            # marked FAILED and downstream nodes don't blindly try to read
+            # {{node.text}} (which would only re-fail with a confusing
+            # "variable could not be resolved" message). Other executors
+            # in this file (api, hana_table, email) follow the same
+            # raise-on-error contract — see workflow_engine.py:460.
             print(f"[LLMNodeExecutor] Error: {e}")
-            return {
-                **state,
-                "node_outputs": {
-                    **node_outputs,
-                    state["current_node_id"]: {
-                        "error": str(e)
-                    }
-                }
-            }
+            raise RuntimeError(f"LLM call failed: {e}") from e
 
 
 # ============================================================================
@@ -838,15 +828,9 @@ class NotebookGeneratorNodeExecutor(BaseNodeExecutor):
             print(f"[NotebookGeneratorNodeExecutor] Error: {e}")
             import traceback
             traceback.print_exc()
-            return {
-                **state,
-                "node_outputs": {
-                    **state.get("node_outputs", {}),
-                    state["current_node_id"]: {
-                        "error": str(e)
-                    }
-                }
-            }
+            # Surface failure to the engine so the node is marked FAILED and
+            # downstream nodes don't read ghost outputs. See LLMNodeExecutor.
+            raise RuntimeError(f"Notebook generator failed: {e}") from e
 
 
 # ============================================================================
@@ -929,15 +913,7 @@ class MicrositeGeneratorNodeExecutor(BaseNodeExecutor):
             print(f"[MicrositeGeneratorNodeExecutor] Error: {e}")
             import traceback
             traceback.print_exc()
-            return {
-                **state,
-                "node_outputs": {
-                    **state.get("node_outputs", {}),
-                    state["current_node_id"]: {
-                        "error": str(e)
-                    }
-                }
-            }
+            raise RuntimeError(f"Microsite generator failed: {e}") from e
 
 
 # ============================================================================
@@ -1001,15 +977,7 @@ class PresentationGeneratorNodeExecutor(BaseNodeExecutor):
             print(f"[PresentationGeneratorNodeExecutor] Error: {e}")
             import traceback
             traceback.print_exc()
-            return {
-                **state,
-                "node_outputs": {
-                    **state.get("node_outputs", {}),
-                    state["current_node_id"]: {
-                        "error": str(e)
-                    }
-                }
-            }
+            raise RuntimeError(f"Presentation generator failed: {e}") from e
 
 
 # ============================================================================
@@ -1111,15 +1079,7 @@ class HumanApprovalNodeExecutor(BaseNodeExecutor):
             print(f"[HumanApprovalNodeExecutor] Error: {e}")
             import traceback
             traceback.print_exc()
-            return {
-                **state,
-                "node_outputs": {
-                    **state.get("node_outputs", {}),
-                    state["current_node_id"]: {
-                        "error": str(e)
-                    }
-                }
-            }
+            raise RuntimeError(f"Approval node failed: {e}") from e
 
 
 # ============================================================================
@@ -1178,15 +1138,7 @@ class WorkspaceNodeExecutor(BaseNodeExecutor):
             print(f"[WorkspaceNodeExecutor] Error: {e}")
             import traceback
             traceback.print_exc()
-            return {
-                **state,
-                "node_outputs": {
-                    **state.get("node_outputs", {}),
-                    state["current_node_id"]: {
-                        "error": str(e)
-                    }
-                }
-            }
+            raise RuntimeError(f"Workspace node failed: {e}") from e
 
 
 # ============================================================================
@@ -1265,15 +1217,7 @@ class TemplateNodeExecutor(BaseNodeExecutor):
             print(f"[TemplateNodeExecutor] Error: {e}")
             import traceback
             traceback.print_exc()
-            return {
-                **state,
-                "node_outputs": {
-                    **state.get("node_outputs", {}),
-                    state["current_node_id"]: {
-                        "error": str(e)
-                    }
-                }
-            }
+            raise RuntimeError(f"Template node failed: {e}") from e
 
 
 # ============================================================================
@@ -1404,15 +1348,7 @@ class WebhookNodeExecutor(BaseNodeExecutor):
             print(f"[WebhookNodeExecutor] Error: {e}")
             import traceback
             traceback.print_exc()
-            return {
-                **state,
-                "node_outputs": {
-                    **state.get("node_outputs", {}),
-                    state["current_node_id"]: {
-                        "error": str(e)
-                    }
-                }
-            }
+            raise RuntimeError(f"Webhook node failed: {e}") from e
 
 
 # ============================================================================
@@ -1684,41 +1620,204 @@ class APINodeExecutor(BaseNodeExecutor):
             # httpx wipes the URL's existing query string when params={} is
             # passed — pass None when there are no extra params so any query
             # already baked into the URL (e.g. ?filter[customId]=…) survives.
-            send_params = query_params if query_params else None
+            def _send_params(qp):
+                return qp if qp else None
 
-            # Make HTTP request
-            async with httpx.AsyncClient(timeout=timeout) as client:
+            async def _perform_request(client, qp, target_endpoint=None):
+                """Issue one HTTP call and return (response, response_json, extracted_data).
+
+                Factored out so the same path covers the single-call and
+                batched-fan-out flows. `qp` is the query params for THIS call
+                (already substituted, batch slice applied if any).
+                `target_endpoint` overrides the outer `endpoint` — used by the
+                URL-rewrite batching path so each batch hits a per-chunk URL.
+                """
+                ep = target_endpoint if target_endpoint is not None else endpoint
+                send_params = _send_params(qp)
                 if method == "GET":
-                    response = await client.get(endpoint, headers=headers, params=send_params, auth=auth)
+                    resp = await client.get(ep, headers=headers, params=send_params, auth=auth)
                 elif method == "POST":
-                    response = await client.post(endpoint, headers=headers, params=send_params, json=request_body, auth=auth)
+                    resp = await client.post(ep, headers=headers, params=send_params, json=request_body, auth=auth)
                 elif method == "PUT":
-                    response = await client.put(endpoint, headers=headers, params=send_params, json=request_body, auth=auth)
+                    resp = await client.put(ep, headers=headers, params=send_params, json=request_body, auth=auth)
                 elif method == "DELETE":
-                    response = await client.delete(endpoint, headers=headers, params=send_params, auth=auth)
+                    resp = await client.delete(ep, headers=headers, params=send_params, auth=auth)
                 else:
                     raise ValueError(f"Unsupported HTTP method: {method}")
 
                 expected_codes = self.config.api_expected_status_codes
                 if expected_codes:
-                    if response.status_code not in expected_codes:
+                    if resp.status_code not in expected_codes:
                         raise ValueError(
-                            f"API returned HTTP {response.status_code}, expected one of {expected_codes}. "
-                            f"Body preview: {response.text[:300]}"
+                            f"API returned HTTP {resp.status_code}, expected one of {expected_codes}. "
+                            f"Body preview: {resp.text[:300]}"
                         )
                 else:
-                    response.raise_for_status()
-                response_json = response.json()
+                    resp.raise_for_status()
+                resp_json = resp.json()
 
-            # Extract array from response using JSONPath
-            jsonpath_expr = jsonpath_parse(data_path)
-            matches = jsonpath_expr.find(response_json)
+                # Extract array from response using JSONPath
+                jp_expr = jsonpath_parse(data_path)
+                jp_matches = jp_expr.find(resp_json)
+                if not jp_matches:
+                    raise ValueError(f"No data found at JSONPath: {data_path}")
+                extracted = jp_matches[0].value
 
-            if not matches:
-                raise ValueError(f"No data found at JSONPath: {data_path}")
+                # Ensure list-of-dicts shape, mirroring the original behavior
+                # so downstream nodes/snapshots see the same structure.
+                if not isinstance(extracted, list):
+                    if isinstance(extracted, dict):
+                        extracted = [extracted]
+                    else:
+                        raise ValueError(
+                            f"Extracted data must be array or object, got {type(extracted)}"
+                        )
+                return resp, resp_json, extracted
 
-            data = matches[0].value
+            async def _perform_request_to(client, target_endpoint, qp):
+                """Convenience wrapper for batches that rewrite the URL."""
+                return await _perform_request(client, qp, target_endpoint=target_endpoint)
 
+            # Decide single vs batched. Batching activates only when
+            # api_batch_param names a query param whose value is a list (or a
+            # separator-joined string) longer than the configured batch size.
+            batch_param = self.config.api_batch_param
+            batch_separator = self.config.api_batch_separator or ","
+            batch_size = max(1, int(self.config.api_batch_size or 50))
+            batch_concurrency = max(1, int(self.config.api_batch_concurrency or 4))
+
+            batch_items: Optional[List[Any]] = None
+            # `endpoint_no_batch_qs` is the URL with the batch param stripped
+            # out of its query string; per-batch, we re-attach the chunked
+            # value as the only change. None means "param wasn't found in URL,
+            # no rewrite needed."
+            endpoint_no_batch_qs: Optional[str] = None
+            url_extra_qs: str = ""  # other query params already baked into URL
+
+            if batch_param:
+                # 1) Look in query_params dict (the canonical place).
+                if batch_param in (query_params or {}):
+                    raw = query_params.get(batch_param)
+                    if isinstance(raw, list):
+                        batch_items = [str(x) for x in raw]
+                    elif isinstance(raw, str):
+                        parts = [p.strip() for p in raw.split(batch_separator) if p.strip() != ""]
+                        if len(parts) > 1:
+                            batch_items = parts
+
+                # 2) Also look in the endpoint URL's own query string. This
+                # covers the (common) case where users put the filter inline
+                # in api_path (e.g. "/accounts?filter[customId]={{ids}}") so
+                # the IDs end up baked into `endpoint` after substitution
+                # rather than in the query_params dict.
+                if batch_items is None and "?" in endpoint:
+                    from urllib.parse import urlsplit, parse_qsl, urlunsplit, urlencode
+
+                    parts = urlsplit(endpoint)
+                    # parse_qsl with keep_blank_values + no decoding of the
+                    # key, so "filter[customId]" survives intact.
+                    qsl_pairs = parse_qsl(parts.query, keep_blank_values=True)
+
+                    matched_value: Optional[str] = None
+                    remaining_pairs: List[tuple] = []
+                    for k, v in qsl_pairs:
+                        if k == batch_param and matched_value is None:
+                            matched_value = v
+                        else:
+                            remaining_pairs.append((k, v))
+
+                    if matched_value is not None:
+                        items = [
+                            p.strip()
+                            for p in matched_value.split(batch_separator)
+                            if p.strip() != ""
+                        ]
+                        if len(items) > 1:
+                            batch_items = items
+                            # Save the URL minus the batch param. Other query
+                            # params (e.g. `count=true`) survive untouched.
+                            url_extra_qs = urlencode(remaining_pairs, safe="[]")
+                            endpoint_no_batch_qs = urlunsplit((
+                                parts.scheme, parts.netloc, parts.path,
+                                "", parts.fragment
+                            ))
+
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                if not batch_items or len(batch_items) <= batch_size:
+                    # Single call (covers no-batching configs and small lists
+                    # that fit in one request).
+                    response, response_json, data = await _perform_request(client, query_params)
+                    merged_status_code = response.status_code
+                    merged_elapsed_ms = int(response.elapsed.total_seconds() * 1000)
+                    output_query_params = query_params
+                else:
+                    # Fan out: chunk the batch param value, fire requests with a
+                    # concurrency cap, and concatenate per-batch lists. Mirrors
+                    # the asyncio.gather + Semaphore pattern in
+                    # deep_research_agent.py.
+                    import asyncio
+
+                    chunks: List[List[Any]] = [
+                        batch_items[i:i + batch_size]
+                        for i in range(0, len(batch_items), batch_size)
+                    ]
+                    source_label = "URL" if endpoint_no_batch_qs else "query_params"
+                    print(
+                        f"[APINodeExecutor] Batching '{batch_param}' (from {source_label}): "
+                        f"{len(batch_items)} items → {len(chunks)} requests "
+                        f"(size={batch_size}, concurrency={batch_concurrency})"
+                    )
+
+                    sem = asyncio.Semaphore(batch_concurrency)
+
+                    if endpoint_no_batch_qs is not None:
+                        # URL-embedded param: stitch each batch into the URL
+                        # string directly. This preserves the raw, unencoded
+                        # bracket syntax that Outreach uses for
+                        # `filter[customId]` — round-tripping via httpx
+                        # `params=` would percent-encode the brackets.
+                        async def _one(chunk):
+                            async with sem:
+                                joined = batch_separator.join(chunk)
+                                qs = f"{batch_param}={joined}"
+                                if url_extra_qs:
+                                    qs = f"{url_extra_qs}&{qs}"
+                                chunk_endpoint = f"{endpoint_no_batch_qs}?{qs}"
+                                # Issue the call with the rewritten URL and
+                                # whatever query_params dict was already set
+                                # (typically empty when the param was in URL).
+                                return await _perform_request_to(client, chunk_endpoint, query_params)
+                    else:
+                        # Dict-based path: rewrite the chunked value in
+                        # query_params and let httpx serialize it normally.
+                        async def _one(chunk):
+                            async with sem:
+                                chunk_qp = dict(query_params)
+                                chunk_qp[batch_param] = batch_separator.join(chunk)
+                                return await _perform_request(client, chunk_qp)
+
+                    results = await asyncio.gather(
+                        *[_one(c) for c in chunks],
+                        return_exceptions=False,
+                    )
+
+                    # Concat extracted lists. Use the first response's
+                    # metadata for status_code/elapsed so the output stays
+                    # representative; row_count reflects the merged total.
+                    response, response_json, _ = results[0]
+                    data = []
+                    for _resp, _rj, extracted in results:
+                        data.extend(extracted)
+                    merged_status_code = response.status_code
+                    merged_elapsed_ms = sum(
+                        int(r.elapsed.total_seconds() * 1000) for r, _, _ in results
+                    )
+                    # Show the un-chunked param in output so the user sees
+                    # what was logically requested, not the last chunk.
+                    output_query_params = dict(query_params or {})
+
+            # Empty-check happens AFTER any merge — empty means zero across
+            # all batches.
             if self.config.api_fail_on_empty:
                 explicit_check_path = self.config.api_empty_check_path
                 if explicit_check_path:
@@ -1726,14 +1825,19 @@ class APINodeExecutor(BaseNodeExecutor):
                     check_matches = jsonpath_parse(explicit_check_path).find(response_json)
                     check_value = check_matches[0].value if check_matches else None
                 else:
-                    # Default: check the extracted value. If it's a JSON:API-style
-                    # envelope ({data: [...], meta: {...}}), peek inside the inner
-                    # `data` key — this is the common Outreach/JSON:API shape and
-                    # users expect "fail on empty" to mean the inner payload.
+                    # Default: check the merged data list. The original logic
+                    # peeked inside a JSON:API-style {data: [...]} envelope; we
+                    # preserve that for the single-call case where data_path
+                    # points at the envelope rather than the inner array.
                     check_value = data
                     check_path_label = data_path
-                    if isinstance(data, dict) and "data" in data and isinstance(data["data"], (list, dict, str)):
-                        check_value = data["data"]
+                    if (
+                        len(data) == 1
+                        and isinstance(data[0], dict)
+                        and "data" in data[0]
+                        and isinstance(data[0]["data"], (list, dict, str))
+                    ):
+                        check_value = data[0]["data"]
                         check_path_label = f"{data_path}.data"
 
                 is_empty = (
@@ -1747,13 +1851,6 @@ class APINodeExecutor(BaseNodeExecutor):
                         f"Endpoint: {endpoint}"
                     )
 
-            # Ensure data is a list of dicts (required for snapshots)
-            if not isinstance(data, list):
-                if isinstance(data, dict):
-                    data = [data]
-                else:
-                    raise ValueError(f"Extracted data must be array or object, got {type(data)}")
-
             # Build output
             output = {
                 "status": "success",
@@ -1761,9 +1858,9 @@ class APINodeExecutor(BaseNodeExecutor):
                 "row_count": len(data),
                 "columns": list(data[0].keys()) if data and isinstance(data[0], dict) else [],
                 "endpoint": endpoint,
-                "query_params": query_params,
-                "status_code": response.status_code,
-                "response_time_ms": int(response.elapsed.total_seconds() * 1000)
+                "query_params": output_query_params,
+                "status_code": merged_status_code,
+                "response_time_ms": merged_elapsed_ms,
             }
 
             # Create snapshot if enabled

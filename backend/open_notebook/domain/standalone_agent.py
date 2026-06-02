@@ -83,6 +83,23 @@ class StandaloneAgent(ObjectModel):
         """Set config from a dict."""
         self.config = json.dumps(config) if config else None
 
+    def get_memory_config(self) -> "MemoryConfig":
+        """
+        Read this agent's per-layer memory configuration.
+
+        Stored under config["memory"]; missing keys fall back to MemoryConfig
+        defaults (short-term/episodic/semantic on, procedural off).
+        """
+        from open_notebook.domain.agentic_memory import MemoryConfig
+
+        return MemoryConfig.from_dict(self.get_config().get("memory"))
+
+    def set_memory_config(self, memory_config: "MemoryConfig") -> None:
+        """Persist memory configuration into config["memory"]."""
+        cfg = self.get_config()
+        cfg["memory"] = memory_config.to_dict()
+        self.set_config(cfg)
+
     def get_tool_ids(self) -> List[str]:
         """Get list of tool IDs."""
         if not self.tool_ids:

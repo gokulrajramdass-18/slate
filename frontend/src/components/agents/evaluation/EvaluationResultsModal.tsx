@@ -231,6 +231,89 @@ export function EvaluationResultsModal({ run, onClose }: EvaluationResultsModalP
                               </div>
                             )}
 
+                            {/* Tool-call assertions: only render when the test
+                                case had expectations OR the agent actually used
+                                tools. */}
+                            {(result.expected_tool_calls?.length || result.actual_tool_calls?.length) ? (
+                              <div>
+                                <h4 className="font-medium text-sm mb-2 flex items-center gap-2">
+                                  Tool calls
+                                  {result.tool_calls_passed === true && (
+                                    <Badge className="bg-green-500/10 text-green-700 dark:text-green-400 text-xs">
+                                      <CheckCircle className="w-3 h-3 mr-1" />
+                                      Pass
+                                    </Badge>
+                                  )}
+                                  {result.tool_calls_passed === false && (
+                                    <Badge className="bg-red-500/10 text-red-700 dark:text-red-400 text-xs">
+                                      <XCircle className="w-3 h-3 mr-1" />
+                                      Fail
+                                    </Badge>
+                                  )}
+                                </h4>
+                                <div className="space-y-2">
+                                  {result.expected_tool_calls?.map((expected, idx) => {
+                                    const matched = result.actual_tool_calls?.find(
+                                      (a) => a.tool_name === expected.tool_name
+                                    );
+                                    const ok = !!matched;
+                                    return (
+                                      <div
+                                        key={`exp-${idx}`}
+                                        className="flex items-start gap-2 p-2 bg-background rounded text-xs font-mono"
+                                      >
+                                        {ok ? (
+                                          <CheckCircle className="w-3 h-3 mt-0.5 text-green-600 shrink-0" />
+                                        ) : (
+                                          <XCircle className="w-3 h-3 mt-0.5 text-red-600 shrink-0" />
+                                        )}
+                                        <div className="flex-1 min-w-0">
+                                          <div>
+                                            <span className="text-muted-foreground">expected: </span>
+                                            {expected.tool_name}
+                                            {expected.required === false && (
+                                              <span className="text-muted-foreground ml-1">(optional)</span>
+                                            )}
+                                          </div>
+                                          {expected.args_match && (
+                                            <div className="text-muted-foreground truncate">
+                                              args⊇ {JSON.stringify(expected.args_match)}
+                                            </div>
+                                          )}
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                                  {result.actual_tool_calls
+                                    ?.filter(
+                                      (a) =>
+                                        !result.expected_tool_calls?.some(
+                                          (e) => e.tool_name === a.tool_name
+                                        )
+                                    )
+                                    .map((actual, idx) => (
+                                      <div
+                                        key={`act-${idx}`}
+                                        className="flex items-start gap-2 p-2 bg-background rounded text-xs font-mono opacity-70"
+                                      >
+                                        <span className="w-3 h-3 mt-0.5 shrink-0 text-muted-foreground">·</span>
+                                        <div className="flex-1 min-w-0">
+                                          <div>
+                                            <span className="text-muted-foreground">also called: </span>
+                                            {actual.tool_name}
+                                          </div>
+                                          {actual.result_snippet && (
+                                            <div className="text-muted-foreground truncate">
+                                              → {actual.result_snippet}
+                                            </div>
+                                          )}
+                                        </div>
+                                      </div>
+                                    ))}
+                                </div>
+                              </div>
+                            ) : null}
+
                             {result.feedback && (
                               <div>
                                 <h4 className="font-medium text-sm mb-2">Feedback</h4>

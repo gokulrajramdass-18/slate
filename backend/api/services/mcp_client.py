@@ -20,6 +20,33 @@ import httpx
 logger = logging.getLogger(__name__)
 
 
+# Sentinel user_id used to key the single shared OAuth token row for
+# system-mode MCP servers (oauth_mode='system'). users.id is a 36-char
+# UUID, so this string cannot collide with a real user.
+SYSTEM_OAUTH_USER_ID = "__system__"
+
+
+def effective_token_user_id(
+    server_row: Dict[str, Any],
+    caller_user_id: Optional[str],
+) -> Optional[str]:
+    """
+    Resolve which user_id to use for token storage/lookup for `server_row`.
+
+    For system-mode servers (`oauth_mode='system'`), the OAuth token is
+    shared across all users and stored under `SYSTEM_OAUTH_USER_ID`. For
+    user-mode servers (the default), each user has their own token and we
+    use `caller_user_id` verbatim.
+
+    Centralized here so every read/write path makes the same choice; if
+    one site forgot to substitute, two users could end up reading
+    different tokens for the same supposedly-shared server.
+    """
+    if (server_row.get("oauth_mode") or "user") == "system":
+        return SYSTEM_OAUTH_USER_ID
+    return caller_user_id
+
+
 class MCPClient(ABC):
     """Abstract base class for MCP protocol clients"""
 
@@ -309,7 +336,14 @@ class MCPHttpClient(MCPClient):
     Server-Sent Events for streaming responses.
     """
 
-    def __init__(self, url: str, headers: Dict[str, str], auth_config: Dict, server_id: str = None):
+    def __init__(
+        self,
+        url: str,
+        headers: Dict[str, str],
+        auth_config: Dict,
+        server_id: str = None,
+        user_id: str = None,
+    ):
         """
         Initialize HTTP MCP client.
 
@@ -318,19 +352,27 @@ class MCPHttpClient(MCPClient):
             headers: Additional HTTP headers
             auth_config: Authentication configuration
             server_id: MCP server identifier (for OAuth token refresh)
+            user_id: Authenticated user identifier (for per-user OAuth tokens).
+                Required for OAuth servers; ignored for non-OAuth auth.
         """
         self.url = url.rstrip("/")
         self.headers = headers or {}
         self.auth_config = auth_config or {}
-        # Store server_id for OAuth token refresh
+        self.user_id = user_id
+        # Store server_id (and user_id) for OAuth token refresh
         if server_id:
             self.auth_config["server_id"] = server_id
+        if user_id:
+            self.auth_config["user_id"] = user_id
         self.client: Optional[httpx.AsyncClient] = None
         self._connected = False
         self._needs_oauth = False  # Track if OAuth is required
         self.server_capabilities: Dict[str, Any] = {}
         self.server_info: Dict[str, Any] = {}
         self._request_id = 1  # For JSON-RPC request IDs
+        # Per-instance refresh lock so two concurrent tool calls from the
+        # same user don't trigger duplicate refresh requests.
+        self._refresh_lock = asyncio.Lock()
 
     async def connect(self) -> bool:
         """
@@ -479,146 +521,168 @@ class MCPHttpClient(MCPClient):
         """
         Refresh OAuth token using refresh token.
 
+        Each user has their own refresh token; this method only updates the
+        row for `(server_id, user_id)`. A per-instance lock prevents two
+        concurrent tool calls from issuing duplicate refresh requests.
+
         Returns True if refresh successful, False otherwise.
         """
-        refresh_token = self.auth_config.get("refresh_token")
-        if not refresh_token:
-            logger.warning("No refresh token available for OAuth refresh")
-            return False
+        async with self._refresh_lock:
+            # Re-check expiry after acquiring the lock — another coroutine
+            # may have already refreshed.
+            if not self._is_token_expired():
+                return True
 
-        try:
-            # Get OAuth client credentials from database
-            from open_notebook.database.repository import repo_query
-
-            server_id = self.auth_config.get("server_id")
-            if not server_id:
-                logger.error("No server_id in auth_config for OAuth refresh")
+            refresh_token = self.auth_config.get("refresh_token")
+            if not refresh_token:
+                logger.warning("No refresh token available for OAuth refresh")
                 return False
 
-            # Get OAuth client credentials
-            client_data_list = await repo_query(
-                "SELECT client_id, client_secret, registration_data FROM mcp_oauth_clients WHERE server_id = :server_id",
-                {"server_id": server_id}
-            )
-
-            if not client_data_list:
-                logger.error(f"No OAuth client found for server {server_id}")
-                return False
-
-            client_data = client_data_list[0]  # Get first result
-
-            # Parse registration data to get token endpoint
-            registration_info = json.loads(client_data["registration_data"]) if client_data["registration_data"] else {}
-            token_url = registration_info.get("token_endpoint")
-
-            # Fallback to constructing from server URL if not in registration data
-            if not token_url:
-                # Ensure self.url exists and has protocol
-                if not self.url:
-                    logger.error("Server URL is not set, cannot construct token endpoint")
-                    return False
-
-                base_url = self.url if self.url.startswith(('http://', 'https://')) else f"https://{self.url}"
-                token_url = f"{base_url}/oauth/token"
-                logger.info(f"No token_endpoint in registration, constructing: {token_url}")
-
-            # Validate token_url has protocol
-            if not token_url or not token_url.startswith(('http://', 'https://')):
-                logger.error(f"Invalid token URL (missing protocol or empty): '{token_url}'")
-                return False
-
-            # Call token refresh endpoint
-            # OAuth 2.0 requires client credentials via HTTP Basic Auth
-            import base64
-
-            client_id = client_data["client_id"]
-            client_secret = client_data["client_secret"] or ""
-
-            # Create Basic Auth header
-            credentials = f"{client_id}:{client_secret}"
-            encoded_credentials = base64.b64encode(credentials.encode()).decode()
-
-            client = httpx.AsyncClient(timeout=30.0)
             try:
-                response = await client.post(
-                    token_url,
-                    data={
-                        "grant_type": "refresh_token",
-                        "refresh_token": refresh_token,
-                    },
-                    headers={
-                        "Content-Type": "application/x-www-form-urlencoded",
-                        "Authorization": f"Basic {encoded_credentials}"
-                    }
-                )
+                from open_notebook.database.repository import repo_query
 
-                if response.status_code == 200:
-                    token_data = response.json()
-
-                    # Update auth_config with new tokens
-                    self.auth_config["token"] = token_data["access_token"]
-                    self.auth_config["access_token"] = token_data["access_token"]
-
-                    if "refresh_token" in token_data:
-                        self.auth_config["refresh_token"] = token_data["refresh_token"]
-
-                    # Calculate expiry
-                    expires_in = token_data.get("expires_in", 3600)
-                    expires_at = datetime.now() + timedelta(seconds=expires_in)
-                    self.auth_config["expires_at"] = expires_at.isoformat()
-
-                    # Save to database
-                    await self._save_auth_config(server_id, token_data, expires_at)
-
-                    logger.info(f"OAuth token refreshed successfully for server {server_id}")
-                    return True
-                else:
-                    logger.error(f"OAuth refresh failed with status {response.status_code}: {response.text}")
+                server_id = self.auth_config.get("server_id")
+                user_id = self.auth_config.get("user_id") or self.user_id
+                if not server_id:
+                    logger.error("No server_id in auth_config for OAuth refresh")
+                    return False
+                if not user_id:
+                    logger.error("No user_id in auth_config for OAuth refresh")
                     return False
 
-            finally:
-                await client.aclose()
+                # OAuth client credentials are shared per server (RFC 7591).
+                client_data_list = await repo_query(
+                    "SELECT client_id, client_secret, registration_data "
+                    "FROM mcp_oauth_clients WHERE server_id = :server_id",
+                    {"server_id": server_id},
+                )
+                if not client_data_list:
+                    logger.error(f"No OAuth client found for server {server_id}")
+                    return False
+                client_data = client_data_list[0]
 
-        except Exception as e:
-            logger.error(f"Error refreshing OAuth token: {e}", exc_info=True)
-            return False
+                registration_info = (
+                    json.loads(client_data["registration_data"])
+                    if client_data["registration_data"]
+                    else {}
+                )
+                token_url = registration_info.get("token_endpoint")
+                if not token_url:
+                    if not self.url:
+                        logger.error("Server URL is not set, cannot construct token endpoint")
+                        return False
+                    base_url = (
+                        self.url
+                        if self.url.startswith(("http://", "https://"))
+                        else f"https://{self.url}"
+                    )
+                    token_url = f"{base_url}/oauth/token"
+                    logger.info(f"No token_endpoint in registration, constructing: {token_url}")
 
-    async def _save_auth_config(self, server_id: str, token_data: dict, expires_at: datetime):
+                if not token_url or not token_url.startswith(("http://", "https://")):
+                    logger.error(f"Invalid token URL: '{token_url}'")
+                    return False
+
+                import base64
+
+                client_id = client_data["client_id"]
+                client_secret = client_data["client_secret"] or ""
+                credentials = f"{client_id}:{client_secret}"
+                encoded_credentials = base64.b64encode(credentials.encode()).decode()
+
+                client = httpx.AsyncClient(timeout=30.0)
+                try:
+                    response = await client.post(
+                        token_url,
+                        data={
+                            "grant_type": "refresh_token",
+                            "refresh_token": refresh_token,
+                        },
+                        headers={
+                            "Content-Type": "application/x-www-form-urlencoded",
+                            "Authorization": f"Basic {encoded_credentials}",
+                        },
+                    )
+
+                    if response.status_code == 200:
+                        token_data = response.json()
+
+                        # Update in-memory auth_config
+                        self.auth_config["token"] = token_data["access_token"]
+                        self.auth_config["access_token"] = token_data["access_token"]
+                        if "refresh_token" in token_data:
+                            self.auth_config["refresh_token"] = token_data["refresh_token"]
+                        expires_in = token_data.get("expires_in", 3600)
+                        expires_at = datetime.now() + timedelta(seconds=expires_in)
+                        self.auth_config["expires_at"] = expires_at.isoformat()
+
+                        # Persist for this (server_id, user_id) only
+                        await self._save_auth_config(
+                            server_id=server_id,
+                            user_id=user_id,
+                            token_data=token_data,
+                            expires_at=expires_at,
+                        )
+
+                        logger.info(
+                            f"OAuth token refreshed: server={server_id} user={user_id}"
+                        )
+                        return True
+                    else:
+                        logger.error(
+                            f"OAuth refresh failed ({response.status_code}): {response.text}"
+                        )
+                        return False
+                finally:
+                    await client.aclose()
+
+            except Exception as e:
+                logger.error(f"Error refreshing OAuth token: {e}", exc_info=True)
+                return False
+
+    async def _save_auth_config(
+        self,
+        server_id: str,
+        user_id: str,
+        token_data: dict,
+        expires_at: datetime,
+    ):
         """
-        Save updated OAuth tokens to database.
+        Save refreshed OAuth tokens to the per-user row in mcp_oauth_tokens.
 
-        Args:
-            server_id: MCP server ID
-            token_data: Token response from OAuth server
-            expires_at: Token expiration time
+        Tokens are encrypted with the same Fernet helper that
+        `mcp_servers.auth_config_encrypted` uses (`encrypt_password`), so
+        `MCPClientFactory.create_client` can decrypt them on the next load.
+        Only the (server_id, user_id) row is touched — other users sharing
+        this server are unaffected.
         """
         from open_notebook.database.repository import repo_execute
+        from api.routers.mcp_servers import encrypt_password
 
-        await repo_execute("""
+        new_access = token_data["access_token"]
+        new_refresh = token_data.get(
+            "refresh_token", self.auth_config.get("refresh_token")
+        )
+
+        encrypted_access = encrypt_password(new_access) if new_access else None
+        encrypted_refresh = encrypt_password(new_refresh) if new_refresh else None
+
+        await repo_execute(
+            """
             INSERT OR REPLACE INTO mcp_oauth_tokens
-            (server_id, access_token, refresh_token, expires_at, user_info, updated_at)
-            VALUES (:server_id, :access_token, :refresh_token, :expires_at, :user_info, :updated_at)
-        """, {
-            "server_id": server_id,
-            "access_token": token_data["access_token"],
-            "refresh_token": token_data.get("refresh_token", self.auth_config.get("refresh_token")),
-            "expires_at": expires_at.isoformat(),
-            "user_info": json.dumps(token_data.get("user_info", {})),
-            "updated_at": datetime.now().isoformat()
-        })
-
-        # Also update the server's auth_config_encrypted field
-        from api.services.encryption import encrypt_data
-
-        encrypted_auth = encrypt_data(json.dumps(self.auth_config))
-        await repo_execute("""
-            UPDATE mcp_servers
-            SET auth_config_encrypted = :auth_config
-            WHERE id = :server_id
-        """, {
-            "server_id": server_id,
-            "auth_config": encrypted_auth
-        })
+            (server_id, user_id, access_token, refresh_token, expires_at, user_info, updated_at)
+            VALUES (:server_id, :user_id, :access_token, :refresh_token, :expires_at, :user_info, :updated_at)
+            """,
+            {
+                "server_id": server_id,
+                "user_id": user_id,
+                "access_token": encrypted_access,
+                "refresh_token": encrypted_refresh,
+                "expires_at": expires_at.isoformat(),
+                "user_info": json.dumps(token_data.get("user_info", {})),
+                "updated_at": datetime.now().isoformat(),
+            },
+        )
 
     def _parse_sse_response(self, sse_text: str) -> Dict[str, Any]:
         """
@@ -922,12 +986,21 @@ class MCPClientFactory:
     """Factory for creating appropriate MCP client based on protocol"""
 
     @staticmethod
-    async def create_client(server_config: Dict[str, Any]) -> MCPClient:
+    async def create_client(
+        server_config: Dict[str, Any],
+        user_id: Optional[str] = None,
+    ) -> MCPClient:
         """
         Create MCP client instance based on server configuration.
 
         Args:
             server_config: Server configuration dict from database
+            user_id: Authenticated user ID (the caller). For user-mode OAuth
+                servers this selects which user's token row is loaded.
+                For system-mode OAuth servers (`oauth_mode='system'`) the
+                caller's id is replaced with `SYSTEM_OAUTH_USER_ID` so all
+                users share a single token row and a single pooled client.
+                For non-OAuth auth this is ignored.
 
         Returns:
             MCPClient instance (MCPStdioClient or MCPHttpClient)
@@ -957,35 +1030,86 @@ class MCPClientFactory:
                 except Exception as e:
                     logger.error(f"Failed to decrypt auth config: {e}", exc_info=True)
 
-            # For OAuth servers, load tokens from mcp_oauth_tokens table
+            # For OAuth servers, load this user's tokens from mcp_oauth_tokens.
+            # System-mode servers (`oauth_mode='system'`) collapse every
+            # caller to a single shared row keyed on SYSTEM_OAUTH_USER_ID,
+            # so all users share the same access token AND the same pooled
+            # client (the per-instance refresh lock only works if there's
+            # one instance).
             server_id = server_config.get("id")
             auth_type = server_config.get("auth_type")
             if auth_type == "oauth" and server_id:
-                try:
-                    from open_notebook.database.repository import repo_query
-
-                    oauth_tokens_list = await repo_query(
-                        "SELECT access_token, refresh_token, expires_at FROM mcp_oauth_tokens WHERE server_id = :server_id",
-                        {"server_id": server_id}
+                token_user_id = effective_token_user_id(server_config, user_id)
+                if not token_user_id:
+                    logger.warning(
+                        f"OAuth server {server_id} requested without user_id; "
+                        "client will report _needs_oauth=True"
                     )
+                else:
+                    try:
+                        from open_notebook.database.repository import repo_query
 
-                    if oauth_tokens_list:
-                        oauth_tokens = oauth_tokens_list[0]  # Get first result
-                        # Merge OAuth tokens into auth_config
-                        auth_config["access_token"] = oauth_tokens["access_token"]
-                        auth_config["token"] = oauth_tokens["access_token"]  # For compatibility
-                        auth_config["refresh_token"] = oauth_tokens["refresh_token"]
-                        auth_config["expires_at"] = oauth_tokens["expires_at"]
-                        auth_config["server_id"] = server_id  # For refresh
-                        logger.info(f"Loaded OAuth tokens for server {server_id}, expires: {oauth_tokens['expires_at']}")
-                except Exception as e:
-                    logger.error(f"Failed to load OAuth tokens: {e}", exc_info=True)
+                        oauth_tokens_list = await repo_query(
+                            "SELECT access_token, refresh_token, expires_at "
+                            "FROM mcp_oauth_tokens "
+                            "WHERE server_id = :server_id AND user_id = :user_id",
+                            {"server_id": server_id, "user_id": token_user_id},
+                        )
 
+                        if oauth_tokens_list:
+                            oauth_tokens = oauth_tokens_list[0]
+                            # Tokens are encrypted at rest; decrypt for use.
+                            try:
+                                access_plain = decrypt_password(oauth_tokens["access_token"]) if oauth_tokens["access_token"] else None
+                                refresh_plain = (
+                                    decrypt_password(oauth_tokens["refresh_token"])
+                                    if oauth_tokens["refresh_token"]
+                                    else None
+                                )
+                            except Exception as dec_err:
+                                # Backwards compat: rows from before per-user
+                                # migration may be plaintext. Fall back.
+                                logger.warning(
+                                    f"Token decrypt failed, treating as plaintext: {dec_err}"
+                                )
+                                access_plain = oauth_tokens["access_token"]
+                                refresh_plain = oauth_tokens["refresh_token"]
+
+                            auth_config["type"] = "oauth"
+                            auth_config["access_token"] = access_plain
+                            auth_config["token"] = access_plain  # For compatibility
+                            auth_config["refresh_token"] = refresh_plain
+                            auth_config["expires_at"] = oauth_tokens["expires_at"]
+                            auth_config["server_id"] = server_id
+                            # Stamp the *effective* user_id (the same value
+                            # used for the SELECT) so refresh writes back
+                            # to the correct row — '__system__' for system
+                            # mode, the caller's UUID otherwise.
+                            auth_config["user_id"] = token_user_id
+                            logger.info(
+                                f"Loaded OAuth tokens: server={server_id} user={token_user_id} "
+                                f"expires={oauth_tokens['expires_at']}"
+                            )
+                        else:
+                            logger.info(
+                                f"No OAuth token for server={server_id} user={token_user_id}; "
+                                "client will report _needs_oauth=True"
+                            )
+                    except Exception as e:
+                        logger.error(f"Failed to load OAuth tokens: {e}", exc_info=True)
+
+            # The MCPHttpClient also receives the *effective* user_id so
+            # its refresh writeback path keys on the same row.
             return MCPHttpClient(
                 url=server_config["url"],
                 headers=json.loads(server_config.get("headers") or "{}"),
                 auth_config=auth_config,
-                server_id=server_id  # Pass server_id for OAuth refresh
+                server_id=server_id,
+                user_id=(
+                    effective_token_user_id(server_config, user_id)
+                    if auth_type == "oauth"
+                    else user_id
+                ),
             )
 
         else:
@@ -998,68 +1122,218 @@ class MCPConnectionPool:
 
     Provides connection pooling to avoid repeatedly spawning/connecting
     to MCP servers for each tool call.
+
+    Cache key shape: `f"{server_id}:{user_id}"` for OAuth servers (so two
+    users using the same MCP server get isolated clients with their own
+    bearer tokens), and `server_id` alone for non-OAuth servers (where the
+    auth is shared and a single connection is fine).
     """
 
     def __init__(self):
         self._clients: Dict[str, MCPClient] = {}
         self._locks: Dict[str, asyncio.Lock] = {}
 
-    async def get_client(self, server_id: str, server_config: Dict) -> MCPClient:
-        """
-        Get or create MCP client for server.
+    @staticmethod
+    def _cache_key(server_id: str, user_id: Optional[str]) -> str:
+        """Compute the pool key. user_id is folded in only when present."""
+        return f"{server_id}:{user_id}" if user_id else server_id
 
-        Args:
-            server_id: Unique server identifier
-            server_config: Server configuration from database
+    async def get_client(
+        self,
+        server_id: str,
+        server_config: Dict,
+        user_id: Optional[str] = None,
+    ) -> MCPClient:
+        """
+        Get or create MCP client for (server, user).
+
+        For OAuth servers, pass `user_id` so each user gets their own
+        client with their own access token. Omit `user_id` for non-OAuth
+        servers (the cache then collapses to per-server).
 
         Returns:
             Connected MCPClient instance
         """
-        # Check if already connected
-        if server_id in self._clients:
-            return self._clients[server_id]
+        key = self._cache_key(server_id, user_id)
 
-        # Acquire lock for this server
-        async with self._get_lock(server_id):
+        # Fast path
+        if key in self._clients:
+            return self._clients[key]
+
+        async with self._get_lock(key):
             # Double-check after acquiring lock
-            if server_id in self._clients:
-                return self._clients[server_id]
+            if key in self._clients:
+                return self._clients[key]
 
-            # Create and connect new client (factory is now async)
-            client = await MCPClientFactory.create_client(server_config)
+            client = await MCPClientFactory.create_client(server_config, user_id=user_id)
             connected = await client.connect()
 
             if not connected:
+                # Surface OAuth-needed as a distinct, recoverable error so
+                # callers (e.g. the test endpoint) can route the user to
+                # the authorize flow instead of a generic failure.
+                if getattr(client, "_needs_oauth", False):
+                    raise PermissionError(
+                        f"OAuth required for MCP server {server_id} (user={user_id})"
+                    )
                 raise ConnectionError(f"Failed to connect to MCP server {server_id}")
 
-            self._clients[server_id] = client
+            self._clients[key] = client
             return client
 
-    async def disconnect(self, server_id: str) -> None:
+    async def disconnect(
+        self,
+        server_id: str,
+        user_id: Optional[str] = None,
+    ) -> None:
         """
-        Disconnect and remove client from pool.
+        Disconnect and remove client(s) from the pool.
 
-        Args:
-            server_id: Server identifier to disconnect
+        - With `user_id`: disconnects only that user's client for this server.
+        - Without `user_id`: disconnects every cached client for this server
+          (used when the server is deleted/edited).
         """
-        if server_id in self._clients:
-            async with self._get_lock(server_id):
-                client = self._clients.pop(server_id, None)
+        if user_id is not None:
+            key = self._cache_key(server_id, user_id)
+            if key in self._clients:
+                async with self._get_lock(key):
+                    client = self._clients.pop(key, None)
+                    if client:
+                        await client.disconnect()
+            return
+
+        # No user_id: drop every entry whose key starts with server_id
+        prefix = f"{server_id}:"
+        keys_to_drop = [
+            k for k in list(self._clients.keys())
+            if k == server_id or k.startswith(prefix)
+        ]
+        for key in keys_to_drop:
+            async with self._get_lock(key):
+                client = self._clients.pop(key, None)
                 if client:
                     await client.disconnect()
 
     async def disconnect_all(self) -> None:
         """Disconnect all clients in the pool"""
-        server_ids = list(self._clients.keys())
-        for server_id in server_ids:
-            await self.disconnect(server_id)
+        keys = list(self._clients.keys())
+        for key in keys:
+            async with self._get_lock(key):
+                client = self._clients.pop(key, None)
+                if client:
+                    await client.disconnect()
 
-    def _get_lock(self, server_id: str) -> asyncio.Lock:
-        """Get or create lock for server"""
-        if server_id not in self._locks:
-            self._locks[server_id] = asyncio.Lock()
-        return self._locks[server_id]
+    def _get_lock(self, key: str) -> asyncio.Lock:
+        """Get or create lock for a pool key."""
+        if key not in self._locks:
+            self._locks[key] = asyncio.Lock()
+        return self._locks[key]
 
 
 # Global connection pool instance
 mcp_pool = MCPConnectionPool()
+
+
+async def discover_and_cache_capabilities(
+    server_config: Dict[str, Any],
+    user_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Connect to an MCP server, list its tools / resources / prompts, and
+    persist the result to `mcp_servers.capabilities` + `mcp_tools`.
+
+    Used in two places:
+      1. The `/test` endpoint (manual user click).
+      2. The OAuth callback, immediately after a successful sign-in, so
+         the server card lands showing real tool counts instead of
+         requiring the user to press Test.
+
+    The caller is responsible for permission gating; this function trusts
+    the inputs. `user_id` selects which OAuth identity to use (per-user
+    or `__system__`).
+
+    Returns the capabilities dict. Raises ConnectionError / PermissionError
+    if the connection fails — callers should map those to friendly
+    messages.
+    """
+    from open_notebook.database.repository import repo_execute
+
+    server_id = server_config["id"]
+    now = datetime.now().isoformat()
+
+    # Build a fresh client so we don't pin a stale pool entry to a
+    # potentially-revoked token. The factory handles per-user vs system-
+    # mode substitution internally.
+    client = await MCPClientFactory.create_client(server_config, user_id=user_id)
+    connected = await client.connect()
+    if not connected:
+        if getattr(client, "_needs_oauth", False):
+            raise PermissionError(
+                f"OAuth required for MCP server {server_id} (user={user_id})"
+            )
+        raise ConnectionError(f"Failed to connect to MCP server {server_id}")
+
+    try:
+        tools = await client.list_tools()
+        resources = await client.list_resources()
+        prompts = await client.list_prompts()
+    finally:
+        # We use a one-shot client here, not the pool, so close it.
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+
+    capabilities = {"tools": tools, "resources": resources, "prompts": prompts}
+
+    # Persist server-level capabilities cache.
+    await repo_execute(
+        """
+        UPDATE mcp_servers
+        SET status = :status,
+            last_test_at = :last_test_at,
+            last_test_message = :last_test_message,
+            capabilities = :capabilities,
+            updated_at = :updated_at
+        WHERE id = :id
+        """,
+        {
+            "status": "connected",
+            "last_test_at": now,
+            "last_test_message": (
+                f"Discovered {len(tools)} tools, {len(resources)} resources, "
+                f"{len(prompts)} prompts."
+            ),
+            "capabilities": json.dumps(capabilities),
+            "updated_at": now,
+            "id": server_id,
+        },
+    )
+
+    # Replace the per-tool cache wholesale — schemas can change between
+    # discoveries, and stale rows would confuse the tool factory.
+    await repo_execute(
+        "DELETE FROM mcp_tools WHERE server_id = :server_id",
+        {"server_id": server_id},
+    )
+    for tool in tools:
+        await repo_execute(
+            """
+            INSERT INTO mcp_tools (id, server_id, tool_name, description, input_schema, discovered_at)
+            VALUES (:id, :server_id, :tool_name, :description, :input_schema, :discovered_at)
+            """,
+            {
+                "id": f"{server_id}:{tool['name']}",
+                "server_id": server_id,
+                "tool_name": tool["name"],
+                "description": tool.get("description", ""),
+                "input_schema": json.dumps(tool.get("inputSchema", {})),
+                "discovered_at": now,
+            },
+        )
+
+    logger.info(
+        f"Discovered MCP capabilities: server={server_id} user={user_id} "
+        f"tools={len(tools)} resources={len(resources)} prompts={len(prompts)}"
+    )
+    return capabilities

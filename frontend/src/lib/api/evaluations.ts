@@ -5,6 +5,8 @@ export interface EvaluationDataset {
   name: string;
   description?: string;
   agent_id?: string;
+  workflow_id?: string;
+  target_type?: "agent" | "workflow";
   test_case_count: number;
   file_name?: string;
   file_format?: string;
@@ -15,10 +17,24 @@ export interface EvaluationDataset {
   created_by?: string;
 }
 
+export interface ExpectedToolCall {
+  tool_name: string;
+  args_match?: Record<string, any>;
+  required?: boolean;
+}
+
+export interface ActualToolCall {
+  tool_name: string;
+  args: Record<string, any>;
+  result_snippet?: string;
+}
+
 export interface EvaluationRun {
   id: string;
   dataset_id: string;
-  agent_id: string;
+  agent_id?: string;
+  workflow_id?: string;
+  target_type?: "agent" | "workflow";
   dataset_name?: string;
   agent_name?: string;
   run_name?: string;
@@ -43,6 +59,7 @@ export interface EvaluationResult {
   test_case_id: string;
   input_prompt: string;
   expected_output?: string;
+  expected_tool_calls?: ExpectedToolCall[];
   agent_output: string;
   execution_time_ms: number;
   passed: boolean;
@@ -52,6 +69,8 @@ export interface EvaluationResult {
   exact_match?: boolean;
   feedback?: string;
   judge_reasoning?: string;
+  actual_tool_calls?: ActualToolCall[];
+  tool_calls_passed?: boolean | null;
   error_occurred: boolean;
   error_message?: string;
   category?: string;

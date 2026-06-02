@@ -1240,9 +1240,36 @@ class AgentTeamCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=255, description="Team name")
     notebook_id: Optional[str] = Field(None, description="Notebook this team operates on (optional)")
     description: Optional[str] = Field(None, description="Team purpose description")
+
+    # New (preferred) shape: compose the team from existing standalone agents.
+    # When agent_ids is provided, the backend hydrates one agent_instances row
+    # per id (copying role/system_prompt/tools) and assigns order_index by
+    # position in this list — which drives the sequential pattern's order.
+    agent_ids: Optional[List[str]] = Field(
+        default=None,
+        description="IDs of standalone agents to add to this team (in order)",
+    )
+
+    # Architecture pattern that drives execution. See
+    # backend/open_notebook/agents/patterns/factory.py for the registry.
+    orchestration_pattern: Optional[str] = Field(
+        default="orchestrator_worker",
+        description="One of: orchestrator_worker | sequential | parallel | review_critique | router | group_chat",
+    )
+    pattern_config: Optional[Dict[str, Any]] = Field(
+        default_factory=dict,
+        description=(
+            "Per-pattern config. Keys: orchestrator_agent_id (orchestrator_worker, router), "
+            "producer_agent_id + reviewer_agent_id + max_rounds (review_critique), "
+            "aggregator_agent_id (parallel), max_turns (group_chat)."
+        ),
+    )
+
+    # Legacy shape — inline agent definitions. Still accepted for back-compat
+    # with older clients; new UI uses agent_ids instead.
     agent_configs: Optional[List[Dict[str, Any]]] = Field(
         default_factory=list,
-        description="Optional list of agent configurations to spawn with the team"
+        description="DEPRECATED: inline agent configs. Prefer agent_ids."
     )
     config: Optional[Dict[str, Any]] = Field(
         default_factory=dict,
@@ -1258,6 +1285,8 @@ class AgentTeamResponse(BaseModel):
     description: Optional[str] = None
     status: str = "idle"
     config: Optional[Dict[str, Any]] = None
+    orchestration_pattern: Optional[str] = "orchestrator_worker"
+    pattern_config: Optional[Dict[str, Any]] = None
     agent_count: int = 0
     agents: Optional[List["AgentResponse"]] = Field(default_factory=list, description="Optional list of agents in the team")
     created: Optional[datetime] = None
@@ -1266,7 +1295,7 @@ class AgentTeamResponse(BaseModel):
     class Config:
         from_attributes = True
 
-    @field_validator("config", mode="before")
+    @field_validator("config", "pattern_config", mode="before")
     @classmethod
     def parse_config_json(cls, v):
         if isinstance(v, str):
@@ -1314,6 +1343,8 @@ class AgentResponse(BaseModel):
     model_override: Optional[str] = None
     tool_ids: Optional[List[str]] = None
     config: Optional[Dict[str, Any]] = None
+    standalone_agent_id: Optional[str] = None
+    order_index: Optional[int] = 0
     last_active: Optional[datetime] = None
     created: Optional[datetime] = None
 
@@ -1512,6 +1543,137 @@ class MemorySearchResponse(BaseModel):
     results: List[MemoryEntryResponse] = Field(default_factory=list)
     total: int = 0
     query: str
+
+
+# ============================================================================
+# Agentic Memory Layers (4-layer model)
+# ============================================================================
+
+class MemoryLayerEnum(str, Enum):
+    """Canonical 4-layer agentic memory taxonomy.
+
+    Short-term lives only in LangGraph state — it has no API surface; it's
+    included here for completeness so the frontend can render a row for it.
+    """
+    SHORT_TERM = "short_term"
+    EPISODIC = "episodic"
+    SEMANTIC = "semantic"
+    PROCEDURAL = "procedural"
+
+
+class MemoryConfigModel(BaseModel):
+    """Per-agent memory configuration. Persisted under StandaloneAgent.config['memory']."""
+    short_term_enabled: bool = True
+
+    episodic_enabled: bool = True
+    episodic_retention_days: int = Field(90, ge=1, le=3650)
+    episodic_max_entries: int = Field(500, ge=10, le=10_000)
+
+    semantic_enabled: bool = True
+    semantic_max_facts: int = Field(200, ge=10, le=10_000)
+
+    procedural_enabled: bool = False
+    procedural_min_attempts: int = Field(3, ge=1, le=100)
+    procedural_min_success_rate: float = Field(0.6, ge=0.0, le=1.0)
+
+
+class EpisodicEntryCreate(BaseModel):
+    """Manual insert of an episodic memory (admin/debug use)."""
+    content: str = Field(..., min_length=1)
+    notebook_id: str = Field(..., description="Notebook context for this episode")
+    metadata: Optional[Dict[str, Any]] = Field(default_factory=dict)
+    tags: Optional[List[str]] = Field(default_factory=list)
+    importance: float = Field(0.5, ge=0.0, le=1.0)
+    source_message_id: Optional[str] = None
+
+
+class SemanticEntryCreate(BaseModel):
+    """Manual insert of a semantic fact (with embedding when available)."""
+    content: str = Field(..., min_length=1)
+    notebook_id: str = Field(..., description="Notebook context for this fact")
+    metadata: Optional[Dict[str, Any]] = Field(default_factory=dict)
+    tags: Optional[List[str]] = Field(default_factory=list)
+    importance: float = Field(0.5, ge=0.0, le=1.0)
+
+
+class EpisodicEntryResponse(BaseModel):
+    id: str
+    agent_id: Optional[str] = None
+    notebook_id: str
+    content: str
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    tags: List[str] = Field(default_factory=list)
+    importance: float = 0.5
+    source_message_id: Optional[str] = None
+    expires_at: Optional[str] = None
+    created: Optional[str] = None
+    updated: Optional[str] = None
+
+
+class SemanticEntryResponse(BaseModel):
+    id: str
+    agent_id: Optional[str] = None
+    notebook_id: str
+    content: str
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    tags: List[str] = Field(default_factory=list)
+    importance: float = 0.5
+    access_count: int = 0
+    last_accessed: Optional[str] = None
+    has_embedding: bool = False
+    similarity: Optional[float] = None
+    created: Optional[str] = None
+    updated: Optional[str] = None
+
+
+class ProceduralEntryResponse(BaseModel):
+    id: str
+    agent_id: str
+    task_pattern: str
+    tool_sequence: List[str] = Field(default_factory=list)
+    success_count: int = 0
+    failure_count: int = 0
+    success_rate: float = 0.0
+    total_attempts: int = 0
+    avg_duration_ms: Optional[int] = None
+    example_inputs: List[Any] = Field(default_factory=list)
+    last_used: Optional[str] = None
+    has_embedding: bool = False
+    similarity: Optional[float] = None
+    created: Optional[str] = None
+    updated: Optional[str] = None
+
+
+class EpisodicListResponse(BaseModel):
+    entries: List[EpisodicEntryResponse] = Field(default_factory=list)
+    total: int = 0
+
+
+class SemanticListResponse(BaseModel):
+    entries: List[SemanticEntryResponse] = Field(default_factory=list)
+    total: int = 0
+
+
+class ProceduralListResponse(BaseModel):
+    entries: List[ProceduralEntryResponse] = Field(default_factory=list)
+    total: int = 0
+
+
+class RecallBundleResponse(BaseModel):
+    """Result of GET /api/memory/agents/{id}/recall — debug endpoint output."""
+    short_term: Dict[str, Any] = Field(default_factory=dict)
+    episodic: List[EpisodicEntryResponse] = Field(default_factory=list)
+    semantic: List[SemanticEntryResponse] = Field(default_factory=list)
+    procedural: List[ProceduralEntryResponse] = Field(default_factory=list)
+    formatted_prompt: str = ""
+
+
+class MemoryStatsResponse(BaseModel):
+    """Lightweight counts per layer — populates UI badges."""
+    agent_id: str
+    episodic: int = 0
+    semantic: int = 0
+    procedural: int = 0
 
 
 # ============================================================================
@@ -2654,6 +2816,8 @@ class EvaluationDatasetCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=255, description="Dataset name")
     description: Optional[str] = Field(None, description="Dataset description")
     agent_id: Optional[str] = Field(None, description="Optional linked agent")
+    workflow_id: Optional[str] = Field(None, description="Optional linked workflow")
+    target_type: str = Field(default="agent", description="Eval target: 'agent' or 'workflow'")
     criteria: Optional[List[str]] = Field(
         default=["accuracy", "relevance", "completeness"],
         description="Evaluation criteria"
@@ -2661,6 +2825,19 @@ class EvaluationDatasetCreate(BaseModel):
     scoring_method: str = Field(
         default="llm_judge",
         description="Scoring method: llm_judge, exact_match, semantic_similarity"
+    )
+
+
+class ExpectedToolCall(BaseModel):
+    """Assertion about a tool the agent should invoke during a test case."""
+    tool_name: str = Field(..., description="Name of the tool the agent must call")
+    args_match: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Optional subset of args that must match (recursive subset)"
+    )
+    required: bool = Field(
+        default=True,
+        description="If False, the call is observed but absence is not a failure"
     )
 
 
@@ -2676,6 +2853,8 @@ class EvaluationDatasetResponse(BaseModel):
     name: str
     description: Optional[str]
     agent_id: Optional[str]
+    workflow_id: Optional[str] = None
+    target_type: str = "agent"
     test_case_count: int
     file_name: Optional[str]
     file_format: Optional[str]
@@ -2689,7 +2868,9 @@ class EvaluationDatasetResponse(BaseModel):
 class EvaluationRunCreate(BaseModel):
     """Request model for creating an evaluation run"""
     dataset_id: str = Field(..., description="Dataset to evaluate against")
-    agent_id: str = Field(..., description="Agent to evaluate")
+    agent_id: Optional[str] = Field(None, description="Agent to evaluate (required for target_type='agent')")
+    workflow_id: Optional[str] = Field(None, description="Workflow to evaluate (required for target_type='workflow')")
+    target_type: str = Field(default="agent", description="Eval target: 'agent' or 'workflow'")
     run_name: Optional[str] = Field(None, description="Optional run name")
     model_override: Optional[str] = Field(None, description="Override agent's model")
     config_override: Optional[Dict[str, Any]] = Field(None, description="Override agent config")
@@ -2699,7 +2880,9 @@ class EvaluationRunResponse(BaseModel):
     """Response model for evaluation run"""
     id: str
     dataset_id: str
-    agent_id: str
+    agent_id: Optional[str] = None
+    workflow_id: Optional[str] = None
+    target_type: str = "agent"
     dataset_name: Optional[str]
     agent_name: Optional[str]
     run_name: Optional[str]
@@ -2725,6 +2908,7 @@ class EvaluationResultResponse(BaseModel):
     test_case_id: str
     input_prompt: str
     expected_output: Optional[str]
+    expected_tool_calls: Optional[List[Dict[str, Any]]] = None
     agent_output: str
     execution_time_ms: float
     passed: bool
@@ -2734,6 +2918,8 @@ class EvaluationResultResponse(BaseModel):
     exact_match: Optional[bool]
     feedback: Optional[str]
     judge_reasoning: Optional[str]
+    actual_tool_calls: Optional[List[Dict[str, Any]]] = None
+    tool_calls_passed: Optional[bool] = None
     error_occurred: bool
     error_message: Optional[str]
     category: Optional[str]

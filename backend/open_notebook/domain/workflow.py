@@ -254,6 +254,14 @@ class NodeConfig(BaseModel):
     api_empty_check_path: Optional[str] = None  # JSONPath to check for emptiness; falls back to api_response_data_path
     api_expected_status_codes: Optional[List[int]] = None  # If set, only these status codes are accepted
 
+    # API node batching — split a single query param's list value into N parallel
+    # requests to avoid HTTP 414 (URI too long) on large ID lists. Only activates
+    # when api_batch_param is set; the rest are tunables.
+    api_batch_param: Optional[str] = None  # Query param name to split (e.g., "filter[customId]")
+    api_batch_size: Optional[int] = 50  # Items per batch
+    api_batch_separator: Optional[str] = ","  # Separator joining items in each batch's value
+    api_batch_concurrency: Optional[int] = 4  # Max in-flight requests during fan-out
+
     # ForEach node config
     foreach_source: Optional[str] = None  # Template like "{{hana-NODE-ID.rows}}" pointing to a list
     foreach_body_node_id: Optional[str] = None  # ID of the node to execute once per item

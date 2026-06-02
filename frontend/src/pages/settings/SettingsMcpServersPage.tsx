@@ -8,7 +8,12 @@
 
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { mcpServersApi, MCPServer, MCPServerCreate } from "@/lib/api/mcp-servers";
+import {
+  mcpServersApi,
+  MCPServer,
+  MCPServerCreate,
+  MCPServerSession,
+} from "@/lib/api/mcp-servers";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import {
@@ -23,6 +28,15 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import {
   Loader2,
   Plus,
@@ -36,9 +50,113 @@ import {
   CheckCircle,
   MinusCircle,
   LogOut,
+  Users,
+  ShieldAlert,
 } from "lucide-react";
 import { toast } from "sonner";
 import { SettingsHeader } from "@/components/settings/settings-header";
+import { useAuthStore } from "@/lib/stores/auth-store";
+import type { QueryClient } from "@tanstack/react-query";
+
+/**
+ * Run the per-user OAuth popup flow for a server.
+ *
+ * Browser popup blockers require `window.open()` to fire synchronously
+ * from the click handler. So we open a placeholder popup first, then ask
+ * the backend (using the user's JWT) for the signed authorization URL,
+ * and finally point the popup at it. The signed `state` parameter
+ * contains the user_id, which the backend recovers in /oauth/callback.
+ */
+async function openOAuthPopup(
+  serverId: string,
+  queryClient: QueryClient,
+): Promise<void> {
+  const width = 600;
+  const height = 700;
+  const left = window.screenX + (window.outerWidth - width) / 2;
+  const top = window.screenY + (window.outerHeight - height) / 2;
+
+  // Open a blank popup synchronously to satisfy popup-blocker rules.
+  const popup = window.open(
+    "about:blank",
+    "mcp_oauth_authorization",
+    `width=${width},height=${height},left=${left},top=${top},toolbar=no,menubar=no,location=no,status=no,resizable=yes,scrollbars=yes`,
+  );
+
+  if (!popup) {
+    toast.error("Please allow popups to authenticate");
+    return;
+  }
+
+  let authUrl: string;
+  try {
+    const { authorization_url } = await mcpServersApi.startOAuth(serverId);
+    authUrl = authorization_url;
+  } catch (e: any) {
+    popup.close();
+    // 403 here means this is a system-mode server and the caller is
+    // not an admin. Surface a clear message instead of a generic error.
+    if (e?.response?.status === 403) {
+      toast.info(
+        "This server uses a shared system account. Ask an administrator to sign in once — everyone will then be able to use it.",
+      );
+    } else {
+      toast.error(e?.response?.data?.detail || "Failed to start OAuth");
+    }
+    return;
+  }
+
+  // Navigate the placeholder to the signed provider URL.
+  popup.location.href = authUrl;
+
+  // Listen for the success/error postMessage from the callback page and
+  // poll for popup close so we can clean up.
+  await new Promise<void>((resolve) => {
+    const cleanup = () => {
+      window.removeEventListener("message", handler);
+      clearInterval(checkClosed);
+      clearTimeout(timeout);
+      resolve();
+    };
+
+    const handler = (event: MessageEvent) => {
+      if (event.data?.type === "mcp_oauth_success") {
+        toast.success("OAuth authentication successful!");
+        // Refetch the server list (now status='connected', has capabilities)
+        // *and* every cached per-server tool query so the freshly
+        // discovered tools render without a manual Test click.
+        queryClient.invalidateQueries({ queryKey: ["mcp-servers"] });
+        queryClient.invalidateQueries({ queryKey: ["mcp-tools"] });
+        if (!popup.closed) popup.close();
+        cleanup();
+      } else if (event.data?.type === "mcp_oauth_error") {
+        toast.error(
+          event.data.error_description ||
+            event.data.error ||
+            "Authentication failed",
+        );
+        if (!popup.closed) popup.close();
+        cleanup();
+      }
+    };
+
+    window.addEventListener("message", handler);
+
+    // If the user closes the popup, drop the listener.
+    const checkClosed = setInterval(() => {
+      if (popup.closed) cleanup();
+    }, 500);
+
+    // Hard cutoff at 5 minutes — matches backend state TTL.
+    const timeout = setTimeout(
+      () => {
+        if (!popup.closed) popup.close();
+        cleanup();
+      },
+      5 * 60 * 1000,
+    );
+  });
+}
 
 export default function SettingsMcpServersPage() {
   const [isDialogOpen, setIsDialogOpen] = useState(false);
@@ -81,28 +199,10 @@ export default function SettingsMcpServersPage() {
               return;
             }
 
-            const authUrl = (testResult.capabilities as any).authorization_url;
-
-            // Open OAuth authorization in popup
-            const popup = window.open(
-              authUrl,
-              'mcp_oauth_authorization',
-              'width=600,height=700,left=200,top=100'
-            );
-
-            // Listen for OAuth success message
-            const messageHandler = (event: MessageEvent) => {
-              if (event.data.type === 'mcp_oauth_success') {
-                window.removeEventListener('message', messageHandler);
-                popup?.close();
-
-                // Re-test server after OAuth
-                queryClient.invalidateQueries({ queryKey: ["mcp-servers"] });
-                toast.success("OAuth authentication successful!");
-              }
-            };
-
-            window.addEventListener('message', messageHandler);
+            // Per-user OAuth: open the popup synchronously, then navigate
+            // it once the authenticated /oauth/start endpoint returns the
+            // signed authorization URL with the user's identity baked in.
+            await openOAuthPopup(createdServer.id, queryClient);
           }
         } catch (error) {
           console.error('Auto-test failed:', error);
@@ -129,38 +229,22 @@ export default function SettingsMcpServersPage() {
   // Test mutation
   const testMutation = useMutation({
     mutationFn: mcpServersApi.test,
-    onSuccess: (result) => {
+    onSuccess: async (result, serverId) => {
       queryClient.invalidateQueries({ queryKey: ["mcp-servers"] });
 
       // Check if OAuth is required
       if (!result.success && (result as any).capabilities?.needs_oauth) {
         // Check if manual setup is required
         if ((result as any).capabilities.manual_setup_required) {
-          toast.error("OAuth required but automatic setup not supported. Please configure OAuth manually.");
+          toast.error(
+            "OAuth required but automatic setup not supported. Please configure OAuth manually."
+          );
           return;
         }
 
-        const authUrl = (result as any).capabilities.authorization_url;
         toast.info("OAuth authentication required");
-
-        // Open OAuth authorization in popup
-        const popup = window.open(
-          authUrl,
-          'mcp_oauth_authorization',
-          'width=600,height=700,left=200,top=100'
-        );
-
-        // Listen for OAuth success message
-        const messageHandler = (event: MessageEvent) => {
-          if (event.data.type === 'mcp_oauth_success') {
-            window.removeEventListener('message', messageHandler);
-            popup?.close();
-            queryClient.invalidateQueries({ queryKey: ["mcp-servers"] });
-            toast.success("OAuth authentication successful!");
-          }
-        };
-
-        window.addEventListener('message', messageHandler);
+        // Per-user popup flow — see openOAuthPopup() below
+        await openOAuthPopup(serverId, queryClient);
       } else if (result.success) {
         toast.success(result.message);
       } else {
@@ -177,7 +261,7 @@ export default function SettingsMcpServersPage() {
     mutationFn: mcpServersApi.logout,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["mcp-servers"] });
-      toast.success("Logged out successfully. OAuth tokens cleared.");
+      toast.success("Signed out. Your tokens have been cleared.");
     },
     onError: (error: any) => {
       toast.error(error.response?.data?.detail || "Failed to logout");
@@ -210,53 +294,77 @@ export default function SettingsMcpServersPage() {
         title="MCP Servers"
         description="Connect to Model Context Protocol servers to extend agent capabilities"
       />
-      <Button onClick={handleNew}>
-        <Plus className="mr-2 h-4 w-4" />
-        New Server
-      </Button>
 
-      {isLoading ? (
-        <div className="flex items-center justify-center py-12">
-          <Loader2 className="h-8 w-8 animate-spin" />
-        </div>
-      ) : servers.length === 0 ? (
-        <Card className="p-12 text-center">
-          <Server className="mx-auto h-12 w-12 text-muted-foreground" />
-          <h3 className="mt-4 text-lg font-semibold">No MCP Servers</h3>
-          <p className="text-muted-foreground">
-            Connect to MCP servers to add tools, resources, and prompts to your agents
-          </p>
-          <Button className="mt-4" onClick={handleNew}>
+      <Tabs defaultValue="servers" className="w-full">
+        <TabsList>
+          <TabsTrigger value="servers" className="flex items-center gap-2">
+            <Server className="h-4 w-4" />
+            Servers
+          </TabsTrigger>
+          <TabsTrigger value="sessions" className="flex items-center gap-2">
+            <Users className="h-4 w-4" />
+            User Sessions
+          </TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="servers" className="space-y-4">
+          <Button onClick={handleNew}>
             <Plus className="mr-2 h-4 w-4" />
-            Add Your First Server
+            New Server
           </Button>
-        </Card>
-      ) : (
-        <div className="grid gap-4">
-          {servers.map((server) => (
-            <ServerCard
-              key={server.id}
-              server={server}
-              isExpanded={expandedServers.has(server.id)}
-              onToggleExpand={() => toggleExpanded(server.id)}
-              onEdit={() => handleEdit(server)}
-              onDelete={() => {
-                if (confirm(`Delete server "${server.name}"?`)) {
-                  deleteMutation.mutate(server.id);
-                }
-              }}
-              onTest={() => testMutation.mutate(server.id)}
-              onLogout={() => {
-                if (confirm(`Logout from "${server.name}"? This will clear stored OAuth tokens.`)) {
-                  logoutMutation.mutate(server.id);
-                }
-              }}
-              isTesting={testMutation.isPending}
-              isLoggingOut={logoutMutation.isPending}
-            />
-          ))}
-        </div>
-      )}
+
+          {isLoading ? (
+            <div className="flex items-center justify-center py-12">
+              <Loader2 className="h-8 w-8 animate-spin" />
+            </div>
+          ) : servers.length === 0 ? (
+            <Card className="p-12 text-center">
+              <Server className="mx-auto h-12 w-12 text-muted-foreground" />
+              <h3 className="mt-4 text-lg font-semibold">No MCP Servers</h3>
+              <p className="text-muted-foreground">
+                Connect to MCP servers to add tools, resources, and prompts to your agents
+              </p>
+              <Button className="mt-4" onClick={handleNew}>
+                <Plus className="mr-2 h-4 w-4" />
+                Add Your First Server
+              </Button>
+            </Card>
+          ) : (
+            <div className="grid gap-4">
+              {servers.map((server) => (
+                <ServerCard
+                  key={server.id}
+                  server={server}
+                  isExpanded={expandedServers.has(server.id)}
+                  onToggleExpand={() => toggleExpanded(server.id)}
+                  onEdit={() => handleEdit(server)}
+                  onDelete={() => {
+                    if (confirm(`Delete server "${server.name}"?`)) {
+                      deleteMutation.mutate(server.id);
+                    }
+                  }}
+                  onTest={() => testMutation.mutate(server.id)}
+                  onLogout={() => {
+                    const isSystem = server.oauth_mode === "system";
+                    const message = isSystem
+                      ? `Sign all users out of "${server.name}"? This is a shared system account — every user will need to wait for an admin to sign in again.`
+                      : `Sign out of "${server.name}"? Only your session is cleared — other users keep theirs.`;
+                    if (confirm(message)) {
+                      logoutMutation.mutate(server.id);
+                    }
+                  }}
+                  isTesting={testMutation.isPending}
+                  isLoggingOut={logoutMutation.isPending}
+                />
+              ))}
+            </div>
+          )}
+        </TabsContent>
+
+        <TabsContent value="sessions" className="space-y-4">
+          <UserSessionsTab servers={servers} isLoadingServers={isLoading} />
+        </TabsContent>
+      </Tabs>
 
       <MCPServerDialog
         open={isDialogOpen}
@@ -266,6 +374,321 @@ export default function SettingsMcpServersPage() {
         isSaving={saveMutation.isPending}
       />
     </div>
+  );
+}
+
+// ============================================================================
+// UserSessionsTab Component
+// ============================================================================
+//
+// Lists who is authenticated against each OAuth-enabled MCP server, with
+// a one-click revoke action. Backed by GET/DELETE /sessions endpoints.
+//
+// Visibility rules (enforced server-side; we mirror them in the UI for
+// clarity):
+//   - Non-admin: sees only their own session per server.
+//   - Admin:     sees every user's session, including the shared
+//                `__system__` row that backs system-mode servers.
+
+interface UserSessionsTabProps {
+  servers: MCPServer[];
+  isLoadingServers: boolean;
+}
+
+function UserSessionsTab({ servers, isLoadingServers }: UserSessionsTabProps) {
+  const isAdmin = useAuthStore((s) => s.user?.is_superadmin ?? false);
+
+  // We only show OAuth-enabled servers — non-OAuth servers don't have
+  // user-scoped sessions to manage.
+  const oauthServers = servers.filter((s) => s.auth_type === "oauth");
+
+  if (isLoadingServers) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <Loader2 className="h-8 w-8 animate-spin" />
+      </div>
+    );
+  }
+
+  if (oauthServers.length === 0) {
+    return (
+      <Card className="p-12 text-center">
+        <Users className="mx-auto h-12 w-12 text-muted-foreground" />
+        <h3 className="mt-4 text-lg font-semibold">No OAuth servers</h3>
+        <p className="text-muted-foreground">
+          User sessions are only tracked for servers that use OAuth.
+        </p>
+      </Card>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      {!isAdmin && (
+        <Card className="flex items-start gap-3 border-amber-200 bg-amber-50 p-3 text-sm dark:border-amber-900/40 dark:bg-amber-950/30">
+          <ShieldAlert className="mt-0.5 h-4 w-4 flex-shrink-0 text-amber-600" />
+          <div className="text-amber-900 dark:text-amber-200">
+            You can only see and disconnect <strong>your own</strong> sessions.
+            Administrators can manage every user's session.
+          </div>
+        </Card>
+      )}
+
+      {oauthServers.map((server) => (
+        <ServerSessionsCard key={server.id} server={server} isAdmin={isAdmin} />
+      ))}
+    </div>
+  );
+}
+
+interface ServerSessionsCardProps {
+  server: MCPServer;
+  isAdmin: boolean;
+}
+
+function ServerSessionsCard({ server, isAdmin }: ServerSessionsCardProps) {
+  const queryClient = useQueryClient();
+
+  const {
+    data: sessions = [],
+    isLoading,
+    isError,
+    error,
+  } = useQuery<MCPServerSession[]>({
+    queryKey: ["mcp-server-sessions", server.id],
+    queryFn: () => mcpServersApi.listSessions(server.id),
+    // Refresh whenever the user comes back to this tab — sessions are
+    // long-lived, so a manual refresh on focus is enough.
+    refetchOnWindowFocus: true,
+  });
+
+  const revokeMutation = useMutation({
+    mutationFn: ({ userId }: { userId: string }) =>
+      mcpServersApi.revokeSession(server.id, userId),
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({
+        queryKey: ["mcp-server-sessions", server.id],
+      });
+      // Also refresh the servers list — if the calling user revoked
+      // themselves, their `current_user_status` should flip to needs_auth.
+      queryClient.invalidateQueries({ queryKey: ["mcp-servers"] });
+      const isSystem = variables.userId === "__system__";
+      toast.success(
+        isSystem
+          ? "System session revoked. All users are now signed out."
+          : "Session revoked.",
+      );
+    },
+    onError: (err: any) => {
+      toast.error(err?.response?.data?.detail || "Failed to revoke session");
+    },
+  });
+
+  const isSystemMode = server.oauth_mode === "system";
+
+  const handleRevoke = (session: MCPServerSession) => {
+    let message: string;
+    if (session.is_system) {
+      message = `Revoke the shared system session for "${server.name}"? Every user will be signed out and an admin will need to re-authenticate.`;
+    } else if (session.is_current_user) {
+      message = `Sign yourself out of "${server.name}"?`;
+    } else {
+      const who =
+        session.email ||
+        session.username ||
+        session.provider_email ||
+        session.user_id;
+      message = `Revoke ${who}'s session for "${server.name}"? They will need to sign in again.`;
+    }
+    if (confirm(message)) {
+      revokeMutation.mutate({ userId: session.user_id });
+    }
+  };
+
+  return (
+    <Card className="p-6">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <Server className="h-5 w-5 text-muted-foreground" />
+            <h3 className="text-lg font-semibold">{server.name}</h3>
+            <Badge
+              variant="outline"
+              className="text-xs"
+              title={
+                isSystemMode
+                  ? "Shared system account — one OAuth token used by all users."
+                  : "Each user signs in with their own identity."
+              }
+            >
+              {isSystemMode ? "Shared" : "Per-user"}
+            </Badge>
+          </div>
+          {server.url && (
+            <p className="mt-1 text-sm text-muted-foreground">{server.url}</p>
+          )}
+        </div>
+        <Badge variant="secondary" className="flex-shrink-0">
+          {sessions.length} {sessions.length === 1 ? "session" : "sessions"}
+        </Badge>
+      </div>
+
+      <div className="mt-4">
+        {isLoading ? (
+          <div className="flex items-center justify-center py-6">
+            <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+          </div>
+        ) : isError ? (
+          <div className="text-sm text-destructive">
+            Failed to load sessions:{" "}
+            {(error as any)?.response?.data?.detail ||
+              (error as any)?.message ||
+              "unknown error"}
+          </div>
+        ) : sessions.length === 0 ? (
+          <div className="rounded-md border border-dashed py-6 text-center text-sm text-muted-foreground">
+            {isAdmin
+              ? "No users have authenticated to this server yet."
+              : "You haven't authenticated to this server yet."}
+          </div>
+        ) : (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>User</TableHead>
+                <TableHead>Email</TableHead>
+                <TableHead>Authenticated as</TableHead>
+                <TableHead>Last updated</TableHead>
+                <TableHead>Expires</TableHead>
+                <TableHead className="w-[1%]" />
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {sessions.map((session) => (
+                <SessionRow
+                  key={session.user_id}
+                  session={session}
+                  isAdmin={isAdmin}
+                  onRevoke={() => handleRevoke(session)}
+                  isRevoking={
+                    revokeMutation.isPending &&
+                    revokeMutation.variables?.userId === session.user_id
+                  }
+                />
+              ))}
+            </TableBody>
+          </Table>
+        )}
+      </div>
+    </Card>
+  );
+}
+
+interface SessionRowProps {
+  session: MCPServerSession;
+  isAdmin: boolean;
+  onRevoke: () => void;
+  isRevoking: boolean;
+}
+
+function SessionRow({ session, isAdmin, onRevoke, isRevoking }: SessionRowProps) {
+  // Display name resolution — prefer the local user's full name/username,
+  // fall back to provider-side identity (e.g. Outreach), and finally to
+  // the raw user_id (which is `__system__` for shared rows).
+  const displayName = session.is_system
+    ? "Shared system account"
+    : session.full_name ||
+      session.username ||
+      session.provider_name ||
+      session.email ||
+      session.provider_email ||
+      session.user_id;
+
+  const email = session.email || session.provider_email || null;
+
+  // A non-admin can only revoke their own session. An admin can revoke
+  // anyone, including the `__system__` row.
+  const canRevoke = isAdmin || session.is_current_user;
+
+  const formatDate = (iso?: string | null) => {
+    if (!iso) return "—";
+    try {
+      return new Date(iso).toLocaleString();
+    } catch {
+      return iso;
+    }
+  };
+
+  // Highlight expired tokens — they still need cleanup, but the UI should
+  // surface that the row isn't actually granting access anymore.
+  const isExpired =
+    !!session.expires_at && new Date(session.expires_at).getTime() < Date.now();
+
+  return (
+    <TableRow>
+      <TableCell>
+        <div className="flex items-center gap-2">
+          <span className="font-medium">{displayName}</span>
+          {session.is_current_user && (
+            <Badge variant="outline" className="text-xs">
+              You
+            </Badge>
+          )}
+          {session.is_system && (
+            <Badge variant="secondary" className="text-xs">
+              System
+            </Badge>
+          )}
+        </div>
+      </TableCell>
+      <TableCell className="text-muted-foreground">{email || "—"}</TableCell>
+      <TableCell className="text-muted-foreground">
+        {session.provider_email || session.provider_name || "—"}
+      </TableCell>
+      <TableCell className="text-muted-foreground text-sm">
+        {formatDate(session.updated_at)}
+      </TableCell>
+      <TableCell className="text-sm">
+        {session.expires_at ? (
+          <span
+            className={
+              isExpired ? "text-destructive font-medium" : "text-muted-foreground"
+            }
+            title={session.expires_at}
+          >
+            {isExpired ? "Expired" : formatDate(session.expires_at)}
+          </span>
+        ) : (
+          <span className="text-muted-foreground">—</span>
+        )}
+      </TableCell>
+      <TableCell>
+        <Button
+          variant="destructive"
+          size="sm"
+          onClick={onRevoke}
+          disabled={!canRevoke || isRevoking}
+          title={
+            !canRevoke
+              ? "Only administrators can revoke other users' sessions"
+              : session.is_current_user
+                ? "Sign yourself out"
+                : session.is_system
+                  ? "Revoke the shared system session (signs all users out)"
+                  : "Revoke this user's session"
+          }
+        >
+          {isRevoking ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <>
+              <LogOut className="mr-1 h-4 w-4" />
+              {session.is_current_user ? "Sign out" : "Disconnect"}
+            </>
+          )}
+        </Button>
+      </TableCell>
+    </TableRow>
   );
 }
 
@@ -302,6 +725,11 @@ function ServerCard({
     enabled: isExpanded,
   });
 
+  // Used to gate system-mode-only controls (Logout, Connect popup) so
+  // non-admins can't accidentally affect every user's shared session.
+  const isAdmin = useAuthStore((s) => s.user?.is_superadmin ?? false);
+  const isSystemMode = server.oauth_mode === "system";
+
   const toolCount = server.capabilities?.tools?.length || 0;
   const resourceCount = server.capabilities?.resources?.length || 0;
   const promptCount = server.capabilities?.prompts?.length || 0;
@@ -313,7 +741,9 @@ function ServerCard({
           <div className="flex items-center gap-3 flex-wrap">
             <Server className="h-5 w-5 text-muted-foreground flex-shrink-0" />
             <h3 className="text-lg font-semibold">{server.name}</h3>
-            <StatusBadge status={server.status} />
+            {/* For OAuth servers, the badge reflects *this user's* state.
+                For other servers it falls back to the global status. */}
+            <StatusBadge status={server.current_user_status || server.status} />
             <Badge variant="outline">{server.protocol.toUpperCase()}</Badge>
           </div>
 
@@ -330,10 +760,24 @@ function ServerCard({
                 <strong>Auth:</strong> {server.auth_type === "oauth" ? "OAuth" : server.auth_type.toUpperCase()}
               </span>
             )}
-            {server.auth_type === "oauth" && server.auth_config?.connected && (
+            {/* OAuth scope badge: who shares this server's identity. */}
+            {server.auth_type === "oauth" && (
+              <Badge
+                variant="outline"
+                className="text-xs"
+                title={
+                  server.oauth_mode === "system"
+                    ? "Shared system account — one OAuth token used by all users (admin-managed)."
+                    : "Each user signs in with their own identity."
+                }
+              >
+                {server.oauth_mode === "system" ? "Shared" : "Per-user"}
+              </Badge>
+            )}
+            {server.auth_type === "oauth" && server.current_user_status === "connected" && (
               <Badge variant="outline" className="flex items-center gap-1">
                 <CheckCircle className="h-3 w-3 text-green-600" />
-                OAuth Connected
+                {server.oauth_mode === "system" ? "Connected" : "Signed in"}
               </Badge>
             )}
           </div>
@@ -367,20 +811,29 @@ function ServerCard({
               <TestTube className="h-4 w-4" />
             )}
           </Button>
-          {server.auth_type === "oauth" && server.status !== "needs_auth" && (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={onLogout}
-              disabled={isLoggingOut}
-              title="Logout and clear OAuth tokens"
-            >
-              {isLoggingOut ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <LogOut className="h-4 w-4" />
-              )}
-            </Button>
+          {server.auth_type === "oauth" && server.current_user_status === "connected" && (
+            // Logout in system-mode revokes the shared token for everyone,
+            // so only admins see the button there. In user-mode every
+            // signed-in user can sign themselves out.
+            (!isSystemMode || isAdmin) && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={onLogout}
+                disabled={isLoggingOut}
+                title={
+                  isSystemMode
+                    ? "Sign all users out (admin)"
+                    : "Sign out (only affects you)"
+                }
+              >
+                {isLoggingOut ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <LogOut className="h-4 w-4" />
+                )}
+              </Button>
+            )
           )}
           <Button variant="outline" size="sm" onClick={onEdit} title="Edit server">
             <Edit className="h-4 w-4" />
@@ -462,6 +915,9 @@ interface MCPServerDialogProps {
 }
 
 function MCPServerDialog({ open, onOpenChange, server, onSave, isSaving }: MCPServerDialogProps) {
+  const isAdmin = useAuthStore((s) => s.user?.is_superadmin ?? false);
+  const isEditing = !!server;
+
   const [formData, setFormData] = useState<MCPServerCreate>(() => ({
     name: server?.name || "",
     description: server?.description || "",
@@ -469,6 +925,7 @@ function MCPServerDialog({ open, onOpenChange, server, onSave, isSaving }: MCPSe
     url: server?.url || "",
     headers: server?.headers || {},
     auth_type: server?.auth_type || "none",
+    oauth_mode: server?.oauth_mode || "user",
   }));
 
   // Reset form when dialog opens with different server
@@ -481,6 +938,7 @@ function MCPServerDialog({ open, onOpenChange, server, onSave, isSaving }: MCPSe
         url: server?.url || "",
         headers: server?.headers || {},
         auth_type: server?.auth_type || "none",
+        oauth_mode: server?.oauth_mode || "user",
       });
     }
   });
@@ -733,6 +1191,73 @@ function MCPServerDialog({ open, onOpenChange, server, onSave, isSaving }: MCPSe
 
             {(formData.auth_type === "oauth" || (formData.auth_type as string) === "auto") && (
               <div className="space-y-3">
+                {/* OAuth scope mode: per-user vs shared system token.
+                    Locked at creation — read-only when editing. The
+                    'system' option is admin-only because it grants every
+                    user access to a single shared identity. */}
+                <div className="space-y-2 rounded-md border p-3">
+                  <Label className="text-sm font-semibold">OAuth scope</Label>
+                  <p className="text-xs text-muted-foreground">
+                    {isEditing
+                      ? "Locked at creation. Recreate the server to change the OAuth scope."
+                      : "How users will authenticate with this server."}
+                  </p>
+                  <div className="flex flex-col gap-2 pt-1">
+                    <label className="flex items-start gap-2 text-sm">
+                      <input
+                        type="radio"
+                        name="oauth_mode"
+                        value="user"
+                        className="mt-1"
+                        checked={(formData.oauth_mode || "user") === "user"}
+                        disabled={isEditing}
+                        onChange={() =>
+                          setFormData({ ...formData, oauth_mode: "user" })
+                        }
+                      />
+                      <span>
+                        <strong>Each user signs in</strong>
+                        <span className="block text-xs text-muted-foreground">
+                          Per-user tokens. Each user authenticates with
+                          their own identity. Recommended.
+                        </span>
+                      </span>
+                    </label>
+                    <label
+                      className={`flex items-start gap-2 text-sm ${
+                        !isAdmin ? "opacity-50" : ""
+                      }`}
+                      title={
+                        !isAdmin
+                          ? "Only administrators can create system-mode servers"
+                          : undefined
+                      }
+                    >
+                      <input
+                        type="radio"
+                        name="oauth_mode"
+                        value="system"
+                        className="mt-1"
+                        checked={(formData.oauth_mode || "user") === "system"}
+                        disabled={isEditing || !isAdmin}
+                        onChange={() =>
+                          setFormData({ ...formData, oauth_mode: "system" })
+                        }
+                      />
+                      <span>
+                        <strong>Shared system account</strong>{" "}
+                        <Badge variant="outline" className="ml-1 align-middle text-xs">
+                          Admin only
+                        </Badge>
+                        <span className="block text-xs text-muted-foreground">
+                          One admin authenticates once; the resulting
+                          token is shared across all users.
+                        </span>
+                      </span>
+                    </label>
+                  </div>
+                </div>
+
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <Label>Connection Status</Label>

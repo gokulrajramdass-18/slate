@@ -36,6 +36,8 @@ class AgentEvaluationService:
         name: str,
         description: Optional[str] = None,
         agent_id: Optional[str] = None,
+        workflow_id: Optional[str] = None,
+        target_type: str = "agent",
         criteria: Optional[List[str]] = None,
         scoring_method: str = "llm_judge",
         created_by: Optional[str] = None
@@ -46,13 +48,15 @@ class AgentEvaluationService:
 
         await repo_execute(
             """INSERT INTO evaluation_datasets
-               (id, name, description, agent_id, criteria, scoring_method, test_case_count, created, updated, created_by)
-               VALUES (:id, :name, :description, :agent_id, :criteria, :scoring_method, 0, :created, :updated, :created_by)""",
+               (id, name, description, agent_id, workflow_id, target_type, criteria, scoring_method, test_case_count, created, updated, created_by)
+               VALUES (:id, :name, :description, :agent_id, :workflow_id, :target_type, :criteria, :scoring_method, 0, :created, :updated, :created_by)""",
             {
                 "id": dataset_id,
                 "name": name,
                 "description": description,
                 "agent_id": agent_id,
+                "workflow_id": workflow_id,
+                "target_type": target_type,
                 "criteria": json.dumps(criteria or ["accuracy", "relevance", "completeness"]),
                 "scoring_method": scoring_method,
                 "created": now,
@@ -87,10 +91,20 @@ class AgentEvaluationService:
 
         for case in test_cases:
             case_id = str(uuid.uuid4())
+            # expected_tool_calls may arrive as a list (manual editor / JSON dataset)
+            # or already serialised. Normalise to a JSON string for the DB; absence
+            # of expectations stays NULL so result scoring can short-circuit.
+            etc_raw = case.get("expected_tool_calls")
+            expected_tool_calls_json: Optional[str] = None
+            if etc_raw:
+                expected_tool_calls_json = (
+                    etc_raw if isinstance(etc_raw, str) else json.dumps(etc_raw)
+                )
+
             await repo_execute(
                 """INSERT INTO evaluation_test_cases
-                   (id, dataset_id, input_prompt, expected_output, context, category, tags, metadata, created)
-                   VALUES (:id, :dataset_id, :input_prompt, :expected_output, :context, :category, :tags, :metadata, :created)""",
+                   (id, dataset_id, input_prompt, expected_output, context, category, tags, metadata, expected_tool_calls, created)
+                   VALUES (:id, :dataset_id, :input_prompt, :expected_output, :context, :category, :tags, :metadata, :expected_tool_calls, :created)""",
                 {
                     "id": case_id,
                     "dataset_id": dataset_id,
@@ -100,6 +114,7 @@ class AgentEvaluationService:
                     "category": case.get("category"),
                     "tags": json.dumps(case.get("tags", [])),
                     "metadata": json.dumps(case.get("metadata", {})),
+                    "expected_tool_calls": expected_tool_calls_json,
                     "created": now
                 }
             )
@@ -124,11 +139,21 @@ class AgentEvaluationService:
         if file_format == "csv":
             reader = csv.DictReader(StringIO(file_content))
             for row in reader:
+                # expected_tool_calls in CSV is a JSON string in a single column;
+                # left blank when no assertions are needed for the row.
+                etc_raw = row.get("expected_tool_calls")
+                expected_tool_calls = None
+                if etc_raw:
+                    try:
+                        expected_tool_calls = json.loads(etc_raw)
+                    except json.JSONDecodeError:
+                        logger.warning("Skipping malformed expected_tool_calls cell: %r", etc_raw)
                 test_case = {
                     "input": row.get("input", row.get("prompt", "")),
                     "expected_output": row.get("expected_output", row.get("output", "")),
                     "category": row.get("category", "general"),
-                    "tags": row.get("tags", "").split(",") if row.get("tags") else []
+                    "tags": row.get("tags", "").split(",") if row.get("tags") else [],
+                    "expected_tool_calls": expected_tool_calls,
                 }
                 test_cases.append(test_case)
 
@@ -217,6 +242,11 @@ class AgentEvaluationService:
                 case["tags"] = json.loads(case["tags"])
             if case.get("metadata"):
                 case["metadata"] = json.loads(case["metadata"])
+            if case.get("expected_tool_calls"):
+                try:
+                    case["expected_tool_calls"] = json.loads(case["expected_tool_calls"])
+                except (TypeError, json.JSONDecodeError):
+                    case["expected_tool_calls"] = None
             test_cases.append(case)
 
         return test_cases
@@ -228,13 +258,20 @@ class AgentEvaluationService:
     async def create_evaluation_run(
         self,
         dataset_id: str,
-        agent_id: str,
+        agent_id: Optional[str] = None,
+        workflow_id: Optional[str] = None,
+        target_type: str = "agent",
         run_name: Optional[str] = None,
         model_override: Optional[str] = None,
         config_override: Optional[Dict] = None,
         created_by: Optional[str] = None
     ) -> str:
         """Create a new evaluation run."""
+        if target_type == "agent" and not agent_id:
+            raise ValueError("agent_id is required when target_type='agent'")
+        if target_type == "workflow" and not workflow_id:
+            raise ValueError("workflow_id is required when target_type='workflow'")
+
         run_id = str(uuid.uuid4())
         now = datetime.utcnow().isoformat()
 
@@ -245,14 +282,16 @@ class AgentEvaluationService:
 
         await repo_execute(
             """INSERT INTO evaluation_runs
-               (id, dataset_id, agent_id, run_name, model_override, config_override, status,
+               (id, dataset_id, agent_id, workflow_id, target_type, run_name, model_override, config_override, status,
                 total_cases, started_at, created, created_by)
-               VALUES (:id, :dataset_id, :agent_id, :run_name, :model_override, :config_override,
+               VALUES (:id, :dataset_id, :agent_id, :workflow_id, :target_type, :run_name, :model_override, :config_override,
                        :status, :total_cases, :started_at, :created, :created_by)""",
             {
                 "id": run_id,
                 "dataset_id": dataset_id,
                 "agent_id": agent_id,
+                "workflow_id": workflow_id,
+                "target_type": target_type,
                 "run_name": run_name or f"Run {now}",
                 "model_override": model_override,
                 "config_override": json.dumps(config_override or {}),
@@ -294,15 +333,31 @@ class AgentEvaluationService:
         )
 
         try:
-            # Get agent configuration
-            agent_rows = await repo_query(
-                "SELECT * FROM standalone_agents WHERE id = :id",
-                {"id": agent_id}
-            )
-            if not agent_rows:
-                raise ValueError(f"Agent {agent_id} not found")
+            target_type = run.get("target_type", "agent")
+            workflow_id = run.get("workflow_id")
 
-            agent_config = dict(agent_rows[0])
+            if target_type == "workflow":
+                if not workflow_id:
+                    raise ValueError("Workflow run is missing workflow_id")
+                # Build a synthetic config object so _execute_single_test_case
+                # can stay shape-compatible. The workflow target uses a tiny
+                # subset of fields and ignores everything else.
+                agent_config = {
+                    "_target_type": "workflow",
+                    "_workflow_id": workflow_id,
+                    "model_name": None,
+                    "tool_ids": "[]",
+                }
+            else:
+                # Get agent configuration
+                agent_rows = await repo_query(
+                    "SELECT * FROM standalone_agents WHERE id = :id",
+                    {"id": agent_id}
+                )
+                if not agent_rows:
+                    raise ValueError(f"Agent {agent_id} not found")
+
+                agent_config = dict(agent_rows[0])
 
             # Get dataset and test cases
             dataset = await self.get_dataset(dataset_id)
@@ -407,14 +462,13 @@ class AgentEvaluationService:
 
         try:
             # Execute agent with test case input
-            # Note: For standalone agents, we'd need to instantiate and run them
-            # This is a simplified version - you may need to adapt based on your agent execution pattern
-
-            agent_output = await self._run_agent(
+            agent_result = await self._run_agent(
                 agent_config=agent_config,
                 input_prompt=test_case["input_prompt"],
                 model_override=model_override
             )
+            agent_output = agent_result["output"]
+            actual_tool_calls = agent_result["tool_calls"]
 
             end_time = datetime.utcnow()
             execution_time_ms = (end_time - start_time).total_seconds() * 1000
@@ -427,6 +481,21 @@ class AgentEvaluationService:
                 criteria=dataset.get("criteria", [])
             )
 
+            # Score tool calls (None if no expectations were set)
+            expected_tool_calls = test_case.get("expected_tool_calls")
+            if isinstance(expected_tool_calls, str):
+                # Defensive: get_test_cases decodes to list, but accept legacy raw rows.
+                try:
+                    expected_tool_calls = json.loads(expected_tool_calls)
+                except json.JSONDecodeError:
+                    expected_tool_calls = None
+            tool_calls_passed = self._score_tool_calls(expected_tool_calls, actual_tool_calls)
+
+            # Combine output pass and tool-call pass. When expectations exist and
+            # are violated, the test case fails regardless of output quality.
+            output_passed = bool(score_result["passed"])
+            combined_passed = output_passed and (tool_calls_passed is not False)
+
             # Save result
             result_id = str(uuid.uuid4())
             now = datetime.utcnow().isoformat()
@@ -435,30 +504,34 @@ class AgentEvaluationService:
                 """INSERT INTO evaluation_results
                    (id, run_id, test_case_id, agent_output, execution_time_ms,
                     passed, overall_score, criteria_scores, similarity_score, exact_match,
-                    feedback, judge_reasoning, error_occurred, created)
+                    feedback, judge_reasoning, actual_tool_calls, tool_calls_passed,
+                    error_occurred, created)
                    VALUES (:id, :run_id, :test_case_id, :agent_output, :execution_time_ms,
                            :passed, :overall_score, :criteria_scores, :similarity_score, :exact_match,
-                           :feedback, :judge_reasoning, :error_occurred, :created)""",
+                           :feedback, :judge_reasoning, :actual_tool_calls, :tool_calls_passed,
+                           :error_occurred, :created)""",
                 {
                     "id": result_id,
                     "run_id": run_id,
                     "test_case_id": test_case["id"],
                     "agent_output": agent_output,
                     "execution_time_ms": execution_time_ms,
-                    "passed": 1 if score_result["passed"] else 0,
+                    "passed": 1 if combined_passed else 0,
                     "overall_score": score_result.get("overall_score"),
                     "criteria_scores": json.dumps(score_result.get("criteria_scores", {})),
                     "similarity_score": score_result.get("similarity_score"),
                     "exact_match": 1 if score_result.get("exact_match") else 0,
                     "feedback": score_result.get("feedback"),
                     "judge_reasoning": score_result.get("reasoning"),
+                    "actual_tool_calls": json.dumps(actual_tool_calls) if actual_tool_calls else None,
+                    "tool_calls_passed": (1 if tool_calls_passed else 0) if tool_calls_passed is not None else None,
                     "error_occurred": 0,
                     "created": now
                 }
             )
 
             return {
-                "passed": score_result["passed"],
+                "passed": combined_passed,
                 "overall_score": score_result.get("overall_score"),
                 "execution_time_ms": execution_time_ms
             }
@@ -496,33 +569,218 @@ class AgentEvaluationService:
         agent_config: Dict[str, Any],
         input_prompt: str,
         model_override: Optional[str] = None
-    ) -> str:
-        """Execute the agent with given input."""
-        # Simplified agent execution - adapt to your actual agent pattern
-        # This is a placeholder that would need to match your IntelligentAgent setup
+    ) -> Dict[str, Any]:
+        """
+        Execute the agent (or workflow) with given input.
+
+        Returns a dict with:
+          - output: str — agent's final textual response
+          - tool_calls: list of {"tool_name", "args", "result_snippet"} captured
+            from the LangChain message stream. Empty when the agent has no tools
+            or no calls were made (and always empty for workflow targets in V1).
+        """
+        # Workflow target: hand the prompt to the workflow's first input field
+        # and use the engine's `final_output` as the agent_output. Tool-call
+        # assertions are not yet supported for workflows.
+        if agent_config.get("_target_type") == "workflow":
+            return await self._run_workflow(
+                workflow_id=agent_config["_workflow_id"],
+                input_prompt=input_prompt,
+            )
 
         try:
-            # Get tool IDs if configured
             tool_ids = json.loads(agent_config.get("tool_ids") or "[]")
+            system_prompt = (
+                agent_config.get("system_prompt")
+                or f"You are an AI assistant with the role: {agent_config.get('role')}"
+            )
+            model_name = model_override or agent_config.get("model_name")
 
-            # Create a simple execution context
-            # In reality, you'd want to use your actual agent execution logic
-            llm_pool = LLMClientPool()
-            llm = llm_pool.get_llm(model_name=model_override or agent_config.get("model_name"))
+            # When the agent has no tools, the IntelligentAgent setup is overkill
+            # and would fail without a notebook context. Use the plain LLM path.
+            if not tool_ids:
+                llm_pool = LLMClientPool()
+                llm = llm_pool.get_llm(model_name=model_name)
+                messages = [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": input_prompt},
+                ]
+                response = await llm.ainvoke(messages)
+                output = response.content if hasattr(response, "content") else str(response)
+                return {"output": output, "tool_calls": []}
 
-            system_prompt = agent_config.get("system_prompt") or f"You are an AI assistant with the role: {agent_config.get('role')}"
+            # With tools, route through IntelligentAgent so we can observe tool
+            # invocations alongside the final response.
+            from api.services.tool_factory import ToolFactory  # local import to avoid cycles
 
-            messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": input_prompt}
-            ]
+            tools = []
+            try:
+                factory = ToolFactory()
+                # Registry tools work without session/user context — sufficient for
+                # evaluation purposes. Source-based tools are skipped because they
+                # require a live notebook session that the eval runner doesn't have.
+                tools = await factory._get_registry_tools()
+                # Filter to the agent's configured tool_ids if any of them match.
+                if tool_ids:
+                    wanted = set(tool_ids)
+                    filtered = [t for t in tools if getattr(t, "name", None) in wanted]
+                    if filtered:
+                        tools = filtered
+            except Exception as e:
+                logger.warning("Failed to build tools for eval run: %s. Falling back to no-tools path.", e)
+                tools = []
 
-            response = await llm.ainvoke(messages)
-            return response.content if hasattr(response, 'content') else str(response)
+            agent = IntelligentAgent(
+                model_name=model_name,
+                notebook_id=agent_config.get("notebook_id") or "",
+                tools=tools,
+                system_message=system_prompt,
+                task_description=f"Evaluation: {input_prompt[:80]}",
+            )
+            result = await agent.execute(query=input_prompt)
+            tool_calls = self._extract_tool_calls_from_result(result)
+            return {
+                "output": result.get("final_response") or "",
+                "tool_calls": tool_calls,
+            }
 
         except Exception as e:
             logger.error(f"Agent execution failed: {e}")
             raise
+
+    async def _run_workflow(
+        self,
+        workflow_id: str,
+        input_prompt: str,
+    ) -> Dict[str, Any]:
+        """
+        Execute a workflow against a single test case input.
+
+        The test case `input` becomes the value of the workflow's first detected
+        input field. We feed it as both `{first_input}: input_prompt` AND as
+        `prompt`/`query`/`input` so workflows with different input field names
+        still work without per-workflow configuration. The workflow's
+        `final_output` (deterministic Output node, or last node's value) is
+        returned as the agent_output for scoring.
+        """
+        from open_notebook.domain.workflow import Workflow
+        from open_notebook.agents.workflow_engine import WorkflowEngine
+
+        workflow = await Workflow.get(workflow_id)
+        if not workflow:
+            raise ValueError(f"Workflow {workflow_id} not found")
+
+        # Build a permissive input_data map so the workflow's input node finds
+        # something matching its expected field name.
+        input_data: Dict[str, Any] = {
+            "input": input_prompt,
+            "prompt": input_prompt,
+            "query": input_prompt,
+            "text": input_prompt,
+        }
+
+        engine = WorkflowEngine(workflow)
+        execution = await engine.execute(input_data=input_data, stream=False)
+
+        final_output = execution.final_output
+        if final_output is None:
+            output_text = ""
+        elif isinstance(final_output, str):
+            output_text = final_output
+        elif isinstance(final_output, dict):
+            # Heuristic: prefer common output keys before falling back to dump
+            for k in ("output", "result", "response", "text", "answer"):
+                if k in final_output and final_output[k] is not None:
+                    output_text = str(final_output[k])
+                    break
+            else:
+                output_text = json.dumps(final_output, default=str)
+        else:
+            output_text = str(final_output)
+
+        return {"output": output_text, "tool_calls": []}
+
+    def _extract_tool_calls_from_result(self, agent_result: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        IntelligentAgent.execute() returns `tool_outputs` keyed by name and
+        `actions_taken` summarising each step. Re-shape into the flat list we
+        store alongside the eval result.
+        """
+        out: List[Dict[str, Any]] = []
+        tool_outputs = agent_result.get("tool_outputs") or {}
+        for tool_name, payload in tool_outputs.items():
+            # payload may be a dict with {"args": ..., "result": ...} or a raw value.
+            if isinstance(payload, dict) and ("args" in payload or "result" in payload):
+                args = payload.get("args") or {}
+                result_val = payload.get("result")
+            else:
+                args = {}
+                result_val = payload
+            snippet = ""
+            if result_val is not None:
+                snippet = str(result_val)
+                if len(snippet) > 240:
+                    snippet = snippet[:240] + "…"
+            out.append({"tool_name": tool_name, "args": args, "result_snippet": snippet})
+        return out
+
+    @staticmethod
+    def _args_subset_match(expected: Any, actual: Any) -> bool:
+        """Recursive subset match: every key/value in `expected` is present in `actual`."""
+        if isinstance(expected, dict):
+            if not isinstance(actual, dict):
+                return False
+            return all(
+                k in actual and AgentEvaluationService._args_subset_match(v, actual[k])
+                for k, v in expected.items()
+            )
+        if isinstance(expected, list):
+            if not isinstance(actual, list):
+                return False
+            # Each expected element must match SOME actual element (order-insensitive).
+            return all(
+                any(AgentEvaluationService._args_subset_match(e, a) for a in actual)
+                for e in expected
+            )
+        return expected == actual
+
+    def _score_tool_calls(
+        self,
+        expected: Optional[List[Dict[str, Any]]],
+        actual: List[Dict[str, Any]],
+    ) -> Optional[bool]:
+        """
+        Compare expected tool calls (assertions) against the calls the agent
+        actually made.
+
+        Returns:
+          - True if every required expected call has a matching actual call.
+          - False if any required expected call is missing or args don't match.
+          - None when no expectations were defined (caller should ignore).
+        """
+        if not expected:
+            return None
+
+        actual_by_name: Dict[str, List[Dict[str, Any]]] = {}
+        for ac in actual:
+            actual_by_name.setdefault(ac.get("tool_name"), []).append(ac)
+
+        for exp in expected:
+            tool_name = exp.get("tool_name")
+            required = exp.get("required", True)
+            args_match = exp.get("args_match")
+
+            candidates = actual_by_name.get(tool_name, [])
+            if not candidates:
+                if required:
+                    return False
+                continue
+
+            if args_match:
+                if not any(self._args_subset_match(args_match, c.get("args") or {}) for c in candidates):
+                    if required:
+                        return False
+        return True
 
     async def _score_output(
         self,
@@ -638,7 +896,7 @@ REASONING: [Brief explanation]
             """SELECT r.*, d.name as dataset_name, a.name as agent_name
                FROM evaluation_runs r
                JOIN evaluation_datasets d ON r.dataset_id = d.id
-               JOIN standalone_agents a ON r.agent_id = a.id
+               LEFT JOIN standalone_agents a ON r.agent_id = a.id
                WHERE r.id = :id""",
             {"id": run_id}
         )
@@ -666,7 +924,7 @@ REASONING: [Brief explanation]
             where_clause += " AND r.passed = 0"
 
         rows = await repo_query(
-            f"""SELECT r.*, t.input_prompt, t.expected_output, t.category, t.tags
+            f"""SELECT r.*, t.input_prompt, t.expected_output, t.category, t.tags, t.expected_tool_calls
                FROM evaluation_results r
                JOIN evaluation_test_cases t ON r.test_case_id = t.id
                WHERE {where_clause}
@@ -681,6 +939,20 @@ REASONING: [Brief explanation]
                 result["criteria_scores"] = json.loads(result["criteria_scores"])
             if result.get("tags"):
                 result["tags"] = json.loads(result["tags"])
+            if result.get("expected_tool_calls"):
+                try:
+                    result["expected_tool_calls"] = json.loads(result["expected_tool_calls"])
+                except (TypeError, json.JSONDecodeError):
+                    result["expected_tool_calls"] = None
+            if result.get("actual_tool_calls"):
+                try:
+                    result["actual_tool_calls"] = json.loads(result["actual_tool_calls"])
+                except (TypeError, json.JSONDecodeError):
+                    result["actual_tool_calls"] = None
+            # Map SQLite int → Python bool/None
+            tcp = result.get("tool_calls_passed")
+            if tcp is not None:
+                result["tool_calls_passed"] = bool(tcp)
             results.append(result)
 
         return results
@@ -709,7 +981,7 @@ REASONING: [Brief explanation]
             f"""SELECT r.*, d.name as dataset_name, a.name as agent_name
                FROM evaluation_runs r
                JOIN evaluation_datasets d ON r.dataset_id = d.id
-               JOIN standalone_agents a ON r.agent_id = a.id
+               LEFT JOIN standalone_agents a ON r.agent_id = a.id
                WHERE {where_sql}
                ORDER BY r.created DESC
                LIMIT :limit""",

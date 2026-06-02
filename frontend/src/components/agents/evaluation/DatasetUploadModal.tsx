@@ -26,12 +26,16 @@ import { Upload, FileText, Loader2, CheckCircle, XCircle } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
 
 interface DatasetUploadModalProps {
-  agentId: string;
+  /** Bind the dataset to a specific agent. Omit to create an unbound dataset
+   * (usable from the global Evaluations page against any agent). */
+  agentId?: string;
+  /** When set, the dataset is created as a workflow eval target. */
+  workflowId?: string;
   onClose: () => void;
   onSuccess: () => void;
 }
 
-export function DatasetUploadModal({ agentId, onClose, onSuccess }: DatasetUploadModalProps) {
+export function DatasetUploadModal({ agentId, workflowId, onClose, onSuccess }: DatasetUploadModalProps) {
   const { toast } = useToast();
   const [file, setFile] = useState<File | null>(null);
   const [dragActive, setDragActive] = useState(false);
@@ -47,7 +51,11 @@ export function DatasetUploadModal({ agentId, onClose, onSuccess }: DatasetUploa
       formData.append("file", file);
       formData.append("name", name || file.name.replace(/\.[^/.]+$/, ""));
       formData.append("description", description);
-      formData.append("agent_id", agentId);
+      if (agentId) formData.append("agent_id", agentId);
+      if (workflowId) {
+        formData.append("workflow_id", workflowId);
+        formData.append("target_type", "workflow");
+      }
       formData.append("scoring_method", scoringMethod);
       formData.append("criteria", JSON.stringify(["accuracy", "relevance", "completeness"]));
 

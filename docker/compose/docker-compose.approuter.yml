@@ -17,6 +17,10 @@ services:
       - XSUAA_ENABLED=true
       - JWT_SECRET_KEY=${JWT_SECRET_KEY:-local-dev-secret-key-change-me}
       - OPEN_NOTEBOOK_ENCRYPTION_KEY=${OPEN_NOTEBOOK_ENCRYPTION_KEY}
+      # Public origin (AppRouter) — used to build OAuth redirect URIs so
+      # the URL Outreach (or any other IdP) sees matches what the user's
+      # browser actually loads. Leave unset for non-AppRouter dev.
+      - PUBLIC_BASE_URL=${PUBLIC_BASE_URL:-http://localhost:5001}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-sk-placeholder-not-used}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-sk-ant-placeholder-not-used}
       - LOG_LEVEL=INFO

@@ -13,6 +13,7 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query, status, Depends
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +58,144 @@ def _parse_json(value) -> Optional[dict]:
     return value
 
 
+# ---------------------------------------------------------------------------
+# Pattern + standalone-agent hydration helpers
+# ---------------------------------------------------------------------------
+
+# Patterns supported by backend/open_notebook/agents/patterns/factory.py.
+# Keep in sync with frontend OrchestrationPattern union.
+SUPPORTED_PATTERNS = {
+    "orchestrator_worker",
+    "sequential",
+    "parallel",
+    "review_critique",
+    "router",
+    "group_chat",
+}
+
+
+def _validate_pattern_config(pattern: str, agent_ids: list, pattern_config: dict) -> None:
+    """
+    Validate the pattern_config payload against the chosen pattern.
+
+    Raises HTTPException(400) on invalid config — caller should let it bubble.
+    Patterns that need a designated agent (orchestrator/producer/...) verify
+    the referenced ID is one of the team's agents. Numeric bounds are clamped
+    to sensible ranges so a typo can't burn an unbounded budget.
+    """
+    if pattern not in SUPPORTED_PATTERNS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported orchestration_pattern: {pattern}. "
+                   f"Expected one of {sorted(SUPPORTED_PATTERNS)}",
+        )
+
+    cfg = pattern_config or {}
+    agent_id_set = set(agent_ids or [])
+
+    def _require_member(key: str):
+        val = cfg.get(key)
+        if val and agent_id_set and val not in agent_id_set:
+            raise HTTPException(
+                status_code=400,
+                detail=f"pattern_config.{key} must reference one of the team's agents",
+            )
+
+    if pattern in ("orchestrator_worker", "router"):
+        _require_member("orchestrator_agent_id")
+    if pattern == "review_critique":
+        _require_member("producer_agent_id")
+        _require_member("reviewer_agent_id")
+        rounds = cfg.get("max_rounds", 3)
+        if not isinstance(rounds, int) or rounds < 1 or rounds > 20:
+            raise HTTPException(status_code=400, detail="max_rounds must be 1..20")
+    if pattern == "parallel":
+        _require_member("aggregator_agent_id")
+    if pattern == "group_chat":
+        turns = cfg.get("max_turns", 5)
+        if not isinstance(turns, int) or turns < 1 or turns > 50:
+            raise HTTPException(status_code=400, detail="max_turns must be 1..50")
+
+
+async def _hydrate_agents_from_standalone(
+    team_id: str,
+    agent_ids: list,
+    now: str,
+) -> list:
+    """
+    Insert one agent_instances row per standalone agent ID, copying the
+    standalone agent's role/system_prompt/tools and tagging the row with
+    standalone_agent_id + order_index.
+
+    Returns the inserted AgentResponse objects in the same order as agent_ids
+    so pattern executors can rely on the order for the sequential pattern.
+    """
+    if not agent_ids:
+        return []
+
+    placeholders = ",".join([f":id_{i}" for i in range(len(agent_ids))])
+    params = {f"id_{i}": aid for i, aid in enumerate(agent_ids)}
+    rows = await repo_query(
+        f"SELECT * FROM standalone_agents WHERE id IN ({placeholders})",
+        params,
+    )
+    by_id = {r["id"]: r for r in rows}
+
+    missing = [aid for aid in agent_ids if aid not in by_id]
+    if missing:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Standalone agents not found: {missing}",
+        )
+
+    spawned: list = []
+    for idx, aid in enumerate(agent_ids):
+        sa = by_id[aid]
+        instance_id = str(uuid.uuid4())
+        agent_data = {
+            "id": instance_id,
+            "team_id": team_id,
+            "role": sa.get("role") or "custom",
+            "name": sa.get("name") or "Agent",
+            "status": "idle",
+            "system_prompt": sa.get("system_prompt"),
+            "model_override": sa.get("model_name"),
+            "tool_ids": sa.get("tool_ids"),  # already JSON-encoded on standalone_agents
+            "config": sa.get("config"),
+            "last_active": None,
+            "standalone_agent_id": aid,
+            "order_index": idx,
+            "created": now,
+            "updated": now,
+        }
+        await repo_execute(
+            """INSERT INTO agent_instances
+               (id, team_id, role, name, status, system_prompt, model_override,
+                tool_ids, config, last_active, standalone_agent_id, order_index, created, updated)
+               VALUES (:id, :team_id, :role, :name, :status, :system_prompt, :model_override,
+                       :tool_ids, :config, :last_active, :standalone_agent_id, :order_index, :created, :updated)""",
+            agent_data,
+        )
+
+        spawned.append(
+            AgentResponse(
+                id=instance_id,
+                team_id=team_id,
+                role=agent_data["role"],
+                name=agent_data["name"],
+                status="idle",
+                system_prompt=agent_data["system_prompt"],
+                model_override=agent_data["model_override"],
+                tool_ids=_parse_json(agent_data["tool_ids"]),
+                config=_parse_json(agent_data["config"]),
+                standalone_agent_id=aid,
+                order_index=idx,
+                created=now,
+            )
+        )
+    return spawned
+
+
 async def _get_team_or_404(team_id: str) -> dict:
     """Fetch a team by ID or raise 404."""
     rows = await repo_query(
@@ -86,6 +225,8 @@ def _row_to_team_response(row: dict, agent_count: int = 0) -> AgentTeamResponse:
         description=row.get("goal"),  # Map 'goal' column to 'description' field
         status=row.get("status", "idle"),
         config=_parse_json(row.get("config")),
+        orchestration_pattern=row.get("orchestration_pattern") or "orchestrator_worker",
+        pattern_config=_parse_json(row.get("pattern_config")),
         agent_count=agent_count,
         created=row.get("created"),
         updated=row.get("updated"),
@@ -104,6 +245,8 @@ def _row_to_agent_response(row: dict) -> AgentResponse:
         model_override=row.get("model_override"),
         tool_ids=_parse_json(row.get("tool_ids")),
         config=_parse_json(row.get("config")),
+        standalone_agent_id=row.get("standalone_agent_id"),
+        order_index=row.get("order_index") or 0,
         last_active=row.get("last_active"),
         created=row.get("created"),
     )
@@ -166,6 +309,10 @@ async def create_team(
                 detail=f"Notebook not found: {body.notebook_id}",
             )
 
+    # Validate pattern + pattern_config (raises 400 on mismatch).
+    pattern = body.orchestration_pattern or "orchestrator_worker"
+    _validate_pattern_config(pattern, body.agent_ids or [], body.pattern_config or {})
+
     now = datetime.utcnow().isoformat()
     team_id = str(uuid.uuid4())
 
@@ -176,22 +323,32 @@ async def create_team(
         "goal": body.description,  # Map 'description' field to 'goal' column
         "status": "idle",
         "config": json.dumps(body.config) if body.config else None,
+        "orchestration_pattern": pattern,
+        "pattern_config": json.dumps(body.pattern_config) if body.pattern_config else None,
         "created_by": current_user.id,  # Track ownership
         "created": now,
         "updated": now,
     }
 
     await repo_execute(
-        """INSERT INTO agent_teams (id, name, notebook_id, goal, status, config, created_by, created, updated)
-           VALUES (:id, :name, :notebook_id, :goal, :status, :config, :created_by, :created, :updated)""",
+        """INSERT INTO agent_teams
+           (id, name, notebook_id, goal, status, config,
+            orchestration_pattern, pattern_config,
+            created_by, created, updated)
+           VALUES (:id, :name, :notebook_id, :goal, :status, :config,
+                   :orchestration_pattern, :pattern_config,
+                   :created_by, :created, :updated)""",
         data,
     )
 
-    # Spawn agents if provided in agent_configs
-    agent_count = 0
-    spawned_agents = []
-    if body.agent_configs:
-        for agent_config in body.agent_configs:
+    # Hydrate team membership.
+    # Preferred path: agent_ids → references to existing standalone agents.
+    # Legacy path: agent_configs → inline definitions (kept for back-compat).
+    spawned_agents: list = []
+    if body.agent_ids:
+        spawned_agents = await _hydrate_agents_from_standalone(team_id, body.agent_ids, now)
+    elif body.agent_configs:
+        for idx, agent_config in enumerate(body.agent_configs):
             agent_id = str(uuid.uuid4())
             agent_name = agent_config.get("name", f"{agent_config.get('role', 'agent').title()} Agent")
 
@@ -207,12 +364,14 @@ async def create_team(
                 "tool_ids": json.dumps(agent_config.get("tools", [])) if agent_config.get("tools") else None,
                 "config": json.dumps({"capabilities": agent_config.get("capabilities", [])}) if agent_config.get("capabilities") else None,
                 "last_active": None,
+                "order_index": idx,
                 "created": now,
+                "updated": now,
             }
 
             await repo_execute(
-                """INSERT INTO agent_instances (id, team_id, role, name, status, system_prompt, model_override, tool_ids, config, last_active, created)
-                   VALUES (:id, :team_id, :role, :name, :status, :system_prompt, :model_override, :tool_ids, :config, :last_active, :created)""",
+                """INSERT INTO agent_instances (id, team_id, role, name, status, system_prompt, model_override, tool_ids, config, last_active, order_index, created, updated)
+                   VALUES (:id, :team_id, :role, :name, :status, :system_prompt, :model_override, :tool_ids, :config, :last_active, :order_index, :created, :updated)""",
                 agent_data,
             )
 
@@ -227,10 +386,12 @@ async def create_team(
                 model_override=agent_config.get("model"),
                 tool_ids=agent_config.get("tools", []),
                 config={"capabilities": agent_config.get("capabilities", [])},
+                order_index=idx,
                 last_active=None,
                 created=now,
             ))
-            agent_count += 1
+
+    agent_count = len(spawned_agents)
 
     return AgentTeamResponse(
         id=team_id,
@@ -239,6 +400,8 @@ async def create_team(
         description=body.description,
         status="idle",
         config=body.config,
+        orchestration_pattern=pattern,
+        pattern_config=body.pattern_config,
         agent_count=agent_count,
         agents=spawned_agents,
         created=now,
@@ -284,7 +447,7 @@ async def list_teams(
 
         # Fetch agents for this team
         agent_rows = await repo_query(
-            "SELECT * FROM agent_instances WHERE team_id = :team_id ORDER BY created ASC",
+            "SELECT * FROM agent_instances WHERE team_id = :team_id ORDER BY order_index ASC, created ASC",
             {"team_id": row["id"]},
         )
         agents = [_row_to_agent_response(r) for r in agent_rows]
@@ -319,7 +482,7 @@ async def get_team(
 
     # Fetch agents for this team
     agent_rows = await repo_query(
-        "SELECT * FROM agent_instances WHERE team_id = :team_id ORDER BY created ASC",
+        "SELECT * FROM agent_instances WHERE team_id = :team_id ORDER BY order_index ASC, created ASC",
         {"team_id": team_id},
     )
     agents = [_row_to_agent_response(r) for r in agent_rows]
@@ -363,8 +526,8 @@ async def update_team(
     # Verify team exists
     team_row = await _get_team_or_404(team_id)
 
-    # Verify ownership
-    if team_row["owner_user_id"] != current_user.id and not current_user.is_superadmin:
+    # Verify ownership (column is created_by, see migration 014)
+    if team_row.get("created_by") != current_user.id and not current_user.is_superadmin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You can only update your own teams"
@@ -382,38 +545,45 @@ async def update_team(
                 detail=f"Notebook not found: {body.notebook_id}",
             )
 
+    pattern = body.orchestration_pattern or "orchestrator_worker"
+    _validate_pattern_config(pattern, body.agent_ids or [], body.pattern_config or {})
+
     now = datetime.utcnow().isoformat()
 
-    # Update team
+    # Update team — including the new pattern + pattern_config columns.
     update_data = {
         "id": team_id,
         "name": body.name,
         "notebook_id": body.notebook_id,
         "goal": body.description,
         "config": json.dumps(body.config) if body.config else None,
+        "orchestration_pattern": pattern,
+        "pattern_config": json.dumps(body.pattern_config) if body.pattern_config else None,
         "updated": now,
     }
 
     await repo_execute(
         """UPDATE agent_teams
            SET name = :name, notebook_id = :notebook_id, goal = :goal,
-               config = :config, updated = :updated
+               config = :config,
+               orchestration_pattern = :orchestration_pattern,
+               pattern_config = :pattern_config,
+               updated = :updated
            WHERE id = :id""",
         update_data,
     )
 
-    # Delete existing agents
+    # Replace team membership wholesale.
     await repo_execute(
         "DELETE FROM agent_instances WHERE team_id = :team_id",
         {"team_id": team_id},
     )
 
-    # Spawn new agents if provided
-    agent_count = 0
-    spawned_agents = []
-
-    if body.agent_configs:
-        for agent_config in body.agent_configs:
+    spawned_agents: list = []
+    if body.agent_ids:
+        spawned_agents = await _hydrate_agents_from_standalone(team_id, body.agent_ids, now)
+    elif body.agent_configs:
+        for idx, agent_config in enumerate(body.agent_configs):
             agent_id = str(uuid.uuid4())
             agent_name = agent_config.get("name", f"{agent_config.get('role', 'agent').title()} Agent")
 
@@ -428,12 +598,14 @@ async def update_team(
                 "tool_ids": json.dumps(agent_config.get("tools", [])) if agent_config.get("tools") else None,
                 "config": json.dumps({"capabilities": agent_config.get("capabilities", [])}) if agent_config.get("capabilities") else None,
                 "last_active": None,
+                "order_index": idx,
                 "created": now,
+                "updated": now,
             }
 
             await repo_execute(
-                """INSERT INTO agent_instances (id, team_id, role, name, status, system_prompt, model_override, tool_ids, config, last_active, created)
-                   VALUES (:id, :team_id, :role, :name, :status, :system_prompt, :model_override, :tool_ids, :config, :last_active, :created)""",
+                """INSERT INTO agent_instances (id, team_id, role, name, status, system_prompt, model_override, tool_ids, config, last_active, order_index, created, updated)
+                   VALUES (:id, :team_id, :role, :name, :status, :system_prompt, :model_override, :tool_ids, :config, :last_active, :order_index, :created, :updated)""",
                 agent_data,
             )
 
@@ -448,10 +620,12 @@ async def update_team(
                     model_override=agent_config.get("model"),
                     tool_ids=agent_config.get("tools", []),
                     config={"capabilities": agent_config.get("capabilities", [])} if agent_config.get("capabilities") else None,
+                    order_index=idx,
                     created=now,
                 )
             )
-            agent_count += 1
+
+    agent_count = len(spawned_agents)
 
     return AgentTeamResponse(
         id=team_id,
@@ -460,6 +634,8 @@ async def update_team(
         description=body.description,
         status=team_row.get("status", "idle"),
         config=body.config,
+        orchestration_pattern=pattern,
+        pattern_config=body.pattern_config,
         agent_count=agent_count,
         agents=spawned_agents,
         created=team_row.get("created"),
@@ -752,7 +928,7 @@ async def list_agents(
         )
 
     rows = await repo_query(
-        "SELECT * FROM agent_instances WHERE team_id = :team_id ORDER BY created ASC",
+        "SELECT * FROM agent_instances WHERE team_id = :team_id ORDER BY order_index ASC, created ASC",
         {"team_id": team_id},
     )
 
@@ -1118,6 +1294,160 @@ async def execute_team_stream(
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no"
         }
+    )
+
+
+# ----------------------------------------------------------------------------
+# Clarifications — human-in-the-loop pause/resume
+# ----------------------------------------------------------------------------
+
+@router.get("/teams/{team_id}/executions/{execution_id}/clarifications")
+async def list_clarifications(
+    team_id: str,
+    execution_id: str,
+    current_user: User = Depends(get_current_active_user),
+):
+    """Return the clarifications attached to a paused execution."""
+    await _get_team_or_404(team_id)
+    rows = await repo_query(
+        """SELECT id, sender_agent_id, sender_name, sender_role,
+                  question, answer, status, created, answered_at
+           FROM agent_clarifications
+           WHERE execution_id = :exec
+           ORDER BY created ASC""",
+        {"exec": execution_id},
+    )
+    return {"clarifications": rows}
+
+
+class _AnswerBody(BaseModel):
+    answer: str = Field(..., min_length=1)
+
+
+@router.post("/teams/{team_id}/executions/{execution_id}/clarifications/{clarification_id}/answer")
+async def answer_clarification(
+    team_id: str,
+    execution_id: str,
+    clarification_id: str,
+    body: _AnswerBody,
+    current_user: User = Depends(get_current_active_user),
+):
+    """
+    Submit the user's answer to a paused clarifying question and resume
+    execution. Returns an SSE stream identical in shape to /execute/stream
+    so the UI can re-attach without changing event handlers.
+    """
+    from api.services.langgraph_orchestrator import LangGraphOrchestrator
+    from api.services.context import get_llm_for_credential
+    from api.services.settings import get_setting
+    from api.routers.credentials import _credentials_store
+    from api.services.tool_factory import create_tools_for_team
+
+    team = await _get_team_or_404(team_id)
+    if team.get("created_by") != current_user.id and not current_user.is_superadmin:
+        raise HTTPException(status_code=403, detail="You can only resume your own teams")
+
+    rows = await repo_query(
+        "SELECT * FROM agent_clarifications WHERE id = :id AND execution_id = :exec",
+        {"id": clarification_id, "exec": execution_id},
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Clarification not found")
+    clar = rows[0]
+    # Idempotency: if a duplicate POST arrives (UI double-submit, browser
+    # retry, etc.), don't re-run the executor — that would launch a second
+    # parallel resume against the same execution_id. Instead, return an
+    # empty SSE stream that immediately emits `done` so the caller's
+    # callbacks see a clean completion. Backwards-compatible: if a *different*
+    # answer is being submitted (genuine conflict), still 409.
+    if clar.get("status") != "pending":
+        if (clar.get("answer") or "") == body.answer:
+            async def _noop_stream():
+                yield (
+                    "event: done\n"
+                    f"data: {json.dumps({'id': execution_id, 'team_id': team_id, 'status': 'already_answered'})}\n\n"
+                )
+            return StreamingResponse(
+                _noop_stream(),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+            )
+        raise HTTPException(
+            status_code=409,
+            detail=f"Clarification is {clar.get('status')}, cannot answer twice",
+        )
+
+    # Persist answer + flip status BEFORE re-running so a flaky resume can
+    # be retried without losing the user's reply.
+    now = datetime.utcnow().isoformat()
+    await repo_execute(
+        """UPDATE agent_clarifications
+           SET answer = :a, status = 'answered', answered_at = :t
+           WHERE id = :id""",
+        {"a": body.answer, "t": now, "id": clarification_id},
+    )
+
+    # Reconstruct the resume context from the stored checkpoint.
+    try:
+        ck = json.loads(clar.get("checkpoint")) if clar.get("checkpoint") else {}
+    except (json.JSONDecodeError, TypeError):
+        ck = {}
+    original_query = ck.get("query") or ""
+    resume_payload = {
+        "checkpoint": ck.get("state") or {},
+        "pending_answers": {clar["sender_agent_id"]: body.answer} if clar.get("sender_agent_id") else {},
+    }
+
+    # LLM + tools — same wiring as execute_team_stream.
+    language_model_id = await get_setting("language_model_id", "")
+    if not language_model_id or language_model_id not in _credentials_store:
+        for cred_id, cred in _credentials_store.items():
+            if (cred.get("is_active") and cred.get("model_type") == "language"
+                    and cred.get("connection_status") in ["connected", "untested", None]):
+                language_model_id = cred_id
+                break
+    if not language_model_id:
+        raise HTTPException(status_code=400, detail="No language model configured")
+
+    llm = await get_llm_for_credential(language_model_id)
+    tools = await create_tools_for_team(team_id, [])
+
+    # Mark execution running again so the UI can show progress.
+    await repo_execute(
+        "UPDATE agent_executions SET status = 'running' WHERE id = :id",
+        {"id": execution_id},
+    )
+
+    orchestrator = LangGraphOrchestrator(
+        team_id=team_id,
+        execution_id=execution_id,   # reuse the SAME execution row
+        llm=llm,
+        tools=tools,
+    )
+
+    async def event_generator():
+        try:
+            async for event in orchestrator.stream_execution(
+                query=original_query,
+                role=team.get("goal", "researcher"),
+                context_source_ids=[],
+                notebook_id=None,
+                resume=resume_payload,
+            ):
+                event_type = event.get("event", "message")
+                event_data = event.get("data", {})
+                yield f"event: {event_type}\n"
+                yield f"data: {json.dumps(event_data)}\n\n"
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            yield f"event: error\n"
+            yield f"data: {json.dumps({'error': str(e), 'type': type(e).__name__})}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
     )
 
 

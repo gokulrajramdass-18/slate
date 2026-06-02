@@ -1,9 +1,10 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { agentsApi } from "@/lib/api/agents";
 import { modelsApi } from "@/lib/api/models";
 import { sourcesApi } from "@/lib/api/sources";
 import { toolsApi } from "@/lib/api/tools";
+import { listStandaloneAgents } from "@/lib/api/standalone-agents";
 import { queryKeys } from "@/lib/query-client";
 import type {
   AgentTeam,
@@ -11,7 +12,11 @@ import type {
   Agent,
   AgentConfig,
   AgentRole,
+  OrchestrationPattern,
+  PatternConfig,
+  StandaloneAgent,
 } from "@/lib/types";
+import { ORCHESTRATION_PATTERNS } from "@/lib/types";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -20,6 +25,9 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
   Dialog,
   DialogContent,
@@ -52,6 +60,7 @@ import {
   Loader2,
   ChevronDown,
   ChevronUp,
+  ChevronRight,
   Activity,
   Brain,
   Search as SearchIcon,
@@ -63,14 +72,15 @@ import {
   AlertCircle,
   Database,
   Workflow,
-  MessageSquare,
   Award,
+  Network,
+  Code2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { AgentTeamViewer } from "@/components/agents/AgentTeamViewer";
 import { MemoryBrowser } from "@/components/memory/MemoryBrowser";
-import { PromptsManager } from "@/components/agents/PromptsManager";
 import { StandaloneAgentsManager } from "@/components/agents/StandaloneAgentsManager";
+import { AgentApiConsole } from "@/components/agents/AgentApiConsole";
 import { useNavigate } from "react-router-dom";
 
 // ---------------------------------------------------------------------------
@@ -250,6 +260,24 @@ function TeamCard({
           </Badge>
         </div>
 
+        {/* Architecture pattern badge */}
+        {team.orchestration_pattern && (
+          <div className="mb-2">
+            <Badge
+              variant="secondary"
+              className="text-[10px] font-medium gap-1"
+              title={
+                ORCHESTRATION_PATTERNS.find((p) => p.key === team.orchestration_pattern)
+                  ?.description || team.orchestration_pattern
+              }
+            >
+              <Network className="w-3 h-3" />
+              {ORCHESTRATION_PATTERNS.find((p) => p.key === team.orchestration_pattern)
+                ?.label || team.orchestration_pattern}
+            </Badge>
+          </div>
+        )}
+
         {/* Compact Stats Row */}
         <div className="flex items-center gap-2 text-xs">
           <div className="flex items-center gap-1 px-2 py-1 rounded-md bg-primary/5 text-primary font-medium">
@@ -367,6 +395,10 @@ function TeamCard({
 
 // ---------------------------------------------------------------------------
 // Create Team Dialog
+//
+// New shape: pick existing standalone agents from a multi-select dropdown,
+// then choose a Team Architecture pattern. The pattern drives execution on
+// the backend (see backend/open_notebook/agents/patterns/).
 // ---------------------------------------------------------------------------
 
 function CreateTeamDialog({
@@ -381,60 +413,103 @@ function CreateTeamDialog({
   const queryClient = useQueryClient();
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
-  const [agents, setAgents] = useState<AgentConfig[]>([
-    { name: "Researcher", role: "researcher", description: "Searches and retrieves information from sources" },
-  ]);
+  const [agentIds, setAgentIds] = useState<string[]>([]);
+  const [pattern, setPattern] = useState<OrchestrationPattern>("orchestrator_worker");
+  const [patternConfig, setPatternConfig] = useState<PatternConfig>({});
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [maxIterations, setMaxIterations] = useState<number | "">("");
+  const [timeoutSeconds, setTimeoutSeconds] = useState<number | "">("");
+  const [autoAnswer, setAutoAnswer] = useState(false);
+  const [agentPickerOpen, setAgentPickerOpen] = useState(false);
+  const [agentSearch, setAgentSearch] = useState("");
+
+  // Fetch the standalone-agent catalog to populate the multi-select.
+  const { data: standaloneData } = useQuery({
+    queryKey: ["standalone-agents", "for-team-picker"],
+    queryFn: () => listStandaloneAgents({ status: "active", limit: 200 }),
+    enabled: open,
+  });
+  const standaloneAgents: StandaloneAgent[] = standaloneData?.agents || [];
+  const standaloneById = useMemo(
+    () => Object.fromEntries(standaloneAgents.map((a) => [a.id, a])),
+    [standaloneAgents]
+  );
+
+  // Selected agents in the order the user added them. Drives Sequential
+  // pattern execution order. Reorderable in-place via ↑/↓ buttons.
+  const selectedAgents = useMemo(
+    () => agentIds.map((id) => standaloneById[id]).filter(Boolean) as StandaloneAgent[],
+    [agentIds, standaloneById]
+  );
 
   // Load editing team data when dialog opens
   useEffect(() => {
     if (open && editingTeam) {
       setName(editingTeam.name);
       setDescription(editingTeam.description || "");
-
-      // Convert agents to AgentConfig format
-      const agentConfigs: AgentConfig[] = editingTeam.agents.map((agent) => ({
-        name: agent.name,
-        role: agent.role,
-        description: agent.system_prompt || agent.description || "",
-        model: agent.model_override || agent.model,
-        tools: agent.tool_ids || agent.tools,
-        capabilities: agent.config?.capabilities,
-      }));
-
-      setAgents(agentConfigs.length > 0 ? agentConfigs : [
-        { name: "Researcher", role: "researcher", description: "Searches and retrieves information from sources" },
-      ]);
+      // Prefer the standalone_agent_id back-link; fall back to instance.id
+      // for legacy teams (which won't resolve in the dropdown but at least
+      // won't crash).
+      const ids = editingTeam.agents
+        .map((a) => a.standalone_agent_id)
+        .filter((id): id is string => Boolean(id));
+      setAgentIds(ids);
+      setPattern((editingTeam.orchestration_pattern as OrchestrationPattern) || "orchestrator_worker");
+      setPatternConfig(editingTeam.pattern_config || {});
+      const cfg = (editingTeam as any).config || {};
+      setAutoAnswer(Boolean(cfg.auto_answer));
+      setMaxIterations(typeof cfg.max_iterations === "number" ? cfg.max_iterations : "");
+      setTimeoutSeconds(typeof cfg.timeout_seconds === "number" ? cfg.timeout_seconds : "");
     } else if (open && !editingTeam) {
-      // Reset for new team
       setName("");
       setDescription("");
-      setAgents([
-        { name: "Researcher", role: "researcher", description: "Searches and retrieves information from sources" },
-      ]);
+      setAgentIds([]);
+      setPattern("orchestrator_worker");
+      setPatternConfig({});
+      setMaxIterations("");
+      setTimeoutSeconds("");
+      setAutoAnswer(false);
+      setShowAdvanced(false);
     }
   }, [open, editingTeam]);
 
-  // Fetch available models
-  const { data: modelsData } = useQuery({
-    queryKey: ["models", "available"],
-    queryFn: modelsApi.listAvailable,
-  });
-  const availableModels = modelsData?.models || [];
+  // Sensible defaults for pattern_config whenever the pattern changes or the
+  // selected-agent list changes — picks orchestrator/router as the first
+  // planner/coordinator if the user hasn't explicitly chosen one.
+  useEffect(() => {
+    if (selectedAgents.length === 0) return;
+    const next: PatternConfig = { ...patternConfig };
+    const findByRole = (role: string) =>
+      selectedAgents.find((a) => (a.role || "").toLowerCase() === role)?.id;
+    const firstId = selectedAgents[0]?.id;
+    const secondId = selectedAgents[1]?.id;
 
-  // Fetch available tools
-  const { data: toolsData } = useQuery({
-    queryKey: ["tools"],
-    queryFn: () => toolsApi.list({ enabled: true }),
-  });
-  const availableTools = toolsData || [];
+    const inSelection = (id?: string) => Boolean(id && agentIds.includes(id));
 
-  // Fetch available data sources (from notebook sources)
-  const { data: sourcesData } = useQuery({
-    queryKey: ["sources"],
-    queryFn: () => sourcesApi.list(),
-  });
-  const availableSources = sourcesData || [];
+    if (pattern === "orchestrator_worker" || pattern === "router") {
+      if (!inSelection(next.orchestrator_agent_id)) {
+        next.orchestrator_agent_id =
+          findByRole("planner") || findByRole("coordinator") || firstId;
+      }
+    }
+    if (pattern === "review_critique") {
+      if (!inSelection(next.producer_agent_id)) {
+        next.producer_agent_id = firstId;
+      }
+      if (!inSelection(next.reviewer_agent_id) || next.reviewer_agent_id === next.producer_agent_id) {
+        next.reviewer_agent_id =
+          findByRole("reviewer") || findByRole("judge") || secondId || firstId;
+      }
+      if (!next.max_rounds) next.max_rounds = 3;
+    }
+    if (pattern === "group_chat") {
+      if (!next.max_turns) next.max_turns = 5;
+    }
+    setPatternConfig(next);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pattern, agentIds.join(",")]);
 
+  // Mutations
   const createMutation = useMutation({
     mutationFn: (req: TeamCreateRequest) => agentsApi.createTeam(req),
     onSuccess: () => {
@@ -456,62 +531,62 @@ function CreateTeamDialog({
     onError: () => toast.error("Failed to update team"),
   });
 
-  const addAgent = () => {
-    setAgents([
-      ...agents,
-      { name: "", role: "analyst", description: "" },
-    ]);
+  const toggleAgent = (id: string) => {
+    setAgentIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  };
+  const removeAgent = (id: string) => setAgentIds((prev) => prev.filter((x) => x !== id));
+  const moveAgent = (idx: number, delta: number) => {
+    setAgentIds((prev) => {
+      const next = [...prev];
+      const target = idx + delta;
+      if (target < 0 || target >= next.length) return prev;
+      [next[idx], next[target]] = [next[target], next[idx]];
+      return next;
+    });
   };
 
-  const removeAgent = (index: number) => {
-    if (agents.length <= 1) return;
-    setAgents(agents.filter((_, i) => i !== index));
-  };
-
-  const updateAgent = (index: number, field: keyof AgentConfig, value: string | string[]) => {
-    const updated = [...agents];
-    (updated[index] as any)[field] = value;
-    setAgents(updated);
-  };
-
-  // Toggle tool selection
-  const toggleTool = (agentIndex: number, toolId: string) => {
-    const updated = [...agents];
-    const current = updated[agentIndex].tools || [];
-    if (current.includes(toolId)) {
-      updated[agentIndex].tools = current.filter(id => id !== toolId);
-    } else {
-      updated[agentIndex].tools = [...current, toolId];
-    }
-    setAgents(updated);
-  };
-
-  // Toggle capability selection
-  const toggleCapability = (agentIndex: number, capability: string) => {
-    const updated = [...agents];
-    const current = updated[agentIndex].capabilities || [];
-    if (current.includes(capability)) {
-      updated[agentIndex].capabilities = current.filter(c => c !== capability);
-    } else {
-      updated[agentIndex].capabilities = [...current, capability];
-    }
-    setAgents(updated);
-  };
+  const filteredCatalog = useMemo(() => {
+    const q = agentSearch.trim().toLowerCase();
+    if (!q) return standaloneAgents;
+    return standaloneAgents.filter(
+      (a) =>
+        a.name.toLowerCase().includes(q) ||
+        (a.role || "").toLowerCase().includes(q) ||
+        (a.description || "").toLowerCase().includes(q)
+    );
+  }, [agentSearch, standaloneAgents]);
 
   const handleSubmit = () => {
     if (!name.trim()) {
       toast.error("Team name is required");
       return;
     }
-    if (agents.some((a) => !a.name.trim() || !a.description.trim())) {
-      toast.error("All agents need a name and description");
+    if (agentIds.length === 0) {
+      toast.error("Select at least one agent");
       return;
     }
+    // Per-pattern minimums.
+    if ((pattern === "review_critique") && agentIds.length < 2) {
+      toast.error("Review & Critique needs at least two agents (producer + reviewer)");
+      return;
+    }
+    if ((pattern === "router" || pattern === "orchestrator_worker") && agentIds.length < 2) {
+      toast.error(`${pattern === "router" ? "Router" : "Orchestrator-Worker"} needs at least two agents`);
+      return;
+    }
+
+    const config: Record<string, any> = {};
+    if (typeof maxIterations === "number") config.max_iterations = maxIterations;
+    if (typeof timeoutSeconds === "number") config.timeout_seconds = timeoutSeconds;
+    if (autoAnswer) config.auto_answer = true;
 
     const request: TeamCreateRequest = {
       name: name.trim(),
       description: description.trim() || undefined,
-      agent_configs: agents,
+      agent_ids: agentIds,
+      orchestration_pattern: pattern,
+      pattern_config: patternConfig,
+      config: Object.keys(config).length ? config : undefined,
     };
 
     if (editingTeam) {
@@ -523,7 +598,7 @@ function CreateTeamDialog({
 
   return (
     <Dialog open={open} onOpenChange={onClose}>
-      <DialogContent className="max-w-[90vw] max-h-[90vh] overflow-y-auto">
+      <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Users className="w-5 h-5" />
@@ -543,232 +618,265 @@ function CreateTeamDialog({
               />
             </div>
             <div>
-              <Label>Description</Label>
+              <Label>Goal</Label>
               <Textarea
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
-                placeholder="What does this team do?"
+                placeholder="What is this team trying to achieve?"
                 rows={2}
               />
             </div>
           </div>
 
-          {/* Agent definitions with tabs */}
-          <div className="space-y-4">
+          {/* Agents — multi-select dropdown sourced from standalone agents */}
+          <div className="space-y-2">
             <div className="flex items-center justify-between">
               <Label className="text-base font-semibold">Agents</Label>
-              <Button size="sm" variant="outline" onClick={addAgent}>
-                <Plus className="w-3.5 h-3.5 mr-1" />
-                Add Agent
-              </Button>
-            </div>
-
-            <Tabs defaultValue="agent-0" className="w-full">
-              <div className="flex items-center gap-2 mb-4">
-                <TabsList className="flex-1 justify-start overflow-x-auto">
-                  {agents.map((agent, idx) => (
-                    <TabsTrigger
-                      key={idx}
-                      value={`agent-${idx}`}
-                      className="flex items-center gap-2 relative group"
-                    >
-                      <Bot className="w-3.5 h-3.5" />
-                      <span className="max-w-[120px] truncate">
-                        {agent.name || `Agent ${idx + 1}`}
-                      </span>
-                      {agents.length > 1 && (
-                        <span
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            e.preventDefault();
-                            removeAgent(idx);
-                          }}
-                          onMouseDown={(e) => {
-                            e.stopPropagation();
-                            e.preventDefault();
-                          }}
-                          className="ml-1 opacity-0 group-hover:opacity-100 hover:text-destructive transition-opacity cursor-pointer"
-                          aria-label="Remove agent"
-                        >
-                          <Trash2 className="w-3 h-3" />
-                        </span>
-                      )}
-                    </TabsTrigger>
-                  ))}
-                </TabsList>
-              </div>
-
-              {agents.map((agent, idx) => (
-                <TabsContent key={idx} value={`agent-${idx}`} className="space-y-4 mt-0">
-                  <Card>
-                    <CardHeader className="pb-3">
-                      <CardTitle className="text-sm flex items-center gap-2">
-                        <Bot className="w-4 h-4" />
-                        Agent Configuration
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent className="space-y-4">
-                      <div className="grid grid-cols-2 gap-4">
-                        <div>
-                          <Label className="text-xs">Name</Label>
-                          <Input
-                            value={agent.name}
-                            onChange={(e) =>
-                              updateAgent(idx, "name", e.target.value)
-                            }
-                            placeholder="Agent name"
-                          />
-                        </div>
-                        <div>
-                          <Label className="text-xs">Role</Label>
-                          <Select
-                            value={agent.role}
-                            onValueChange={(val) =>
-                              updateAgent(idx, "role", val)
-                            }
-                          >
-                            <SelectTrigger>
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent className="bg-white dark:bg-gray-900 border-gray-200 dark:border-gray-800">
-                              {AVAILABLE_ROLES.map((r) => (
-                                <SelectItem key={r.value} value={r.value}>
-                                  {r.label}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </div>
-                      </div>
-                      <div>
-                        <Label className="text-xs">Description</Label>
-                        <Textarea
-                          value={agent.description}
-                          onChange={(e) =>
-                            updateAgent(idx, "description", e.target.value)
-                          }
-                          placeholder="What does this agent do?"
-                          rows={3}
-                        />
-                      </div>
-                      <div>
-                        <Label className="text-xs">Model (optional)</Label>
-                        <Select
-                          value={agent.model || "default"}
-                          onValueChange={(val) =>
-                            updateAgent(idx, "model", val === "default" ? "" : val)
-                    }
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Use default model" />
-                    </SelectTrigger>
-                    <SelectContent className="bg-white dark:bg-gray-900 border-gray-200 dark:border-gray-800">
-                      <SelectItem value="default">
-                        <span className="text-muted-foreground">Use default model</span>
-                      </SelectItem>
-                      {availableModels.length > 0 ? (
-                        availableModels.map((model: any) => (
-                          <SelectItem key={model.id} value={model.id}>
-                            <div className="flex items-center gap-2">
-                              <span>{model.name || model.id}</span>
-                              <span className="text-xs text-muted-foreground">({model.provider})</span>
-                            </div>
-                          </SelectItem>
-                        ))
-                      ) : (
-                        <SelectItem value="gpt-4" disabled>
-                          <span className="text-xs text-muted-foreground">
-                            No models configured - add credentials in API Keys
-                          </span>
-                        </SelectItem>
-                      )}
-                    </SelectContent>
-                  </Select>
-                  <p className="text-xs text-muted-foreground mt-1">
-                    Select from configured models or leave default
-                  </p>
-                </div>
-
-                {/* Tools Selection */}
-                <div>
-                  <Label className="text-xs">Tools (optional)</Label>
-                  <div className="border rounded-md p-3 max-h-48 overflow-y-auto space-y-2 bg-gray-50 dark:bg-gray-900">
-                    {availableTools.length > 0 ? (
-                      availableTools.map((tool: any) => (
-                        <div key={tool.id} className="flex items-center space-x-2">
-                          <Checkbox
-                            id={`tool-${idx}-${tool.id}`}
-                            checked={agent.tools?.includes(tool.id) || false}
-                            onCheckedChange={() => toggleTool(idx, tool.id)}
-                          />
+              <Popover open={agentPickerOpen} onOpenChange={setAgentPickerOpen}>
+                <PopoverTrigger asChild>
+                  <Button variant="outline" size="sm">
+                    <Plus className="w-3.5 h-3.5 mr-1" />
+                    Select agents
+                    <ChevronDown className="w-3.5 h-3.5 ml-1" />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent
+                  className="w-[400px] p-0 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700"
+                  align="end"
+                >
+                  <div className="p-2 border-b border-gray-200 dark:border-gray-800">
+                    <Input
+                      autoFocus
+                      placeholder="Search agents…"
+                      value={agentSearch}
+                      onChange={(e) => setAgentSearch(e.target.value)}
+                      className="h-8"
+                    />
+                  </div>
+                  <div className="max-h-72 overflow-y-auto p-2 space-y-1">
+                    {filteredCatalog.length === 0 ? (
+                      <p className="text-xs text-muted-foreground p-2">
+                        {standaloneAgents.length === 0
+                          ? "No standalone agents yet. Create some on the Agents tab first."
+                          : "No matches."}
+                      </p>
+                    ) : (
+                      filteredCatalog.map((a) => {
+                        const checked = agentIds.includes(a.id);
+                        return (
                           <label
-                            htmlFor={`tool-${idx}-${tool.id}`}
-                            className="text-sm font-normal cursor-pointer flex-1"
+                            key={a.id}
+                            className="flex items-start gap-2 p-2 rounded hover:bg-gray-100 dark:hover:bg-gray-800 cursor-pointer"
                           >
-                            <div className="flex items-center justify-between">
-                              <span>{tool.name}</span>
-                              {tool.category && (
-                                <Badge variant="outline" className="text-xs ml-2">
-                                  {tool.category}
+                            <Checkbox
+                              checked={checked}
+                              onCheckedChange={() => toggleAgent(a.id)}
+                              className="mt-0.5"
+                            />
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2">
+                                <span className="text-sm font-medium truncate">{a.name}</span>
+                                <Badge variant="outline" className="text-[10px] py-0">
+                                  {a.role}
                                 </Badge>
+                              </div>
+                              {a.description && (
+                                <p className="text-xs text-muted-foreground line-clamp-2">
+                                  {a.description}
+                                </p>
                               )}
                             </div>
-                            {tool.description && (
-                              <p className="text-xs text-muted-foreground mt-0.5">
-                                {tool.description}
-                              </p>
-                            )}
                           </label>
-                        </div>
-                      ))
-                    ) : (
-                      <p className="text-xs text-muted-foreground">No tools available</p>
+                        );
+                      })
                     )}
                   </div>
-                  <p className="text-xs text-muted-foreground mt-1">
-                    Select tools this agent can use
-                  </p>
-                </div>
+                </PopoverContent>
+              </Popover>
+            </div>
 
-                {/* Data Sources Selection */}
-                <div>
-                  <Label className="text-xs">Data Sources (optional)</Label>
-                  <div className="border rounded-md p-3 max-h-48 overflow-y-auto space-y-2 bg-gray-50 dark:bg-gray-900">
-                    {availableSources.length > 0 ? (
-                      availableSources.map((source: any) => (
-                        <div key={source.id} className="flex items-center space-x-2">
-                          <Checkbox
-                            id={`source-${idx}-${source.id}`}
-                            checked={agent.tools?.includes(`source:${source.id}`) || false}
-                            onCheckedChange={() => toggleTool(idx, `source:${source.id}`)}
-                          />
-                          <label
-                            htmlFor={`source-${idx}-${source.id}`}
-                            className="text-sm font-normal cursor-pointer flex-1"
+            {/* Selected agents — badge row with remove + reorder */}
+            <div className="border rounded-md p-3 min-h-[60px] bg-gray-50 dark:bg-gray-900">
+              {selectedAgents.length === 0 ? (
+                <p className="text-xs text-muted-foreground">
+                  No agents selected. Click "Select agents" to add some.
+                </p>
+              ) : (
+                <ul className="space-y-1.5">
+                  {selectedAgents.map((a, idx) => (
+                    <li
+                      key={a.id}
+                      className="flex items-center gap-2 bg-white dark:bg-gray-800 rounded px-2 py-1.5 border border-gray-200 dark:border-gray-700"
+                    >
+                      <span className="text-xs text-muted-foreground tabular-nums w-5">
+                        {idx + 1}.
+                      </span>
+                      <Bot className="w-3.5 h-3.5 text-muted-foreground" />
+                      <span className="text-sm font-medium flex-1 truncate">{a.name}</span>
+                      <Badge variant="outline" className="text-[10px] py-0">
+                        {a.role}
+                      </Badge>
+                      {pattern === "sequential" && (
+                        <>
+                          <button
+                            type="button"
+                            className="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-30"
+                            disabled={idx === 0}
+                            onClick={() => moveAgent(idx, -1)}
+                            aria-label="Move up"
                           >
-                            <div className="flex items-center justify-between">
-                              <span>{source.name || source.title}</span>
-                              <Badge variant="outline" className="text-xs ml-2">
-                                {source.source_type}
-                              </Badge>
-                            </div>
-                          </label>
-                        </div>
-                      ))
-                    ) : (
-                      <p className="text-xs text-muted-foreground">No data sources available</p>
-                    )}
+                            <ChevronUp className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            className="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-30"
+                            disabled={idx === selectedAgents.length - 1}
+                            onClick={() => moveAgent(idx, +1)}
+                            aria-label="Move down"
+                          >
+                            <ChevronDown className="w-3.5 h-3.5" />
+                          </button>
+                        </>
+                      )}
+                      <button
+                        type="button"
+                        className="p-1 rounded hover:bg-destructive/10 hover:text-destructive"
+                        onClick={() => removeAgent(a.id)}
+                        aria-label="Remove agent"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
+
+          {/* Architecture pattern */}
+          <div className="space-y-2">
+            <Label className="text-base font-semibold">Team Architecture</Label>
+            <RadioGroup
+              value={pattern}
+              onValueChange={(v) => setPattern(v as OrchestrationPattern)}
+              className="grid grid-cols-1 sm:grid-cols-2 gap-2"
+            >
+              {ORCHESTRATION_PATTERNS.map((p) => (
+                <label
+                  key={p.key}
+                  htmlFor={`pat-${p.key}`}
+                  className={`flex items-start gap-3 p-3 rounded-md border cursor-pointer transition-colors ${
+                    pattern === p.key
+                      ? "border-primary bg-primary/5"
+                      : "border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800"
+                  }`}
+                >
+                  <RadioGroupItem value={p.key} id={`pat-${p.key}`} className="mt-1" />
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-baseline gap-2">
+                      <span className="text-sm font-semibold">{p.label}</span>
+                      <span className="text-xs text-muted-foreground">{p.tagline}</span>
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-0.5">{p.description}</p>
                   </div>
-                  <p className="text-xs text-muted-foreground mt-1">
-                    Select data sources this agent can access
+                </label>
+              ))}
+            </RadioGroup>
+          </div>
+
+          {/* Pattern-specific options */}
+          {selectedAgents.length > 0 && (
+            <PatternOptionsPanel
+              pattern={pattern}
+              agents={selectedAgents}
+              config={patternConfig}
+              onChange={setPatternConfig}
+            />
+          )}
+
+          {/* Advanced — defaults are visible inline so users know what's
+              applied when they leave the inputs blank. */}
+          <Collapsible open={showAdvanced} onOpenChange={setShowAdvanced}>
+            <div className="flex items-center justify-between">
+              <CollapsibleTrigger asChild>
+                <button
+                  type="button"
+                  className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground"
+                >
+                  {showAdvanced ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+                  Advanced
+                </button>
+              </CollapsibleTrigger>
+              <span className="text-[11px] text-muted-foreground">
+                Defaults: max iterations{" "}
+                <span className="font-mono">
+                  {typeof maxIterations === "number" ? maxIterations : 10}
+                </span>
+                {typeof maxIterations === "number" && (
+                  <span className="text-primary"> (overridden)</span>
+                )}
+                , timeout{" "}
+                <span className="font-mono">
+                  {typeof timeoutSeconds === "number" ? timeoutSeconds : 300}
+                </span>
+                s
+                {typeof timeoutSeconds === "number" && (
+                  <span className="text-primary"> (overridden)</span>
+                )}
+              </span>
+            </div>
+            <CollapsibleContent className="mt-3">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <Label className="text-xs">
+                    Max iterations <span className="text-muted-foreground">(default 10)</span>
+                  </Label>
+                  <Input
+                    type="number"
+                    min={1}
+                    placeholder="10"
+                    value={maxIterations}
+                    onChange={(e) =>
+                      setMaxIterations(e.target.value === "" ? "" : Number(e.target.value))
+                    }
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs">
+                    Timeout (seconds) <span className="text-muted-foreground">(default 300)</span>
+                  </Label>
+                  <Input
+                    type="number"
+                    min={1}
+                    placeholder="300"
+                    value={timeoutSeconds}
+                    onChange={(e) =>
+                      setTimeoutSeconds(e.target.value === "" ? "" : Number(e.target.value))
+                    }
+                  />
+                </div>
+              </div>
+
+              {/* Auto-answer: when an agent asks the user for clarification,
+                  the orchestrator synthesizes a plausible answer from the
+                  team goal instead of pausing. Useful for unattended runs. */}
+              <label className="mt-3 flex items-start gap-2 cursor-pointer">
+                <Checkbox
+                  checked={autoAnswer}
+                  onCheckedChange={(v) => setAutoAnswer(Boolean(v))}
+                  className="mt-0.5"
+                />
+                <div className="text-xs">
+                  <div className="font-medium">Auto-answer clarifying questions</div>
+                  <p className="text-[11px] text-muted-foreground mt-0.5">
+                    If an agent asks for clarification, synthesize an answer
+                    from the team goal and continue. Off by default — the
+                    user is prompted via a popup.
                   </p>
                 </div>
-                    </CardContent>
-                  </Card>
-                </TabsContent>
-              ))}
-            </Tabs>
-          </div>
+              </label>
+            </CollapsibleContent>
+          </Collapsible>
         </div>
 
         <DialogFooter>
@@ -795,6 +903,139 @@ function CreateTeamDialog({
 }
 
 // ---------------------------------------------------------------------------
+// Per-pattern options panel
+//
+// Shown below the pattern radio group; renders only the controls relevant to
+// the chosen pattern so the dialog stays compact.
+// ---------------------------------------------------------------------------
+
+function PatternOptionsPanel({
+  pattern,
+  agents,
+  config,
+  onChange,
+}: {
+  pattern: OrchestrationPattern;
+  agents: StandaloneAgent[];
+  config: PatternConfig;
+  onChange: (next: PatternConfig) => void;
+}) {
+  const set = (patch: PatternConfig) => onChange({ ...config, ...patch });
+
+  if (pattern === "sequential") {
+    return (
+      <div className="rounded-md border border-dashed border-gray-300 dark:border-gray-700 p-3 text-xs text-muted-foreground">
+        Agents will run in the order shown above. Use the ↑/↓ buttons to reorder.
+      </div>
+    );
+  }
+
+  const AgentSelect = ({
+    label,
+    valueKey,
+    placeholder,
+  }: {
+    label: string;
+    valueKey: keyof PatternConfig;
+    placeholder: string;
+  }) => (
+    <div>
+      <Label className="text-xs">{label}</Label>
+      <Select
+        value={(config[valueKey] as string) || ""}
+        onValueChange={(v) => set({ [valueKey]: v } as PatternConfig)}
+      >
+        <SelectTrigger>
+          <SelectValue placeholder={placeholder} />
+        </SelectTrigger>
+        <SelectContent className="bg-white dark:bg-gray-900 border-gray-200 dark:border-gray-800">
+          {agents.map((a) => (
+            <SelectItem key={a.id} value={a.id}>
+              <span className="flex items-center gap-2">
+                <span>{a.name}</span>
+                <Badge variant="outline" className="text-[10px] py-0">
+                  {a.role}
+                </Badge>
+              </span>
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+  );
+
+  return (
+    <div className="rounded-md border border-gray-200 dark:border-gray-700 p-3 space-y-3 bg-gray-50 dark:bg-gray-900">
+      <div className="text-xs font-medium text-muted-foreground">Pattern options</div>
+      {(pattern === "orchestrator_worker" || pattern === "router") && (
+        <AgentSelect
+          label={pattern === "router" ? "Router agent" : "Orchestrator agent"}
+          valueKey="orchestrator_agent_id"
+          placeholder="Choose…"
+        />
+      )}
+      {pattern === "review_critique" && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <AgentSelect label="Producer" valueKey="producer_agent_id" placeholder="Choose…" />
+          <AgentSelect label="Reviewer" valueKey="reviewer_agent_id" placeholder="Choose…" />
+          <div className="sm:col-span-2">
+            <Label className="text-xs">Max rounds</Label>
+            <Input
+              type="number"
+              min={1}
+              max={20}
+              value={config.max_rounds ?? 3}
+              onChange={(e) => set({ max_rounds: Number(e.target.value) || 3 })}
+            />
+            <p className="text-[11px] text-muted-foreground mt-1">
+              Loop ends early when the reviewer replies with APPROVED.
+            </p>
+          </div>
+        </div>
+      )}
+      {pattern === "parallel" && (
+        <div>
+          <Label className="text-xs">Aggregator agent (optional)</Label>
+          <Select
+            value={(config.aggregator_agent_id as string) || "__none__"}
+            onValueChange={(v) =>
+              set({ aggregator_agent_id: v === "__none__" ? undefined : v })
+            }
+          >
+            <SelectTrigger>
+              <SelectValue placeholder="Synthesize via LLM (default)" />
+            </SelectTrigger>
+            <SelectContent className="bg-white dark:bg-gray-900 border-gray-200 dark:border-gray-800">
+              <SelectItem value="__none__">Synthesize via LLM (default)</SelectItem>
+              {agents.map((a) => (
+                <SelectItem key={a.id} value={a.id}>
+                  {a.name} <span className="text-xs text-muted-foreground">({a.role})</span>
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      )}
+      {pattern === "group_chat" && (
+        <div>
+          <Label className="text-xs">Max turns (per agent)</Label>
+          <Input
+            type="number"
+            min={1}
+            max={50}
+            value={config.max_turns ?? 5}
+            onChange={(e) => set({ max_turns: Number(e.target.value) || 5 })}
+          />
+          <p className="text-[11px] text-muted-foreground mt-1">
+            Chat ends early when an agent emits the sentinel <code>&lt;&lt;DONE&gt;&gt;</code>.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main Agents Settings Page
 // ---------------------------------------------------------------------------
 
@@ -804,7 +1045,7 @@ export default function AgentsSettingsPage() {
   const [editingTeam, setEditingTeam] = useState<AgentTeam | null>(null);
   const [deleteTeam, setDeleteTeam] = useState<AgentTeam | null>(null);
   const [selectedTeamId, setSelectedTeamId] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<string>("teams");
+  const [activeTab, setActiveTab] = useState<string>("standalone");
   const [searchQuery, setSearchQuery] = useState<string>("");
 
   const { data: teamsData = [], isLoading } = useQuery({
@@ -888,21 +1129,25 @@ export default function AgentsSettingsPage() {
 
       <Tabs value={activeTab} onValueChange={setActiveTab} className="animate-fade-in-up animation-delay-200">
         <TabsList className="h-12">
-          <TabsTrigger value="teams" className="text-sm font-semibold">
-            <Users className="h-4 w-4 mr-1.5" />
-            Teams
-          </TabsTrigger>
           <TabsTrigger value="standalone" className="text-sm font-semibold">
             <Bot className="h-4 w-4 mr-1.5" />
             Standalone
+          </TabsTrigger>
+          <TabsTrigger value="teams" className="text-sm font-semibold">
+            <Users className="h-4 w-4 mr-1.5" />
+            Teams
           </TabsTrigger>
           <TabsTrigger value="memory" className="text-sm font-semibold">
             <Brain className="h-4 w-4 mr-1.5" />
             Memory
           </TabsTrigger>
-          <TabsTrigger value="prompts" className="text-sm font-semibold">
-            <MessageSquare className="h-4 w-4 mr-1.5" />
-            Prompts
+          <TabsTrigger value="api" className="text-sm font-semibold">
+            <Code2 className="h-4 w-4 mr-1.5" />
+            API
+          </TabsTrigger>
+          <TabsTrigger value="team-api" className="text-sm font-semibold">
+            <Code2 className="h-4 w-4 mr-1.5" />
+            Team API
           </TabsTrigger>
         </TabsList>
 
@@ -1034,9 +1279,16 @@ export default function AgentsSettingsPage() {
           <MemoryBrowser />
         </TabsContent>
 
-        {/* Prompts Tab */}
-        <TabsContent value="prompts">
-          <PromptsManager />
+        {/* API Tab — REST endpoints, JSON schemas and a live test console for
+            every standalone agent. */}
+        <TabsContent value="api">
+          <AgentApiConsole />
+        </TabsContent>
+
+        {/* Team API Tab — same surface as the standalone API tab, but for
+            agent teams. Endpoints map to /api/agents/teams/{id}/execute(/stream). */}
+        <TabsContent value="team-api">
+          <AgentApiConsole kind="team" />
         </TabsContent>
       </Tabs>
 

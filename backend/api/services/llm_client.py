@@ -18,10 +18,78 @@ an 'http://' or 'https://' protocol" error when base_url is null.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
 from typing import Any, Dict, List, Optional
 
 import httpx
+
+logger = logging.getLogger(__name__)
+
+
+# Bounded retry policy for transient upstream failures.
+#
+# We retry only on signals that strongly suggest the *next* attempt has a
+# real chance of succeeding without changing inputs:
+#   - HTTP 5xx (server-side blips, including the OpenAI `server_error`
+#     SAP AI Core relays as 500)
+#   - HTTP 429 (rate-limit; backoff is the protocol-level remedy)
+#   - httpx connect errors / connect timeouts / protocol drops (network
+#     jitter; safe because the request never reached the server)
+# We do NOT retry 4xx other than 429 (those are caller-fixable bugs),
+# successful responses with bad bodies (changing nothing won't help), or
+# `httpx.ReadTimeout` (the request reached the server and may already be
+# processing — retries on a non-idempotent LLM call would duplicate work
+# and waste tokens).
+#
+# Different providers warrant different aggressiveness:
+#
+# - SAP AI Core: the OpenAI SDK *inside* the proxy already retries 5xx
+#   internally (we set max_retries=0 on the proxy client to disable that
+#   behaviour, but if/when that's reverted, we don't want the backend
+#   layering its own retries on top). 1 attempt here means: if the
+#   upstream returns 500 once, surface it to the user — no silent
+#   ~30-60s wait stacking SDK retries × backend retries.
+# - OpenAI-compat (LiteLLM, OpenAI direct, Anthropic via proxy): the
+#   helper makes raw httpx calls with no SDK in between, so a single
+#   genuinely-transient blip benefits from one retry. Keep this small.
+#
+# Total worst-case extra wait stays under ~2 s so the user isn't kept
+# waiting on a truly dead upstream.
+_LLM_RETRY_ATTEMPTS_SAP_AI_CORE = 1                # no retries; SDK does its own
+_LLM_RETRY_ATTEMPTS_OPENAI_COMPAT = 2              # 1 initial + 1 retry
+_LLM_RETRY_BACKOFFS = (1.5,)                       # seconds between attempts
+_LLM_RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
+
+
+def _retryable_status(status: int) -> bool:
+    return status in _LLM_RETRYABLE_STATUSES
+
+
+def _retryable_exception(exc: BaseException) -> bool:
+    """
+    True for transport-layer transient errors worth retrying.
+
+    Notably we do NOT include `httpx.ReadTimeout`. A read timeout means
+    the request *did* reach the server and may already be processing —
+    LLM calls are non-idempotent (each retry consumes tokens and may
+    return a different answer), and the SAP AI Core proxy in particular
+    has been observed to keep generating after the client gives up. So
+    we let read timeouts surface to the caller; they should bump the
+    per-attempt timeout instead.
+
+    Connect errors / connect timeouts / protocol drops mean the request
+    never landed, so retrying them is safe.
+    """
+    return isinstance(
+        exc,
+        (
+            httpx.ConnectError,
+            httpx.ConnectTimeout,
+            httpx.RemoteProtocolError,
+        ),
+    )
 
 
 def _resolve_sap_ai_core_base() -> str:
@@ -165,20 +233,61 @@ async def _call_sap_ai_core_message(
     if extra_payload:
         payload.update(extra_payload)
 
+    last_error: Optional[str] = None
+    attempts = _LLM_RETRY_ATTEMPTS_SAP_AI_CORE
     async with httpx.AsyncClient(timeout=timeout) as client:
-        response = await client.post(f"{api_base}/chat", json=payload)
-        if response.status_code != 200:
-            raise RuntimeError(
-                f"SAP AI Core API error: {response.status_code} - {response.text[:300]}"
+        for attempt in range(attempts):
+            try:
+                response = await client.post(f"{api_base}/chat", json=payload)
+            except Exception as exc:
+                # Transport-layer error (timeout, connection drop). Retry
+                # if it's the kind we expect to be transient; otherwise
+                # bubble up immediately so we don't mask programmer bugs.
+                if _retryable_exception(exc) and attempt < attempts - 1:
+                    delay = _LLM_RETRY_BACKOFFS[attempt]
+                    logger.warning(
+                        "SAP AI Core transport error (attempt %d/%d): %s — "
+                        "retrying in %.1fs",
+                        attempt + 1, attempts, exc, delay,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                raise
+
+            if response.status_code == 200:
+                result = response.json()
+                # SAP AI Core proxy returns {content, tool_calls?, ...} flat.
+                # Reshape into OpenAI-style assistant message so callers can
+                # treat both providers alike.
+                return {
+                    "role": "assistant",
+                    "content": result.get("content"),
+                    "tool_calls": result.get("tool_calls") or [],
+                }
+
+            # Non-200. Retry only on transient statuses (5xx, 429); 4xx
+            # other than 429 mean we sent something the proxy/upstream
+            # rejects, and retrying won't help.
+            last_error = (
+                f"SAP AI Core API error: {response.status_code} - "
+                f"{response.text[:300]}"
             )
-        result = response.json()
-        # SAP AI Core proxy returns {content, tool_calls?, ...} flat. Reshape into
-        # OpenAI-style assistant message so callers can treat both providers alike.
-        return {
-            "role": "assistant",
-            "content": result.get("content"),
-            "tool_calls": result.get("tool_calls") or [],
-        }
+            if (
+                _retryable_status(response.status_code)
+                and attempt < attempts - 1
+            ):
+                delay = _LLM_RETRY_BACKOFFS[attempt]
+                logger.warning(
+                    "SAP AI Core %d (attempt %d/%d) — retrying in %.1fs: %s",
+                    response.status_code, attempt + 1, attempts,
+                    delay, response.text[:300],
+                )
+                await asyncio.sleep(delay)
+                continue
+            raise RuntimeError(last_error)
+
+    # Loop exhausted only if every attempt was a retryable failure.
+    raise RuntimeError(last_error or "SAP AI Core API error: unknown")
 
 
 async def _call_openai_compat(
@@ -220,21 +329,54 @@ async def _call_openai_compat_message(
     if extra_payload:
         payload.update(extra_payload)
 
+    last_error: Optional[str] = None
+    attempts = _LLM_RETRY_ATTEMPTS_OPENAI_COMPAT
     async with httpx.AsyncClient(timeout=timeout) as client:
-        response = await client.post(
-            f"{api_url}/chat/completions",
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            json=payload,
-        )
-        if response.status_code != 200:
-            raise RuntimeError(
-                f"LLM API error: {response.status_code} - {response.text[:300]}"
+        for attempt in range(attempts):
+            try:
+                response = await client.post(
+                    f"{api_url}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json=payload,
+                )
+            except Exception as exc:
+                if _retryable_exception(exc) and attempt < attempts - 1:
+                    delay = _LLM_RETRY_BACKOFFS[attempt]
+                    logger.warning(
+                        "LLM transport error (attempt %d/%d): %s — "
+                        "retrying in %.1fs",
+                        attempt + 1, attempts, exc, delay,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                raise
+
+            if response.status_code == 200:
+                result = response.json()
+                return result["choices"][0]["message"]
+
+            last_error = (
+                f"LLM API error: {response.status_code} - "
+                f"{response.text[:300]}"
             )
-        result = response.json()
-        return result["choices"][0]["message"]
+            if (
+                _retryable_status(response.status_code)
+                and attempt < attempts - 1
+            ):
+                delay = _LLM_RETRY_BACKOFFS[attempt]
+                logger.warning(
+                    "LLM %d (attempt %d/%d) — retrying in %.1fs: %s",
+                    response.status_code, attempt + 1, attempts,
+                    delay, response.text[:300],
+                )
+                await asyncio.sleep(delay)
+                continue
+            raise RuntimeError(last_error)
+
+    raise RuntimeError(last_error or "LLM API error: unknown")
 
 
 def build_langchain_chat_model(

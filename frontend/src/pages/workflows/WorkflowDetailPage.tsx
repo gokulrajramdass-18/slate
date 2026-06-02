@@ -10,7 +10,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Checkbox } from '@/components/ui/checkbox';
-import { ArrowLeft, Save, Play, Settings, History, Loader2, Plus, FileText, Globe } from 'lucide-react';
+import { ArrowLeft, Save, Play, Settings, History, Loader2, Plus, FileText, Globe, BarChart3 } from 'lucide-react';
 import { GraphEditor, getCurrentGraphState } from '@/components/workflows/GraphEditor';
 import { PropertyPanel } from '@/components/workflows/PropertyPanel';
 import { useGraphStore } from '@/lib/stores/graph-store';
@@ -335,6 +335,10 @@ export default function WorkflowDetailPage() {
     router.push(`/workflows/${workflowId}/executions`);
   };
 
+  const handleViewEvaluations = () => {
+    router.push(`/workflows/${workflowId}/evaluations`);
+  };
+
   if (isLoading) {
     return (
       <div className="h-full flex items-center justify-center">
@@ -613,6 +617,16 @@ export default function WorkflowDetailPage() {
                   className="h-8 w-8"
                 >
                   <History className="h-4 w-4" />
+                </Button>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  onClick={handleViewEvaluations}
+                  disabled={isExecuting}
+                  title="Evaluations"
+                  className="h-8 w-8"
+                >
+                  <BarChart3 className="h-4 w-4" />
                 </Button>
                 <Button
                   variant="outline"

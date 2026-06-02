@@ -355,6 +355,34 @@ async def update_skill(skill_id: str, body: AgentSkillUpdate):
     # Verify skill exists
     skill_row = await _get_skill_or_404(skill_id)
 
+    # Built-in skills are backed by a Python function in the in-process
+    # registry (see SkillExecutor._execute_code_skill). Their `skill_type`
+    # and `definition` columns are essentially decorative — the registry
+    # is authoritative — so editing those fields in the DB only creates
+    # drift between what the UI shows and what actually runs. Allow
+    # metadata edits (name, description, category, tags, roles, enabled,
+    # input/output schema, metadata) but lock the two fields whose
+    # backing implementation lives in code.
+    if skill_row.get("skill_type") == "builtin":
+        if body.skill_type is not None and body.skill_type.value != "builtin":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "Built-in skills are backed by code in the registry; "
+                    "their type cannot be changed from the UI."
+                ),
+            )
+        if body.definition is not None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "Built-in skills' definition is provided by the "
+                    "registry and cannot be edited from the UI. Edit "
+                    "the metadata (name, description, tags, roles, etc.) "
+                    "instead."
+                ),
+            )
+
     # Check for name conflict if updating name
     if body.name and body.name != skill_row["name"]:
         existing = await repo_query(

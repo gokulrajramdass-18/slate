@@ -14,7 +14,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
-import { Plus, Play, Calendar, MoreVertical, Pencil, Trash2, Workflow as WorkflowIcon, Copy, Eye, TrendingUp, Users, Tag, Clock, ChevronDown, Globe, Share2 } from 'lucide-react';
+import { Plus, Play, Calendar, MoreVertical, Pencil, Trash2, Workflow as WorkflowIcon, Copy, Eye, TrendingUp, Users, Tag, Clock, ChevronDown, Globe, Share2, Loader2 } from 'lucide-react';
 import { useLookupList } from '@/lib/hooks/use-lookup-list';
 
 const FALLBACK_TEMPLATE_CATEGORIES = [
@@ -1042,12 +1042,26 @@ export default function WorkflowsPage() {
     });
   };
 
-  const handleExecuteTemplate = async (template: WorkflowTemplate) => {
+  const [pendingExecuteTemplate, setPendingExecuteTemplate] = useState<{
+    template: WorkflowTemplate;
+    graph: any;
+  } | null>(null);
+
+  // Tracks the template currently executing so we can show a non-dismissible
+  // "Executing…" modal between submit and the navigate to the executions page.
+  // Without this, clicking Execute looks frozen for the seconds-to-minutes
+  // the workflow takes to start.
+  const [executingTemplate, setExecutingTemplate] = useState<WorkflowTemplate | null>(null);
+
+  const runTemplateExecution = async (
+    template: WorkflowTemplate,
+    inputData: Record<string, any>,
+  ) => {
+    setExecutingTemplate(template);
     try {
-      const details = await workflowTemplatesApi.get(template.id);
       const result = await workflowTemplatesApi.execute(template.id, {
         parameters: {},
-        input_data: {}
+        input_data: inputData,
       });
 
       toast({
@@ -1056,6 +1070,38 @@ export default function WorkflowsPage() {
       });
 
       router.push(`/workflows/${result.workflow_id}/executions/${result.execution_id}`);
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "Failed to execute template",
+        variant: "destructive",
+      });
+    } finally {
+      setExecutingTemplate(null);
+    }
+  };
+
+  const handleExecuteTemplate = async (template: WorkflowTemplate) => {
+    try {
+      const details = await workflowTemplatesApi.get(template.id);
+      let graph: any = null;
+      try {
+        if ((details as any).graph_json) {
+          graph = JSON.parse((details as any).graph_json);
+        }
+      } catch (e) {
+        console.error("Failed to parse template graph JSON:", e);
+      }
+
+      // Prompt for required input fields before executing, mirroring the
+      // workflow execution flow. Without this, hana_table / LLM nodes that
+      // reference {{input-xxx.FieldName}} fail with unresolved variables.
+      if (graph && hasRequiredInputFields({ graph })) {
+        setPendingExecuteTemplate({ template, graph });
+        return;
+      }
+
+      await runTemplateExecution(template, {});
     } catch (error) {
       toast({
         title: "Error",
@@ -1319,6 +1365,46 @@ export default function WorkflowsPage() {
           }
         }}
       />
+
+      <InputFieldsPromptDialog
+        open={pendingExecuteTemplate !== null}
+        onOpenChange={(open) => { if (!open) setPendingExecuteTemplate(null); }}
+        fields={getRequiredInputFields(pendingExecuteTemplate ? { graph: pendingExecuteTemplate.graph } : null)}
+        title="Provide Template Inputs"
+        description={pendingExecuteTemplate ? `"${pendingExecuteTemplate.template.name}" requires input values before it can run.` : ''}
+        submitLabel="Execute"
+        onSubmit={async (values) => {
+          const pending = pendingExecuteTemplate;
+          setPendingExecuteTemplate(null);
+          if (!pending) return;
+          await runTemplateExecution(pending.template, values);
+        }}
+      />
+
+      {/* Non-dismissible "Executing…" overlay so the user has feedback while
+          the backend instantiates and runs the workflow. The default close-X
+          rendered by DialogContent is hidden via CSS — the overlay clears
+          itself when runTemplateExecution resolves. */}
+      <Dialog open={executingTemplate !== null}>
+        <DialogContent
+          className="sm:max-w-md [&>button[type='button']]:hidden"
+          onPointerDownOutside={(e) => e.preventDefault()}
+          onEscapeKeyDown={(e) => e.preventDefault()}
+          onInteractOutside={(e) => e.preventDefault()}
+        >
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Loader2 className="h-5 w-5 animate-spin text-primary" />
+              Executing Workflow
+            </DialogTitle>
+            <DialogDescription>
+              {executingTemplate
+                ? `Starting "${executingTemplate.name}"… You'll be redirected to the execution page when it begins.`
+                : ''}
+            </DialogDescription>
+          </DialogHeader>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

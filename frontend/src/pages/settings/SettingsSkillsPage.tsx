@@ -84,6 +84,7 @@ export default function SettingsSkillsPage() {
   const [selectedSkill, setSelectedSkill] = useState<any>(null);
   const [bindDialogOpen, setBindDialogOpen] = useState(false);
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
+  const [editDialogOpen, setEditDialogOpen] = useState(false);
   const [bindTarget, setBindTarget] = useState<"agent" | "role" | "team">("role");
   const [bindConfig, setBindConfig] = useState("{}");
 
@@ -117,6 +118,11 @@ export default function SettingsSkillsPage() {
   const handleBindSkill = (skill: any) => {
     setSelectedSkill(skill);
     setBindDialogOpen(true);
+  };
+
+  const handleEditSkill = (skill: any) => {
+    setSelectedSkill(skill);
+    setEditDialogOpen(true);
   };
 
   const handleViewDetails = (skill: any) => {
@@ -271,6 +277,7 @@ export default function SettingsSkillsPage() {
                       key={skill.id}
                       skill={skill}
                       onBind={handleBindSkill}
+                      onEdit={handleEditSkill}
                       onViewDetails={handleViewDetails}
                     />
                   ))}
@@ -307,13 +314,32 @@ export default function SettingsSkillsPage() {
           });
         }}
       />
+
+      {/* Edit Skill Dialog */}
+      <EditSkillDialog
+        open={editDialogOpen}
+        onOpenChange={setEditDialogOpen}
+        skill={selectedSkill}
+        onSuccess={() => {
+          queryClient.invalidateQueries({ queryKey: ["agent-skills"] });
+          toast({
+            title: "Skill updated",
+            description: `${selectedSkill?.name} has been updated.`,
+          });
+        }}
+      />
     </div>
   );
 }
 
 // Skill Card Component
-function SkillCard({ skill, onBind, onViewDetails }: any) {
+function SkillCard({ skill, onBind, onEdit, onViewDetails }: any) {
   const Icon = categoryIcons[skill.category as keyof typeof categoryIcons] || Code;
+  // Built-in skills are backed by code in the in-process registry. The
+  // backend lets you edit metadata (name, description, tags, roles, etc.)
+  // but blocks edits to skill_type/definition. We surface that with a
+  // pill so users immediately know which skills they're managing.
+  const isBuiltin = skill.skill_type === "builtin";
 
   return (
     <Card className="hover:shadow-md transition-shadow">
@@ -325,9 +351,27 @@ function SkillCard({ skill, onBind, onViewDetails }: any) {
             </div>
             <div>
               <CardTitle className="text-base">{skill.name}</CardTitle>
-              <Badge variant="outline" className="mt-1 text-xs">
-                v{skill.version}
-              </Badge>
+              <div className="flex items-center gap-1 mt-1 flex-wrap">
+                {skill.version && (
+                  <Badge variant="outline" className="text-xs">
+                    v{skill.version}
+                  </Badge>
+                )}
+                {isBuiltin && (
+                  <Badge
+                    variant="secondary"
+                    className="text-xs"
+                    title="Built-in skill — implementation lives in code; only metadata is editable."
+                  >
+                    Built-in
+                  </Badge>
+                )}
+                {skill.enabled === false && (
+                  <Badge variant="destructive" className="text-xs">
+                    Disabled
+                  </Badge>
+                )}
+              </div>
             </div>
           </div>
         </div>
@@ -366,7 +410,16 @@ function SkillCard({ skill, onBind, onViewDetails }: any) {
             <Button
               size="sm"
               variant="outline"
+              onClick={() => onEdit(skill)}
+              title={isBuiltin ? "Edit metadata (name, description, tags, roles)" : "Edit skill"}
+            >
+              <Edit className="h-3 w-3" />
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
               onClick={() => onViewDetails(skill)}
+              title="Details"
             >
               <SettingsIcon className="h-3 w-3" />
             </Button>
@@ -829,6 +882,255 @@ function CreateSkillDialog({ open, onOpenChange, onSuccess }: any) {
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
             )}
             Create Skill
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ============================================================================
+// EditSkillDialog
+// ============================================================================
+//
+// Edits an existing skill. For built-in skills (skill_type === "builtin")
+// the backing implementation lives in the in-process Python registry, so
+// the backend rejects edits to `skill_type` and `definition`. We reflect
+// that here by showing a banner and not surfacing those fields. All other
+// metadata (name, description, category, tags, roles, enabled) is editable
+// on every skill.
+
+function EditSkillDialog({ open, onOpenChange, skill, onSuccess }: any) {
+  const { toast } = useToast();
+  const [formData, setFormData] = useState({
+    name: "",
+    description: "",
+    category: "analysis",
+    tags: "",
+    roles: "",
+    enabled: true,
+  });
+
+  // Whenever the dialog opens with a different skill, refill the form.
+  // We can't trust a single useState initializer because the dialog stays
+  // mounted across edits — only the `skill` prop changes.
+  useEffect(() => {
+    if (skill && open) {
+      setFormData({
+        name: skill.name ?? "",
+        description: skill.description ?? "",
+        category: skill.category ?? "analysis",
+        tags: Array.isArray(skill.tags) ? skill.tags.join(", ") : "",
+        roles: Array.isArray(skill.roles) ? skill.roles.join(", ") : "",
+        enabled: skill.enabled !== false,
+      });
+    }
+  }, [skill, open]);
+
+  const isBuiltin = skill?.skill_type === "builtin";
+
+  const updateMutation = useMutation({
+    mutationFn: async () => {
+      const tags = formData.tags
+        ? formData.tags.split(",").map((t) => t.trim()).filter(Boolean)
+        : [];
+      const roles = formData.roles
+        ? formData.roles.split(",").map((r) => r.trim()).filter(Boolean)
+        : [];
+
+      // Send only metadata fields. We deliberately do NOT send
+      // `skill_type` or `definition` — for builtins the backend rejects
+      // them; for custom skills they're managed via the create flow.
+      const payload: Partial<typeof skill> = {
+        name: formData.name,
+        description: formData.description,
+        category: formData.category,
+        tags,
+        roles,
+        enabled: formData.enabled,
+      };
+
+      return agentSkillsApi.updateSkill(skill.id, payload);
+    },
+    onSuccess: () => {
+      onSuccess();
+      onOpenChange(false);
+    },
+    onError: (error: any) => {
+      // Surface the backend's specific message when present (e.g. the
+      // builtin-guard error or the duplicate-name 409).
+      const detail =
+        error?.response?.data?.detail ||
+        error?.message ||
+        "Failed to update skill";
+      toast({
+        title: "Error updating skill",
+        description: detail,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const handleSave = () => {
+    if (!formData.name.trim()) {
+      toast({
+        title: "Name is required",
+        variant: "destructive",
+      });
+      return;
+    }
+    updateMutation.mutate();
+  };
+
+  if (!skill) return null;
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Edit className="h-5 w-5" />
+            Edit Skill
+            {isBuiltin && (
+              <Badge variant="secondary" className="text-xs">
+                Built-in
+              </Badge>
+            )}
+          </DialogTitle>
+          <DialogDescription>
+            {isBuiltin
+              ? "This is a built-in skill. Its implementation lives in code, so only the metadata below can be edited."
+              : "Update this skill's metadata."}
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-4 py-4">
+          {/* Read-only identity fields — surfaced for context, not editable. */}
+          <div className="rounded-lg bg-muted p-3 text-sm space-y-1">
+            <div>
+              <span className="font-medium">ID:</span>{" "}
+              <code className="text-xs">{skill.id}</code>
+            </div>
+            <div>
+              <span className="font-medium">Type:</span>{" "}
+              <code className="text-xs">{skill.skill_type}</code>
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <Label>Name *</Label>
+            <Input
+              value={formData.name}
+              onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label>Description</Label>
+            <Textarea
+              value={formData.description}
+              onChange={(e) =>
+                setFormData({ ...formData, description: e.target.value })
+              }
+              rows={3}
+            />
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label>Category</Label>
+              <Select
+                value={formData.category}
+                onValueChange={(v) => setFormData({ ...formData, category: v })}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="bg-white dark:bg-gray-900 border-gray-200 dark:border-gray-800">
+                  <SelectItem value="search">Search</SelectItem>
+                  <SelectItem value="data_query">Data Query</SelectItem>
+                  <SelectItem value="analysis">Analysis</SelectItem>
+                  <SelectItem value="synthesis">Synthesis</SelectItem>
+                  <SelectItem value="coordination">Coordination</SelectItem>
+                  <SelectItem value="memory">Memory</SelectItem>
+                  <SelectItem value="tools">Tools</SelectItem>
+                  <SelectItem value="communication">Communication</SelectItem>
+                  <SelectItem value="validation">Validation</SelectItem>
+                  <SelectItem value="transformation">Transformation</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Enabled</Label>
+              <Select
+                value={formData.enabled ? "true" : "false"}
+                onValueChange={(v) =>
+                  setFormData({ ...formData, enabled: v === "true" })
+                }
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="bg-white dark:bg-gray-900 border-gray-200 dark:border-gray-800">
+                  <SelectItem value="true">Enabled</SelectItem>
+                  <SelectItem value="false">Disabled</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <Label>Tags</Label>
+            <Input
+              placeholder="e.g. nlp, summarization, llm"
+              value={formData.tags}
+              onChange={(e) => setFormData({ ...formData, tags: e.target.value })}
+            />
+            <p className="text-xs text-muted-foreground">Comma-separated.</p>
+          </div>
+
+          <div className="space-y-2">
+            <Label>Allowed Roles</Label>
+            <Input
+              placeholder="e.g. researcher, analyst, data_scientist"
+              value={formData.roles}
+              onChange={(e) =>
+                setFormData({ ...formData, roles: e.target.value })
+              }
+            />
+            <p className="text-xs text-muted-foreground">
+              Comma-separated. Leave empty to allow any role.
+            </p>
+          </div>
+
+          {isBuiltin && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 dark:border-amber-900/40 dark:bg-amber-950/30 p-3 text-sm">
+              <p className="font-medium text-amber-900 dark:text-amber-200">
+                Heads up
+              </p>
+              <p className="text-amber-800 dark:text-amber-300 mt-1">
+                The skill's <code>type</code> and <code>definition</code> are
+                provided by the in-process registry and can't be changed
+                here. To alter how this skill executes, edit its code in
+                the backend and redeploy.
+              </p>
+            </div>
+          )}
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button
+            onClick={handleSave}
+            disabled={updateMutation.isPending}
+          >
+            {updateMutation.isPending && (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            )}
+            Save Changes
           </Button>
         </DialogFooter>
       </DialogContent>

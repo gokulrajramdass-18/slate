@@ -677,71 +677,22 @@ async def send_chat_message(session_id: str, request: ChatRequest):
         )
 
         try:
-            # INTELLIGENT SOURCE SELECTION
-            # If sources are selected, use AI to determine which are most relevant
-            selected_source_ids_for_context = request.selected_source_ids
-            selected_note_ids_for_context = []
-
-            if request.selected_source_ids and len(request.selected_source_ids) > 0:
-                print(f"\n🧠 [Intelligent Source Selection] Analyzing query to select relevant sources...")
-                print(f"   - User query: {request.message[:100]}...")
-                print(f"   - Available sources: {len(request.selected_source_ids)}")
-
-                # Import the intelligent source selector
-                from api.services.intelligent_source_selector import IntelligentSourceSelector
-
-                # Get notebook to fetch source and note metadata
-                notebook = await Notebook.get(session.notebook_id)
-                if notebook:
-                    all_sources = await notebook.get_sources()
-                    all_notes = await notebook.get_notes()
-
-                    # Filter to only selected sources
-                    selected_sources = [s for s in all_sources if s.id in request.selected_source_ids]
-                    # Get all notes (they'll be filtered by the selector)
-                    available_notes = all_notes
-
-                    # Build metadata for selector
-                    source_metadata = [
-                        {
-                            'id': s.id,
-                            'title': s.title,
-                            'source_type': s.source_type,
-                            'summary': getattr(s, 'summary', None)
-                        }
-                        for s in selected_sources
-                    ]
-
-                    note_metadata = [
-                        {
-                            'id': n.id,
-                            'title': n.title,
-                            'summary': getattr(n, 'summary', None)
-                        }
-                        for n in available_notes
-                    ]
-
-                    # Use intelligent selector
-                    selector = IntelligentSourceSelector()
-                    selection_result = await selector.select_sources(
-                        query=request.message,
-                        available_sources=source_metadata,
-                        available_notes=note_metadata,
-                        max_sources=3
-                    )
-
-                    selected_source_ids_for_context = selection_result['selected_source_ids']
-                    selected_note_ids_for_context = selection_result['selected_note_ids']
-
-                    # Ensure we pass empty list [] not None when no sources selected
-                    if not selected_source_ids_for_context:
-                        selected_source_ids_for_context = []
-
-                    print(f"   ✅ Selection complete:")
-                    print(f"      - Selected sources: {selected_source_ids_for_context}")
-                    print(f"      - Selected notes: {selected_note_ids_for_context}")
-                    print(f"      - Reasoning: {selection_result['reasoning']}")
-                    print(f"      - Confidence: {selection_result['confidence']}")
+            # SOURCE SELECTION
+            # We deliberately skip the LLM-driven IntelligentSourceSelector
+            # here and pass the user's selected sources through unchanged.
+            #
+            # Why: that pre-flight LLM call ("which of the user's selected
+            # sources are relevant?") is a *full* gpt-5.4 round-trip on every
+            # message (~50 s observed in production). It adds value only when
+            # the user has selected many sources and only some are relevant
+            # to a given query — but in practice the user's explicit
+            # selection is already the answer to that question. Trusting the
+            # selection saves a slow LLM hop on every chat without changing
+            # the answer the model receives. If we ever need narrowing again
+            # for very-large-source notebooks, gate it on a length threshold
+            # rather than running it unconditionally.
+            selected_source_ids_for_context = request.selected_source_ids or []
+            selected_note_ids_for_context: list = []
 
             # Fetch live data from API and HANA sources
             from api.services.live_data_service import fetch_all_live_sources, format_live_data_for_context
@@ -1401,7 +1352,15 @@ The data shown in the "LIVE DATA FROM SOURCES" section above was fetched in real
         base_url=credential.get("base_url"),
         provider=credential.get("provider"),  # Pass provider for special handling
         credential=credential,  # Pass full credential for SAP AI Core
-        enable_tool_filtering=True if tools else False,  # Only filter when tools exist
+        # Tool filtering is disabled here on purpose. The filter is itself
+        # a full LLM round-trip (see tool_filtering._llm_filter), so for
+        # gpt-5.4 it adds ~5-10 s before the agent even starts. The model
+        # is fully capable of deciding whether to call any of its bound
+        # tools natively — it doesn't need a pre-flight LLM picking
+        # tools for it. Worth re-enabling only if the bound tool count
+        # grows large enough that prompt-token overhead outweighs the
+        # extra round-trip (>>15 tools).
+        enable_tool_filtering=False,
         task_description=request.message,  # Use user query for filtering
     )
 

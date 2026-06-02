@@ -77,6 +77,10 @@ spec:
             secretKeyRef:
               name: {{ include "slate.fullname" . }}-secrets
               key: encryption-key
+        {{- if .Values.backend.env.slateDbReset }}
+        - name: SLATE_DB_RESET
+          value: {{ .Values.backend.env.slateDbReset | quote }}
+        {{- end }}
         {{- if .Values.sapAiCoreApi.enabled }}
         - name: SAP_AI_CORE_API_URL
           value: "http://{{ include "slate.fullname" . }}-sap-ai-core-api:{{ .Values.sapAiCoreApi.service.port }}"

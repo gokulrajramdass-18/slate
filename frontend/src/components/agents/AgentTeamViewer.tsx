@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -42,6 +42,9 @@ import {
   Clock,
   CheckCircle2,
   Award,
+  HelpCircle,
+  Bot,
+  Wrench,
 } from "lucide-react";
 import { AgentCard } from "./AgentCard";
 import { TaskBoard } from "./TaskBoard";
@@ -50,6 +53,7 @@ import { WorkflowProgress } from "./WorkflowProgress";
 import { EvaluationPanel } from "./EvaluationPanel";
 import { useAgentTeam, useTeamExecutions } from "@/lib/hooks/use-api";
 import { agentsApi } from "@/lib/api";
+import type { AwaitingInputEvent } from "@/lib/api/agents";
 import { userQueryPromptsApi } from "@/lib/api/user-query-prompts";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/query-client";
@@ -63,6 +67,7 @@ import type {
   AgentMessage,
   WorkflowStep,
 } from "@/lib/types";
+import { ORCHESTRATION_PATTERNS } from "@/lib/types";
 
 interface AgentTeamViewerProps {
   teamId: string;
@@ -85,6 +90,17 @@ export function AgentTeamViewer({ teamId }: AgentTeamViewerProps) {
   const [liveMessages, setLiveMessages] = useState<AgentMessage[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<string>(initialTab);
+
+  // Pending clarification (popup state). Set when an agent has paused with
+  // a question; cleared on submit or cancel.
+  const [clarification, setClarification] = useState<AwaitingInputEvent | null>(null);
+  const [clarificationAnswer, setClarificationAnswer] = useState("");
+  const [clarificationSubmitting, setClarificationSubmitting] = useState(false);
+
+  // History → click-to-view dialog. Holds the full execution row so the
+  // dialog can render Output / Agent Steps / Messages tabs without
+  // navigating away.
+  const [historyDetail, setHistoryDetail] = useState<TeamExecution | null>(null);
 
   // Data fetching hooks - can now safely reference state variables
   const { data: team, isLoading: teamLoading } = useAgentTeam(teamId);
@@ -287,6 +303,19 @@ export function AgentTeamViewer({ teamId }: AgentTeamViewerProps) {
           toast.error("Execution failed", {
             description: err || "An error occurred during execution.",
           });
+        },
+        // onAwaitingInput
+        (info: AwaitingInputEvent) => {
+          clearTimeout(timeoutId);
+          setIsExecuting(false);
+          setClarification(info);
+          setClarificationAnswer("");
+          setCurrentExecution((prev) =>
+            prev ? { ...prev, id: info.execution_id, status: "awaiting_input" as any } : prev,
+          );
+          toast.info(`${info.sender_name || "Agent"} needs your input`, {
+            description: "A clarifying question is waiting.",
+          });
         }
       );
     } catch (err: any) {
@@ -300,6 +329,92 @@ export function AgentTeamViewer({ teamId }: AgentTeamViewerProps) {
       });
     }
   }, [teamId, query, isExecuting, queryClient]);
+
+  // Ref-based re-entry guard. State (clarificationSubmitting) flips
+  // *after* React commits; a fast double-event (⌘+Enter + click, or two
+  // Enter keystrokes) lands on the same render and would otherwise fire
+  // two POSTs to the same clarification id — backend then 409s the
+  // second one with "cannot answer twice". A ref reads/writes
+  // synchronously so the second call sees the in-flight flag immediately.
+  const submittingClarificationIdRef = useRef<string | null>(null);
+
+  // Submit the user's answer and re-attach to the resume SSE stream. Reuses
+  // the same setters as executeTeam so the live timeline keeps growing.
+  const submitClarification = useCallback(async () => {
+    if (!clarification) return;
+    // Re-entry guard: if a POST is already in flight for this exact
+    // clarification, drop the duplicate silently.
+    if (submittingClarificationIdRef.current === clarification.clarification_id) {
+      return;
+    }
+    const text = clarificationAnswer.trim();
+    if (!text) {
+      toast.error("Please enter an answer");
+      return;
+    }
+    submittingClarificationIdRef.current = clarification.clarification_id;
+    const inflightId = clarification.clarification_id;
+    setClarificationSubmitting(true);
+    setIsExecuting(true);
+    setCurrentExecution((prev) =>
+      prev ? { ...prev, status: "executing" as any } : prev,
+    );
+    try {
+      await agentsApi.answerClarification(
+        teamId,
+        clarification.execution_id,
+        clarification.clarification_id,
+        text,
+        {
+          onMessage: (m) => setLiveMessages((prev) => [...prev, m]),
+          onTaskUpdate: (t) =>
+            setLiveTasks((prev) => {
+              const i = prev.findIndex((x) => x.id === t.id);
+              if (i >= 0) {
+                const copy = [...prev];
+                copy[i] = t;
+                return copy;
+              }
+              return [...prev, t];
+            }),
+          onAwaitingInput: (info) => {
+            // Another question — keep the loop going.
+            setIsExecuting(false);
+            setClarification(info);
+            setClarificationAnswer("");
+            toast.info(`${info.sender_name || "Agent"} needs more input`);
+          },
+          onComplete: (result) => {
+            setCurrentExecution(result);
+            setIsExecuting(false);
+            setClarification(null);
+            toast.success("Execution completed");
+            queryClient.invalidateQueries({ queryKey: queryKeys.teamExecutions(teamId) });
+          },
+          onError: (err) => {
+            setError(err);
+            setIsExecuting(false);
+            toast.error("Resume failed", { description: err });
+          },
+        },
+      );
+    } finally {
+      // Only clear the guard if we still own it — defensive against the
+      // unlikely case where another path already cleared it.
+      if (submittingClarificationIdRef.current === inflightId) {
+        submittingClarificationIdRef.current = null;
+      }
+      setClarificationSubmitting(false);
+    }
+  }, [clarification, clarificationAnswer, teamId, queryClient]);
+
+  const cancelClarification = useCallback(() => {
+    setClarification(null);
+    setClarificationAnswer("");
+    setIsExecuting(false);
+    setCurrentExecution((prev) => prev ? { ...prev, status: "error" as any } : prev);
+    toast.info("Execution cancelled");
+  }, []);
 
   if (teamLoading) {
     return (
@@ -430,8 +545,7 @@ export function AgentTeamViewer({ teamId }: AgentTeamViewerProps) {
                         key={execution.id}
                         className="p-4 border rounded-lg hover:bg-muted/50 cursor-pointer transition-colors"
                         onClick={() => {
-                          // Navigate to full view with execution details
-                          router.push(`/agents/teams/${teamId}/execute?tab=execute&execution=${execution.id}`);
+                          setHistoryDetail(execution as TeamExecution);
                         }}
                       >
                         <div className="flex items-start justify-between mb-2">
@@ -536,6 +650,20 @@ export function AgentTeamViewer({ teamId }: AgentTeamViewerProps) {
                 <CardTitle>{team.name}</CardTitle>
                 {team.description && (
                   <CardDescription>{team.description}</CardDescription>
+                )}
+                {team.orchestration_pattern && (
+                  <div className="mt-2 flex items-center gap-2">
+                    <Badge variant="secondary" className="text-[10px] font-medium">
+                      {ORCHESTRATION_PATTERNS.find(
+                        (p) => p.key === team.orchestration_pattern
+                      )?.label || team.orchestration_pattern}
+                    </Badge>
+                    <span className="text-[11px] text-muted-foreground">
+                      {ORCHESTRATION_PATTERNS.find(
+                        (p) => p.key === team.orchestration_pattern
+                      )?.tagline}
+                    </span>
+                  </div>
                 )}
               </div>
             </div>
@@ -772,7 +900,11 @@ export function AgentTeamViewer({ teamId }: AgentTeamViewerProps) {
                 </div>
               </CardHeader>
               <CardContent>
-                <Tabs defaultValue={liveTasks.length > 0 ? "tasks" : "messages"} className="w-full">
+                <Tabs defaultValue={
+                  currentExecution?.result
+                    ? "result"
+                    : liveTasks.length > 0 ? "tasks" : "messages"
+                } className="w-full">
                   <TabsList className="grid w-full" style={{ gridTemplateColumns: `repeat(${[liveTasks.length > 0, liveMessages.length > 0, currentExecution?.result, evaluationsData && evaluationsData.total > 0].filter(Boolean).length}, 1fr)` }}>
                     {liveTasks.length > 0 && <TabsTrigger value="tasks">Tasks</TabsTrigger>}
                     {liveMessages.length > 0 && <TabsTrigger value="messages">Messages</TabsTrigger>}
@@ -1043,8 +1175,10 @@ export function AgentTeamViewer({ teamId }: AgentTeamViewerProps) {
                           key={execution.id}
                           className="p-4 border rounded-lg hover:bg-muted/50 cursor-pointer transition-colors"
                           onClick={() => {
-                            // Navigate with execution ID to load it
-                            router.push(`/agents/teams/${teamId}/execute?tab=execute&execution=${execution.id}`);
+                            // Open the focused details dialog (Output /
+                            // Agent Steps / Messages tabs) instead of
+                            // hijacking the Execute tab.
+                            setHistoryDetail(execution as TeamExecution);
                           }}
                         >
                           <div className="flex items-start justify-between mb-2">
@@ -1231,6 +1365,400 @@ export function AgentTeamViewer({ teamId }: AgentTeamViewerProps) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Clarification popup — surfaces an agent's mid-run question and
+          captures the user's reply, then resumes execution with that reply
+          spliced into the questioner's next prompt. */}
+      <Dialog
+        open={!!clarification}
+        onOpenChange={(open) => { if (!open) cancelClarification(); }}
+      >
+        <DialogContent className="max-w-xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <HelpCircle className="h-5 w-5 text-blue-500" />
+              {clarification?.sender_name || "An agent"} needs your input
+            </DialogTitle>
+            <DialogDescription>
+              Execution is paused. Provide an answer below and the team will
+              continue from where it left off.
+            </DialogDescription>
+          </DialogHeader>
+          {clarification && (
+            <div className="space-y-3">
+              <div className="rounded-md border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950 p-3">
+                <div className="flex items-center gap-2 mb-1">
+                  <Badge variant="outline" className="text-[10px]">
+                    {clarification.sender_role || "agent"}
+                  </Badge>
+                  <span className="text-xs font-medium">
+                    {clarification.sender_name}
+                  </span>
+                </div>
+                <p className="text-sm whitespace-pre-wrap leading-relaxed">
+                  {clarification.question}
+                </p>
+              </div>
+              <div>
+                <label className="text-xs font-medium">Your answer</label>
+                <textarea
+                  className="mt-1 w-full min-h-[110px] rounded-md border border-gray-200 dark:border-gray-700 bg-background p-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                  value={clarificationAnswer}
+                  onChange={(e) => setClarificationAnswer(e.target.value)}
+                  placeholder="Type your reply…"
+                  autoFocus
+                  onKeyDown={(e) => {
+                    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                      e.preventDefault();
+                      submitClarification();
+                    }
+                  }}
+                />
+                <p className="text-[11px] text-muted-foreground mt-1">
+                  Tip: ⌘/Ctrl + Enter to submit.
+                </p>
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={cancelClarification}
+              disabled={clarificationSubmitting}
+            >
+              Cancel run
+            </Button>
+            <Button
+              onClick={submitClarification}
+              disabled={clarificationSubmitting || !clarificationAnswer.trim()}
+            >
+              {clarificationSubmitting ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Resuming…
+                </>
+              ) : (
+                "Submit & continue"
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Execution details dialog (opened from the History tab). Three
+          tabs: Output (final answer markdown), Agent Steps (per-agent
+          step + tool-call timeline grouped by sender), Messages (full
+          inter-agent message log via the existing MessageTimeline). */}
+      <Dialog
+        open={!!historyDetail}
+        onOpenChange={(open) => { if (!open) setHistoryDetail(null); }}
+      >
+        <DialogContent className="max-w-5xl max-h-[90vh] flex flex-col">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 pr-6">
+              <Users className="h-5 w-5 text-blue-500" />
+              <span className="truncate">
+                {historyDetail?.query || "Execution"}
+              </span>
+            </DialogTitle>
+            <DialogDescription className="flex items-center gap-2 text-xs">
+              {historyDetail && (
+                <>
+                  <Badge className={teamStatusColors[historyDetail.status] || teamStatusColors.idle}>
+                    {historyDetail.status}
+                  </Badge>
+                  {historyDetail.started_at && (
+                    <span className="text-muted-foreground">
+                      Started {new Date(historyDetail.started_at).toLocaleString()}
+                    </span>
+                  )}
+                  {historyDetail.completed_at && (
+                    <span className="text-muted-foreground">
+                      • Finished {new Date(historyDetail.completed_at).toLocaleString()}
+                    </span>
+                  )}
+                </>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          {historyDetail && (
+            <Tabs defaultValue="output" className="flex-1 min-h-0 flex flex-col">
+              <TabsList className="grid w-full grid-cols-3">
+                <TabsTrigger value="output">Output</TabsTrigger>
+                <TabsTrigger value="agent_steps">
+                  Agent Steps
+                  {(() => {
+                    const stepKinds = new Set(["task_assign", "task_result", "tool_call", "tool_result", "control"]);
+                    const n = (historyDetail.messages || []).filter(
+                      (m: any) => stepKinds.has(m.message_type)
+                    ).length;
+                    return n > 0 ? <Badge variant="outline" className="ml-2 text-[10px]">{n}</Badge> : null;
+                  })()}
+                </TabsTrigger>
+                <TabsTrigger value="messages">
+                  Messages
+                  {historyDetail.messages?.length ? (
+                    <Badge variant="outline" className="ml-2 text-[10px]">{historyDetail.messages.length}</Badge>
+                  ) : null}
+                </TabsTrigger>
+              </TabsList>
+
+              {/* Output tab */}
+              <TabsContent value="output" className="flex-1 min-h-0 mt-3">
+                <ScrollArea className="h-[60vh] pr-4">
+                  {historyDetail.result ? (
+                    <div className="prose prose-sm dark:prose-invert max-w-none">
+                      <ReactMarkdown
+                        components={{
+                          h1: ({node, ...props}) => <h1 className="text-2xl font-bold mt-6 mb-4 text-primary" {...props} />,
+                          h2: ({node, ...props}) => <h2 className="text-xl font-semibold mt-5 mb-3 text-primary" {...props} />,
+                          h3: ({node, ...props}) => <h3 className="text-lg font-semibold mt-4 mb-2" {...props} />,
+                          h4: ({node, ...props}) => <h4 className="text-base font-semibold mt-3 mb-2" {...props} />,
+                          p: ({node, ...props}) => <p className="mb-3 leading-relaxed" {...props} />,
+                          ul: ({node, ...props}) => <ul className="list-disc list-outside ml-5 mb-3 space-y-1" {...props} />,
+                          ol: ({node, ...props}) => <ol className="list-decimal list-outside ml-5 mb-3 space-y-1" {...props} />,
+                          li: ({node, ...props}) => <li className="leading-relaxed" {...props} />,
+                          code: ({node, className, children, ...props}: any) => {
+                            const inline = !(className || "").includes("language-");
+                            return inline
+                              ? <code className="px-1 py-0.5 bg-gray-200 dark:bg-gray-800 rounded text-xs font-mono" {...props}>{children}</code>
+                              : <code className={className} {...props}>{children}</code>;
+                          },
+                          pre: ({node, ...props}) => <pre className="bg-gray-100 dark:bg-gray-950 p-3 rounded text-xs overflow-x-auto" {...props} />,
+                          blockquote: ({node, ...props}) => <blockquote className="border-l-4 border-primary/50 pl-4 italic my-4 bg-muted/30 py-2" {...props} />,
+                        }}
+                      >
+                        {historyDetail.result}
+                      </ReactMarkdown>
+                    </div>
+                  ) : historyDetail.status === "failed" ? (
+                    <div className="text-sm text-destructive">
+                      Execution failed.
+                    </div>
+                  ) : (
+                    <div className="text-sm text-muted-foreground">
+                      No final output captured for this execution.
+                    </div>
+                  )}
+                </ScrollArea>
+              </TabsContent>
+
+              {/* Agent Steps tab — group execution events by acting agent */}
+              <TabsContent value="agent_steps" className="flex-1 min-h-0 mt-3">
+                <ScrollArea className="h-[60vh] pr-4">
+                  <AgentStepsView execution={historyDetail} />
+                </ScrollArea>
+              </TabsContent>
+
+              {/* Messages tab — full inter-agent timeline */}
+              <TabsContent value="messages" className="flex-1 min-h-0 mt-3">
+                <ScrollArea className="h-[60vh] pr-4">
+                  <MessageTimeline messages={historyDetail.messages || []} />
+                </ScrollArea>
+              </TabsContent>
+            </Tabs>
+          )}
+          <DialogFooter className="border-t pt-3">
+            <Button variant="outline" onClick={() => setHistoryDetail(null)}>
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// AgentStepsView
+//
+// Used by the History details dialog. Groups the execution's `messages`
+// stream by acting agent (sender name + role), and within each group
+// surfaces the meaningful steps the agent took: control events (data
+// sources loaded, tools/skills loaded, query execution started/completed),
+// tool calls (with input arguments), and tool results (with output).
+// task_assign rows are shown as the agent's prompt; task_result rows are
+// shown as the agent's final output for that turn.
+// ---------------------------------------------------------------------------
+
+function AgentStepsView({ execution }: { execution: TeamExecution }) {
+  const stepKinds = new Set([
+    "task_assign",
+    "task_result",
+    "tool_call",
+    "tool_result",
+    "control",
+  ]);
+  const stepMessages = (execution.messages || []).filter((m: any) =>
+    stepKinds.has(m.message_type),
+  );
+
+  if (stepMessages.length === 0) {
+    return (
+      <div className="py-12 text-center text-sm text-muted-foreground">
+        No agent steps were recorded for this execution.
+      </div>
+    );
+  }
+
+  // Group consecutive steps by acting agent. The "acting agent" for
+  // task_assign is the recipient (whoever was assigned), for everything
+  // else it's the sender. This keeps the prompt + the resulting work
+  // inside the same agent's card.
+  type Group = {
+    agentId: string;
+    agentName: string;
+    role?: string;
+    items: any[];
+  };
+  const groups: Group[] = [];
+  for (const m of stepMessages as any[]) {
+    const isAssign = m.message_type === "task_assign";
+    const actingId = isAssign ? m.to_agent_id : m.from_agent_id;
+    const actingName = isAssign ? m.to_agent_name : m.from_agent_name;
+    const meta = (() => {
+      const v = m.metadata;
+      if (!v) return {};
+      if (typeof v === "string") {
+        try { return JSON.parse(v) || {}; } catch { return {}; }
+      }
+      return v;
+    })();
+    const role = meta.role;
+    const last = groups[groups.length - 1];
+    if (last && last.agentId === actingId) {
+      last.items.push({ ...m, _parsedMeta: meta });
+    } else {
+      groups.push({
+        agentId: actingId || "system",
+        agentName: actingName || "System",
+        role,
+        items: [{ ...m, _parsedMeta: meta }],
+      });
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      {groups.map((g, gi) => (
+        <Card key={`${g.agentId}-${gi}`} className="overflow-hidden">
+          <CardHeader className="pb-2 bg-muted/30">
+            <div className="flex items-center gap-2">
+              <Bot className="h-4 w-4 text-blue-600 dark:text-blue-400" />
+              <span className="font-semibold text-sm">{g.agentName}</span>
+              {g.role && (
+                <Badge variant="outline" className="text-[10px]">
+                  {g.role}
+                </Badge>
+              )}
+              <Badge variant="outline" className="ml-auto text-[10px]">
+                {g.items.length} step{g.items.length === 1 ? "" : "s"}
+              </Badge>
+            </div>
+          </CardHeader>
+          <CardContent className="p-3 space-y-2">
+            {g.items.map((it: any, i: number) => (
+              <AgentStepRow key={it.id || i} step={it} />
+            ))}
+          </CardContent>
+        </Card>
+      ))}
+    </div>
+  );
+}
+
+function AgentStepRow({ step }: { step: any }) {
+  const kind: string = step.message_type;
+  const meta = step._parsedMeta || {};
+  const ts = step.timestamp || step.created;
+
+  if (kind === "task_assign") {
+    return (
+      <div className="rounded border border-purple-200 dark:border-purple-800 bg-purple-50/50 dark:bg-purple-950/30 p-3">
+        <div className="flex items-center gap-2 mb-1">
+          <Send className="h-3.5 w-3.5 text-purple-600 dark:text-purple-400" />
+          <span className="text-xs font-semibold text-purple-700 dark:text-purple-300">Prompt</span>
+          {ts && <span className="text-[10px] text-muted-foreground ml-auto">{new Date(ts).toLocaleTimeString()}</span>}
+        </div>
+        <pre className="text-xs whitespace-pre-wrap leading-relaxed font-sans text-gray-800 dark:text-gray-200 line-clamp-6">
+          {step.content}
+        </pre>
+      </div>
+    );
+  }
+
+  if (kind === "task_result") {
+    return (
+      <div className="rounded border border-emerald-200 dark:border-emerald-800 bg-emerald-50/50 dark:bg-emerald-950/30 p-3">
+        <div className="flex items-center gap-2 mb-1">
+          <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
+          <span className="text-xs font-semibold text-emerald-700 dark:text-emerald-300">Response</span>
+          {meta.is_clarification && (
+            <Badge variant="outline" className="text-[10px] text-amber-700 border-amber-300 bg-amber-50 dark:bg-amber-950 dark:text-amber-200 dark:border-amber-800">
+              Clarification
+            </Badge>
+          )}
+          {ts && <span className="text-[10px] text-muted-foreground ml-auto">{new Date(ts).toLocaleTimeString()}</span>}
+        </div>
+        <div className="text-xs whitespace-pre-wrap leading-relaxed text-gray-800 dark:text-gray-200 max-h-48 overflow-y-auto">
+          {step.content}
+        </div>
+      </div>
+    );
+  }
+
+  if (kind === "tool_call") {
+    const args = meta.tool_input;
+    return (
+      <div className="rounded border border-purple-300 dark:border-purple-700 bg-purple-100/40 dark:bg-purple-950/40 p-3">
+        <div className="flex items-center gap-2 mb-1">
+          <Wrench className="h-3.5 w-3.5 text-purple-700 dark:text-purple-300" />
+          <span className="text-xs font-semibold text-purple-700 dark:text-purple-300">Tool call</span>
+          <code className="text-xs font-mono px-1.5 py-0.5 rounded bg-white/60 dark:bg-gray-900/60">
+            {meta.tool_name || "unknown"}
+          </code>
+          {ts && <span className="text-[10px] text-muted-foreground ml-auto">{new Date(ts).toLocaleTimeString()}</span>}
+        </div>
+        {args && (
+          <pre className="text-[11px] bg-white dark:bg-gray-900 p-2 rounded border overflow-x-auto">
+            {typeof args === "string" ? args : JSON.stringify(args, null, 2)}
+          </pre>
+        )}
+      </div>
+    );
+  }
+
+  if (kind === "tool_result") {
+    const out = meta.tool_output;
+    return (
+      <div className="rounded border border-emerald-300 dark:border-emerald-700 bg-emerald-100/40 dark:bg-emerald-950/40 p-3">
+        <div className="flex items-center gap-2 mb-1">
+          <Wrench className="h-3.5 w-3.5 text-emerald-700 dark:text-emerald-300" />
+          <span className="text-xs font-semibold text-emerald-700 dark:text-emerald-300">Tool result</span>
+          <code className="text-xs font-mono px-1.5 py-0.5 rounded bg-white/60 dark:bg-gray-900/60">
+            {meta.tool_name || "unknown"}
+          </code>
+          {ts && <span className="text-[10px] text-muted-foreground ml-auto">{new Date(ts).toLocaleTimeString()}</span>}
+        </div>
+        {out !== undefined && out !== null && (
+          <pre className="text-[11px] bg-white dark:bg-gray-900 p-2 rounded border overflow-x-auto max-h-32">
+            {typeof out === "string" ? out : JSON.stringify(out, null, 2)}
+          </pre>
+        )}
+      </div>
+    );
+  }
+
+  // control + anything else
+  return (
+    <div className="rounded border border-gray-200 dark:border-gray-700 bg-gray-50/60 dark:bg-gray-900/40 p-2">
+      <div className="flex items-center gap-2">
+        <AlertCircle className="h-3.5 w-3.5 text-gray-500" />
+        <span className="text-xs text-gray-700 dark:text-gray-300 flex-1 whitespace-pre-wrap">
+          {step.content}
+        </span>
+        {ts && <span className="text-[10px] text-muted-foreground">{new Date(ts).toLocaleTimeString()}</span>}
+      </div>
     </div>
   );
 }

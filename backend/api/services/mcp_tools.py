@@ -11,7 +11,7 @@ from typing import Any, Dict, Optional
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field, create_model
 
-from api.services.mcp_client import mcp_pool
+from api.services.mcp_client import mcp_pool, effective_token_user_id
 
 logger = logging.getLogger(__name__)
 
@@ -20,25 +20,37 @@ async def execute_mcp_tool(
     server_id: str,
     server_config: Dict[str, Any],
     tool_name: str,
-    **kwargs
+    user_id: Optional[str] = None,
+    **kwargs,
 ) -> str:
     """
-    Execute an MCP tool.
+    Execute an MCP tool on behalf of `user_id`.
+
+    For user-mode OAuth servers, `user_id` selects the calling user's
+    access token. For system-mode servers it's collapsed to the shared
+    `__system__` sentinel so all callers hit the same pooled client and
+    the same token row — keeping the per-instance refresh lock effective.
 
     Args:
         server_id: MCP server ID
-        server_config: Server configuration
+        server_config: Server configuration (must contain `oauth_mode`)
         tool_name: Name of the tool to execute
+        user_id: Authenticated user calling the tool (required for OAuth)
         **kwargs: Tool arguments
-
-    Returns:
-        Tool execution result as string
     """
     server_name = server_config.get("name", "Unknown Server")
 
+    # Substitute user_id once at the boundary: from here down, the pool,
+    # the client, and the refresh path all see the same value.
+    pool_user_id = effective_token_user_id(server_config, user_id)
+
     try:
-        # Get MCP client from pool (will connect if needed)
-        client = await mcp_pool.get_client(server_id, server_config)
+        # Pooled client keyed on (server_id, pool_user_id). Non-OAuth
+        # servers ignore user_id; system-mode servers collapse to one
+        # entry; user-mode servers stay isolated per user.
+        client = await mcp_pool.get_client(
+            server_id, server_config, user_id=pool_user_id
+        )
 
         # Filter out None values to avoid "None is not of type 'integer'" errors
         # Many APIs require optional parameters to be omitted entirely, not sent as null
@@ -55,6 +67,13 @@ async def execute_mcp_tool(
             return json.dumps(result, indent=2)
         else:
             return str(result)
+
+    except PermissionError:
+        # Raised by the pool when no per-user OAuth token exists.
+        return (
+            f"You haven't authenticated with '{server_name}' yet. "
+            "Please connect this MCP server in Settings → MCP Servers."
+        )
 
     except ConnectionError as e:
         # OAuth or connection error
@@ -128,17 +147,22 @@ def format_mcp_content(content_list: list) -> str:
 def create_mcp_tool(
     server_id: str,
     server_config: Dict[str, Any],
-    tool_data: Dict[str, Any]
+    tool_data: Dict[str, Any],
+    user_id: Optional[str] = None,
 ) -> StructuredTool:
     """
     Factory function to create LangChain StructuredTool from MCP tool data.
 
-    Uses StructuredTool.from_function to avoid schema recursion issues.
+    The tool is bound to a specific user via closure: when the agent invokes
+    the tool, the call routes to that user's connection pool entry (and
+    therefore that user's OAuth token). Building separate tool instances per
+    user is what keeps two simultaneous agent runs from sharing an identity.
 
     Args:
         server_id: MCP server identifier
         server_config: Server configuration dict
         tool_data: Tool data from mcp_tools table
+        user_id: Authenticated user the tool will run as (required for OAuth)
 
     Returns:
         StructuredTool instance
@@ -195,14 +219,17 @@ def create_mcp_tool(
         class MCPToolArgs(BaseModel):
             pass
 
-    # Create the async function that will be wrapped
+    # Create the async function that will be wrapped. Capture user_id in
+    # the closure so the tool, no matter where it's executed downstream,
+    # invokes the MCP server as the user it was minted for.
     async def mcp_tool_func(**kwargs) -> str:
         """Execute MCP tool with provided arguments"""
         return await execute_mcp_tool(
             server_id=server_id,
             server_config=server_config,
             tool_name=tool_name,
-            **kwargs
+            user_id=user_id,
+            **kwargs,
         )
 
     # Create StructuredTool using from_function

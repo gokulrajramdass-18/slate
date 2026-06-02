@@ -5,10 +5,13 @@ Builds context from notebook sources and notes for chat functionality.
 Includes token counting and intelligent truncation.
 """
 
+import logging
 import tiktoken
 from typing import List, Dict, Any, Optional
 from open_notebook.domain.notebook import Notebook, Source
 from open_notebook.database.repository import repo_query
+
+logger = logging.getLogger(__name__)
 
 
 class ContextService:

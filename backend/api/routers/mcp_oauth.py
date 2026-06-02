@@ -1,9 +1,19 @@
 """
 MCP Server OAuth Endpoints
 Provides OAuth authorization and callback handling for MCP servers.
+
+Per-user OAuth model:
+  - Each logged-in user authenticates MCP servers with their own identity.
+  - Tokens are stored in mcp_oauth_tokens keyed on (server_id, user_id).
+  - OAuth client_id/secret (RFC 7591 dynamic registration) stays shared per
+    server.
+  - The user_id travels through the IdP round-trip inside a signed `state`
+    parameter so the public /callback endpoint can resolve it without trusting
+    cookies.
 """
 
-from fastapi import APIRouter, Request, Query, HTTPException, Response
+import os
+from fastapi import APIRouter, Depends, Request, Query, HTTPException
 from fastapi.responses import RedirectResponse, HTMLResponse
 import secrets
 import httpx
@@ -12,12 +22,62 @@ import base64
 from datetime import datetime, timedelta
 import logging
 
+from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
+
+from api.dependencies.auth import get_current_active_user
+from open_notebook.domain.user import User
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/mcp-servers", tags=["mcp-oauth"])
 
 # In-memory session storage (use Redis in production)
+# Key: session_id -> {server_id, user_id, csrf, code_verifier, oauth_config,
+#                     client_id, client_secret, created_at}
 oauth_sessions = {}
+
+# Signed state lifetime. The IdP redirect typically completes in seconds; we
+# allow 10 minutes to absorb slow logins, MFA prompts, etc.
+OAUTH_STATE_MAX_AGE_SECONDS = 600
+
+# Serializer used to sign the OAuth `state` parameter so the public /callback
+# endpoint can recover {server_id, user_id, csrf} without trusting cookies.
+# We salt with a constant so the same secret can be reused for other signed
+# tokens elsewhere in the codebase without collision.
+_state_serializer: URLSafeTimedSerializer | None = None
+
+
+def _get_state_serializer() -> URLSafeTimedSerializer:
+    """Lazy-init the state serializer using OPEN_NOTEBOOK_ENCRYPTION_KEY."""
+    global _state_serializer
+    if _state_serializer is None:
+        secret = os.getenv("OPEN_NOTEBOOK_ENCRYPTION_KEY")
+        if not secret:
+            # Fall back to JWT secret if available — never let this be empty.
+            from api.dependencies import auth as _auth
+            secret = _auth.SECRET_KEY or "mcp-oauth-state-fallback-do-not-use-in-prod"
+        _state_serializer = URLSafeTimedSerializer(
+            secret_key=secret,
+            salt="mcp-oauth-state",
+        )
+    return _state_serializer
+
+
+def _sign_state(payload: dict) -> str:
+    """Sign an opaque state payload for the OAuth round-trip."""
+    return _get_state_serializer().dumps(payload)
+
+
+def _verify_state(token: str) -> dict:
+    """Verify and decode a signed state token. Raises HTTPException on failure."""
+    try:
+        return _get_state_serializer().loads(
+            token, max_age=OAUTH_STATE_MAX_AGE_SECONDS
+        )
+    except SignatureExpired:
+        raise HTTPException(status_code=400, detail="OAuth state expired")
+    except BadSignature:
+        raise HTTPException(status_code=400, detail="OAuth state invalid")
 
 # OAuth provider configuration (should be in environment variables or database)
 OAUTH_PROVIDERS = {
@@ -37,122 +97,201 @@ def generate_pkce_challenge(verifier: str) -> str:
     return base64.urlsafe_b64encode(digest).decode().rstrip('=')
 
 
+def _public_base_url(request: Request) -> str:
+    """
+    Resolve the public-facing base URL for building OAuth redirect URIs.
+
+    Behind AppRouter (XSUAA mode) `request.base_url` is the *internal*
+    backend URL (e.g. http://localhost:5055/) — the address the AppRouter
+    talks to. OAuth providers strict-match the `redirect_uri` against
+    what was registered, and the user's browser hits the public AppRouter
+    origin (e.g. http://localhost:5001/), so the internal URL never works.
+
+    Set `PUBLIC_BASE_URL` (no trailing slash) to the AppRouter's origin
+    in production / XSUAA mode. We fall back to `request.base_url` for
+    local dev where the backend is reached directly.
+    """
+    public = os.getenv("PUBLIC_BASE_URL", "").strip()
+    if public:
+        return public.rstrip("/")
+    return str(request.base_url).rstrip("/")
+
+
+@router.post("/{server_id}/oauth/start")
+async def mcp_oauth_start(
+    server_id: str,
+    request: Request,
+    current_user: User = Depends(get_current_active_user),
+):
+    """
+    Begin an OAuth flow for this server.
+
+    The frontend calls this with the user's JWT, then opens the returned
+    `authorization_url` in a popup. The `state` parameter is signed and
+    contains `{server_id, user_id, csrf}` so the public `/callback`
+    endpoint can recover the user's identity without trusting cookies.
+
+    For system-mode servers, only admins may initiate the flow — see
+    `_build_authorization_url` for the gate.
+    """
+    auth_url, _session_id = await _build_authorization_url(
+        server_id=server_id,
+        current_user=current_user,
+        request=request,
+    )
+    return {"authorization_url": auth_url}
+
+
 @router.get("/{server_id}/oauth/authorize")
 async def mcp_oauth_authorize(
     server_id: str,
-    request: Request
+    request: Request,
+    current_user: User = Depends(get_current_active_user),
 ):
     """
-    PUBLIC ENDPOINT - No authentication required
-
-    Automatically discovers OAuth configuration and uses Dynamic Client
-    Registration (RFC 7591) if supported. No manual configuration needed!
+    Authenticated convenience redirect. Same as /oauth/start but returns a
+    302 to the IdP. Used when the frontend prefers a top-level navigation.
     """
-    try:
-        # Get MCP server configuration from database
-        server = await get_mcp_server(server_id)
-        if not server:
-            raise HTTPException(status_code=404, detail="Server not found")
+    auth_url, _session_id = await _build_authorization_url(
+        server_id=server_id,
+        current_user=current_user,
+        request=request,
+    )
+    response = RedirectResponse(url=auth_url, status_code=302)
+    return response
 
-        # Step 1: Discover OAuth configuration
-        oauth_config = await discover_oauth_configuration(server["url"])
-        if not oauth_config:
-            return error_html("OAuth not supported by this server")
 
-        # Step 2: Check if we have existing client credentials
-        existing_client = await get_stored_client_credentials(server_id)
+async def _build_authorization_url(
+    server_id: str,
+    current_user: User,
+    request: Request,
+) -> tuple[str, str]:
+    """
+    Discover OAuth config, register a client if needed, and return the
+    provider authorization URL with a signed state. The state encodes the
+    initiating user's id so the public callback can route the resulting
+    tokens to the correct row — for user-mode that's `current_user.id`;
+    for system-mode the substitution to `__system__` happens at storage
+    time (in the callback) via `effective_token_user_id`.
 
-        if existing_client:
-            # Use existing credentials
-            client_id = existing_client['client_id']
-            client_secret = existing_client.get('client_secret')
-        elif oauth_config.get('registration_endpoint'):
-            # Step 3: Use Dynamic Client Registration (RFC 7591)
-            try:
-                registered_client = await register_oauth_client_dynamically(
-                    registration_endpoint=oauth_config['registration_endpoint'],
-                    server_id=server_id,
-                    base_url=str(request.base_url).rstrip('/')
-                )
-                client_id = registered_client['client_id']
-                client_secret = registered_client.get('client_secret')
+    Returns:
+        (authorization_url, session_id)
+    """
+    # Look up the server first so we can apply the system-mode admin gate
+    # *before* doing any expensive discovery / registration work and
+    # before leaking the provider URL to non-admin callers.
+    server = await get_mcp_server(server_id)
+    if not server:
+        raise HTTPException(status_code=404, detail="Server not found")
 
-                # Store credentials for future use
-                await store_client_credentials(
-                    server_id=server_id,
-                    client_id=client_id,
-                    client_secret=client_secret,
-                    registration_response=registered_client
-                )
-            except Exception as e:
-                logger.error(f"Dynamic client registration failed: {e}")
-                return error_html(f"Could not register OAuth client: {str(e)}")
-        else:
-            return error_html(
+    if (server.get("oauth_mode") or "user") == "system" and not current_user.is_superadmin:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Only administrators can authenticate a system-mode MCP "
+                "server (its tokens are shared across all users)."
+            ),
+        )
+
+    user_id = current_user.id
+
+    # Step 1: Discover OAuth configuration
+    oauth_config = await discover_oauth_configuration(server["url"])
+    if not oauth_config:
+        raise HTTPException(
+            status_code=400, detail="OAuth not supported by this server"
+        )
+
+    # Step 2: Reuse the shared client registration if we already have one
+    existing_client = await get_stored_client_credentials(server_id)
+    if existing_client:
+        client_id = existing_client["client_id"]
+        client_secret = existing_client.get("client_secret")
+    elif oauth_config.get("registration_endpoint"):
+        # Step 3: Use Dynamic Client Registration (RFC 7591)
+        try:
+            registered_client = await register_oauth_client_dynamically(
+                registration_endpoint=oauth_config["registration_endpoint"],
+                server_id=server_id,
+                base_url=_public_base_url(request),
+            )
+            client_id = registered_client["client_id"]
+            client_secret = registered_client.get("client_secret")
+            await store_client_credentials(
+                server_id=server_id,
+                client_id=client_id,
+                client_secret=client_secret,
+                registration_response=registered_client,
+            )
+        except Exception as e:
+            logger.error(f"Dynamic client registration failed: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Could not register OAuth client: {str(e)}",
+            )
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=(
                 "OAuth provider does not support Dynamic Client Registration. "
                 "Manual configuration required."
-            )
-
-        # Generate CSRF protection state
-        state = secrets.token_urlsafe(32)
-
-        # Generate PKCE parameters
-        code_verifier = secrets.token_urlsafe(32)
-        code_challenge = generate_pkce_challenge(code_verifier)
-
-        # Create session ID
-        session_id = secrets.token_urlsafe(32)
-
-        # Store session data
-        oauth_sessions[session_id] = {
-            'server_id': server_id,
-            'state': state,
-            'code_verifier': code_verifier,
-            'created_at': datetime.now(),
-            'oauth_config': oauth_config,
-            'client_id': client_id,
-            'client_secret': client_secret,
-        }
-
-        # Build OAuth authorization URL
-        base_url = str(request.base_url).rstrip('/')
-        redirect_uri = f"{base_url}/api/mcp-servers/{server_id}/oauth/callback"
-
-        # Build scopes - use what the server supports
-        scopes = oauth_config.get('scopes_supported', [])
-        scope_string = ' '.join(scopes) if scopes else ''
-
-        authorization_url = (
-            f"{oauth_config['authorization_endpoint']}"
-            f"?client_id={client_id}"
-            f"&response_type=code"
-            f"&redirect_uri={redirect_uri}"
-            f"&state={state}"
-            f"&code_challenge={code_challenge}"
-            f"&code_challenge_method=S256"
+            ),
         )
 
-        if scope_string:
-            authorization_url += f"&scope={scope_string}"
+    # CSRF nonce + PKCE
+    csrf = secrets.token_urlsafe(32)
+    code_verifier = secrets.token_urlsafe(32)
+    code_challenge = generate_pkce_challenge(code_verifier)
 
-        logger.info(f"Redirecting to OAuth provider for server {server_id} (Dynamic Registration)")
+    # Sign state so the public /callback can trust it
+    state = _sign_state({
+        "server_id": server_id,
+        "user_id": user_id,
+        "csrf": csrf,
+    })
 
-        # Set session cookie
-        response = RedirectResponse(url=authorization_url, status_code=302)
-        response.set_cookie(
-            key="oauth_session",
-            value=session_id,
-            httponly=True,
-            secure=True,
-            samesite="lax",
-            max_age=600  # 10 minutes
-        )
+    # Cache verifier + client creds for the callback (server-side only)
+    session_id = secrets.token_urlsafe(32)
+    oauth_sessions[session_id] = {
+        "server_id": server_id,
+        "user_id": user_id,
+        "csrf": csrf,
+        "code_verifier": code_verifier,
+        "created_at": datetime.now(),
+        "oauth_config": oauth_config,
+        "client_id": client_id,
+        "client_secret": client_secret,
+    }
 
-        return response
+    # Build redirect_uri off the *public* origin so it matches what was
+    # registered with the IdP (and what the user's browser actually sees).
+    base_url = _public_base_url(request)
+    redirect_uri = f"{base_url}/api/mcp-servers/{server_id}/oauth/callback"
 
-    except Exception as e:
-        logger.error(f"OAuth authorization error: {e}")
-        return error_html(f"Failed to initiate OAuth: {str(e)}")
+    scopes = oauth_config.get("scopes_supported", [])
+    scope_string = " ".join(scopes) if scopes else ""
+
+    # Index the verifier by csrf as well so the callback can find it without
+    # cookies (popup cross-origin returns can drop SameSite=Lax cookies).
+    oauth_sessions[f"csrf:{csrf}"] = session_id
+
+    authorization_url = (
+        f"{oauth_config['authorization_endpoint']}"
+        f"?client_id={client_id}"
+        f"&response_type=code"
+        f"&redirect_uri={redirect_uri}"
+        f"&state={state}"
+        f"&code_challenge={code_challenge}"
+        f"&code_challenge_method=S256"
+    )
+    if scope_string:
+        authorization_url += f"&scope={scope_string}"
+
+    logger.info(
+        f"Built OAuth URL for server={server_id} user={user_id} "
+        f"(dynamic registration)"
+    )
+    return authorization_url, session_id
 
 
 @router.get("/{server_id}/oauth/callback")
@@ -164,52 +303,70 @@ async def mcp_oauth_callback(
 ):
     """
     Handle OAuth callback from provider.
-    Exchange authorization code for access token.
+
+    Public endpoint (the IdP redirects here unauthenticated). The user's
+    identity is recovered from the signed `state` parameter, which was
+    generated server-side in /oauth/start with `current_user.id` baked in.
     """
     import json
 
     try:
-        # Get session from cookie
-        session_id = request.cookies.get("oauth_session")
+        # Recover {server_id, user_id, csrf} from the signed state. This
+        # raises HTTPException on tampering or expiry.
+        decoded = _verify_state(state)
+        if decoded.get("server_id") != server_id:
+            return error_html("Server ID mismatch in state")
+        user_id = decoded.get("user_id")
+        csrf = decoded.get("csrf")
+        if not user_id or not csrf:
+            return error_html("Malformed OAuth state")
+
+        # Resolve the server row up-front so we know whether to store
+        # under '__system__' (system-mode) or under user_id (user-mode).
+        # The IdP-initiated callback is unauthenticated by definition,
+        # but the signed state already proved a server-side /start call
+        # was made by an admin (the gate fires before the state is
+        # signed), so we trust the mode flag here.
+        server_row = await get_mcp_server(server_id)
+        if not server_row:
+            return error_html("Server no longer exists")
+
+        # Find the cached session via the csrf index. This carries the
+        # PKCE verifier + client credentials but NOT the user identity —
+        # the signed state is authoritative for user_id.
+        session_id = oauth_sessions.get(f"csrf:{csrf}")
         if not session_id or session_id not in oauth_sessions:
             return error_html("Invalid or expired session")
-
         session = oauth_sessions[session_id]
 
-        # Validate state (CSRF protection)
-        if state != session['state']:
-            return error_html("State mismatch - possible CSRF attack")
+        # Defense in depth: the cached session must agree with the state.
+        if session.get("user_id") != user_id or session.get("server_id") != server_id:
+            return error_html("Session does not match signed state")
 
-        # Validate server_id matches
-        if server_id != session['server_id']:
-            return error_html("Server ID mismatch")
+        provider_config = session["oauth_config"]
+        client_id = session["client_id"]
+        client_secret = session.get("client_secret")
 
-        provider_config = session['oauth_config']
-
-        # Get client credentials from session
-        client_id = session['client_id']
-        client_secret = session.get('client_secret')
-
-        # Build redirect URI
-        base_url = str(request.base_url).rstrip('/')
+        # Build the same redirect_uri we registered with — IdP token
+        # exchange strict-matches it against the authorize call.
+        base_url = _public_base_url(request)
         redirect_uri = f"{base_url}/api/mcp-servers/{server_id}/oauth/callback"
 
-        # Exchange authorization code for access token
         async with httpx.AsyncClient() as client:
             token_response = await client.post(
-                provider_config['token_endpoint'],
+                provider_config["token_endpoint"],
                 data={
-                    'grant_type': 'authorization_code',
-                    'code': code,
-                    'redirect_uri': redirect_uri,
-                    'client_id': client_id,
-                    'client_secret': client_secret,
-                    'code_verifier': session['code_verifier'],
+                    "grant_type": "authorization_code",
+                    "code": code,
+                    "redirect_uri": redirect_uri,
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                    "code_verifier": session["code_verifier"],
                 },
                 headers={
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                    'Accept': 'application/json',
-                }
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Accept": "application/json",
+                },
             )
 
         if token_response.status_code != 200:
@@ -217,90 +374,122 @@ async def mcp_oauth_callback(
             return error_html(f"Token exchange failed: {token_response.text}")
 
         token_data = token_response.json()
-        access_token = token_data.get('access_token')
-        refresh_token = token_data.get('refresh_token')
-        expires_in = token_data.get('expires_in', 3600)
+        access_token = token_data.get("access_token")
+        refresh_token = token_data.get("refresh_token")
+        expires_in = token_data.get("expires_in", 3600)
 
         if not access_token:
             return error_html("No access token received")
 
-        # Get user info (optional, depends on provider)
+        # Provider-specific user info (Outreach). Best-effort.
         user_info = None
         try:
             async with httpx.AsyncClient() as client:
                 user_response = await client.get(
                     "https://api.outreach.io/api/v2/users/me",
                     headers={
-                        'Authorization': f"Bearer {access_token}",
-                        'Content-Type': 'application/vnd.api+json',
-                    }
+                        "Authorization": f"Bearer {access_token}",
+                        "Content-Type": "application/vnd.api+json",
+                    },
                 )
-
             if user_response.status_code == 200:
                 user_data = user_response.json()
                 user_info = {
-                    'id': user_data['data']['id'],
-                    'email': user_data['data']['attributes'].get('email'),
-                    'name': user_data['data']['attributes'].get('name'),
+                    "id": user_data["data"]["id"],
+                    "email": user_data["data"]["attributes"].get("email"),
+                    "name": user_data["data"]["attributes"].get("name"),
                 }
         except Exception as e:
             logger.warning(f"Failed to get user info: {e}")
 
-        # Store tokens in database
+        # Persist tokens. For user-mode servers we key on the admin/user
+        # who completed the flow (`user_id`); for system-mode servers the
+        # helper redirects storage to the shared `__system__` row, which
+        # all users will read from going forward. The signed `state`
+        # still records who actually authenticated — that's the audit
+        # trail; the row itself is intentionally shared.
+        from api.services.mcp_client import effective_token_user_id
+
+        token_user_id = effective_token_user_id(server_row, user_id)
         await store_oauth_tokens(
             server_id=server_id,
+            user_id=token_user_id,
             access_token=access_token,
             refresh_token=refresh_token,
             expires_in=expires_in,
-            user_info=user_info
+            user_info=user_info,
         )
 
-        # Update server auth config with token and mark as connected
+        # For OAuth servers we no longer mirror the access token into
+        # mcp_servers.auth_config_encrypted — that field was a single
+        # shared bucket. We only update the global metadata so the
+        # admin-facing list shows that *some* user has authenticated.
         from open_notebook.database.repository import repo_execute
-        from api.routers.mcp_servers import encrypt_password
-
-        auth_config = {
-            "type": "bearer",
-            "token": access_token
-        }
-
-        auth_encrypted = encrypt_password(json.dumps(auth_config))
 
         now = datetime.now().isoformat()
-        await repo_execute("""
+        await repo_execute(
+            """
             UPDATE mcp_servers
-            SET auth_config_encrypted = :auth_config,
-                auth_type = :auth_type,
+            SET auth_type = :auth_type,
                 status = :status,
                 last_test_at = :last_test_at,
                 last_test_message = :last_test_message,
                 updated_at = :updated_at
             WHERE id = :id
-        """, {
-            "auth_config": auth_encrypted,
-            "auth_type": "oauth",
-            "status": "connected",
-            "last_test_at": now,
-            "last_test_message": "OAuth authentication successful. Connection ready to use.",
-            "updated_at": now,
-            "id": server_id
-        })
+            """,
+            {
+                "auth_type": "oauth",
+                "status": "connected",
+                "last_test_at": now,
+                "last_test_message": (
+                    "OAuth authentication successful (per-user tokens)."
+                ),
+                "updated_at": now,
+                "id": server_id,
+            },
+        )
 
-        logger.info(f"✅ OAuth successful for server {server_id} - marked as connected")
+        logger.info(
+            f"✅ OAuth successful: server={server_id} user={user_id}"
+        )
 
-        # TODO: Queue background job to discover capabilities
-        # For now, capabilities will be discovered on first use
+        # Eagerly discover tools / resources / prompts so the UI lands on
+        # a "connected" card with real tool counts instead of zeros. This
+        # also seeds `mcp_tools`, which the agent toolset queries on every
+        # session start. Failures here are non-fatal — the user can still
+        # press the Test button to retry, and the next agent session
+        # would also surface the issue.
+        try:
+            from api.services.mcp_client import (
+                discover_and_cache_capabilities,
+                effective_token_user_id as _eff,
+            )
 
-        # Clean up session
-        del oauth_sessions[session_id]
+            # Re-fetch the server row to pick up the newly persisted
+            # auth_type / status fields the UPDATE above just wrote.
+            fresh_row = await get_mcp_server(server_id)
+            if fresh_row:
+                pool_user_id = _eff(fresh_row, user_id)
+                await discover_and_cache_capabilities(
+                    fresh_row, user_id=pool_user_id
+                )
+        except Exception as discover_err:
+            logger.warning(
+                f"Post-OAuth capability discovery failed for {server_id}: "
+                f"{discover_err}"
+            )
 
-        logger.info(f"OAuth complete for server {server_id}")
+        # Clean up session entries
+        oauth_sessions.pop(session_id, None)
+        oauth_sessions.pop(f"csrf:{csrf}", None)
 
-        # Return success HTML with postMessage
         return success_html(user_info)
 
+    except HTTPException:
+        # Already a clean error response — re-raise so FastAPI handles it.
+        raise
     except Exception as e:
-        logger.error(f"OAuth callback error: {e}")
+        logger.error(f"OAuth callback error: {e}", exc_info=True)
         return error_html(f"Authentication failed: {str(e)}")
 
 
@@ -716,33 +905,44 @@ def get_oauth_client_secret(server_id: str) -> str:
 
 async def store_oauth_tokens(
     server_id: str,
+    user_id: str,
     access_token: str,
     refresh_token: str,
     expires_in: int,
-    user_info: dict = None
+    user_info: dict = None,
 ):
-    """Store OAuth tokens in database (encrypted)"""
-    # TODO: Implement encrypted token storage
+    """
+    Store OAuth tokens in the database, encrypted at rest.
+
+    Tokens are scoped to (server_id, user_id) — each user has their own
+    pair, refreshed independently. Tokens are encrypted using the same
+    Fernet helper that `mcp_servers.auth_config_encrypted` uses, so they
+    can be decrypted by `MCPClientFactory.create_client()`.
+    """
     from open_notebook.database.repository import repo_execute
+    from api.routers.mcp_servers import encrypt_password
     import json
 
     expires_at = datetime.now() + timedelta(seconds=expires_in)
 
-    # Encrypt tokens before storing
-    # encrypted_access = encrypt_token(access_token)
-    # encrypted_refresh = encrypt_token(refresh_token)
+    encrypted_access = encrypt_password(access_token) if access_token else None
+    encrypted_refresh = encrypt_password(refresh_token) if refresh_token else None
 
-    await repo_execute("""
+    await repo_execute(
+        """
         INSERT OR REPLACE INTO mcp_oauth_tokens
-        (server_id, access_token, refresh_token, expires_at, user_info, updated_at)
-        VALUES (:server_id, :access_token, :refresh_token, :expires_at, :user_info, :updated_at)
-    """, {
-        "server_id": server_id,
-        "access_token": access_token,  # Should be encrypted
-        "refresh_token": refresh_token,  # Should be encrypted
-        "expires_at": expires_at.isoformat(),
-        "user_info": json.dumps(user_info) if user_info else None,
-        "updated_at": datetime.now().isoformat()
-    })
+        (server_id, user_id, access_token, refresh_token, expires_at, user_info, updated_at)
+        VALUES (:server_id, :user_id, :access_token, :refresh_token, :expires_at, :user_info, :updated_at)
+        """,
+        {
+            "server_id": server_id,
+            "user_id": user_id,
+            "access_token": encrypted_access,
+            "refresh_token": encrypted_refresh,
+            "expires_at": expires_at.isoformat(),
+            "user_info": json.dumps(user_info) if user_info else None,
+            "updated_at": datetime.now().isoformat(),
+        },
+    )
 
-    logger.info(f"Stored OAuth tokens for server {server_id}")
+    logger.info(f"Stored OAuth tokens: server={server_id} user={user_id}")

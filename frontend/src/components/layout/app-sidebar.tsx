@@ -22,6 +22,7 @@ import {
   FileStack,
   Inbox,
   Home,
+  BarChart3,
 } from "lucide-react";
 import { useAuthStore } from "@/lib/stores/auth-store";
 import { useHasPermission, useIsSuperadmin } from "@/components/auth/can";
@@ -41,6 +42,7 @@ const navItems = [
   { href: "/search", label: "Search", icon: Search, resource: "query_prompt", action: "execute" },
   { href: "/graph", label: "Graph", icon: Network, resource: "workspace", action: "read" },
   { href: "/agents", label: "Agents", icon: Users, resource: "agent", action: "read" },
+  { href: "/evaluations", label: "Evaluations", icon: BarChart3, resource: "agent", action: "read" },
   { href: "/orchestration", label: "Orchestration", icon: Wrench, resource: "workflow", action: "execute" },
 ];
 

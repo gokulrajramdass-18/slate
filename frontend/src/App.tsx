@@ -23,6 +23,12 @@ const AgentStandaloneExecutePage = lazy(
 const AgentTeamExecutePage = lazy(
   () => import("@/pages/agents/TeamAgentExecutePage")
 );
+const AgentMemoryInspectorPage = lazy(
+  () => import("@/pages/agents/AgentMemoryInspectorPage")
+);
+
+// Evaluations
+const EvaluationsPage = lazy(() => import("@/pages/evaluations/EvaluationsPage"));
 
 // Approvals
 const ApprovalsPage = lazy(() => import("@/pages/ApprovalsPage"));
@@ -100,6 +106,9 @@ const WorkflowExecutionsPage = lazy(
 );
 const WorkflowExecutionDetailPage = lazy(
   () => import("@/pages/workflows/WorkflowExecutionDetailPage")
+);
+const WorkflowEvaluationsPage = lazy(
+  () => import("@/pages/workflows/WorkflowEvaluationsPage")
 );
 
 // Workspaces
@@ -304,9 +313,16 @@ export default function App() {
           element={<AgentStandaloneExecutePage />}
         />
         <Route
+          path="/agents/standalone/:id/memory"
+          element={<AgentMemoryInspectorPage />}
+        />
+        <Route
           path="/agents/teams/:id/execute"
           element={<AgentTeamExecutePage />}
         />
+
+        {/* Evaluations */}
+        <Route path="/evaluations" element={<EvaluationsPage />} />
 
         <Route path="/approvals" element={<ApprovalsPage />} />
         <Route path="/bookmarks" element={<BookmarksPage />} />
@@ -358,6 +374,10 @@ export default function App() {
         <Route
           path="/workflows/:id/executions/:executionId"
           element={<WorkflowExecutionDetailPage />}
+        />
+        <Route
+          path="/workflows/:id/evaluations"
+          element={<WorkflowEvaluationsPage />}
         />
 
         {/* Workspaces */}

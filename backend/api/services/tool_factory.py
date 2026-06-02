@@ -50,8 +50,8 @@ class ToolFactory:
         # 2. Registry tools (globally enabled)
         registry_tools = await self._get_registry_tools()
 
-        # 3. MCP server tools (connected servers)
-        mcp_tools = await self._get_mcp_tools()
+        # 3. MCP server tools (connected servers, scoped to this user)
+        mcp_tools = await self._get_mcp_tools(user_id)
 
         # 4. Action tools (globally configured actions)
         action_tools = await self._get_action_tools(user_id, session_id)
@@ -98,28 +98,52 @@ class ToolFactory:
     # MCP server tools
     # ------------------------------------------------------------------
 
-    async def _get_mcp_tools(self) -> List[BaseTool]:
+    async def _get_mcp_tools(self, user_id: str) -> List[BaseTool]:
         """
-        Instantiate tools from connected MCP servers.
+        Instantiate MCP tools that `user_id` is authorized to use.
 
-        Fetches all connected MCP servers and creates MCPTool instances
-        from their cached tool discoveries.
+        The LEFT JOIN against `mcp_oauth_tokens` resolves to:
+          - the user's own row for user-mode servers, OR
+          - the shared `__system__` row for system-mode servers.
+
+        If the resolved row is missing, the OAuth server contributes no
+        tools to this user's agent. Non-OAuth servers always contribute.
 
         Returns:
-            List of MCPTool instances from all connected servers
+            List of MCPTool instances bound to this user (the closure
+            captures the *effective* token user_id, so system-mode tools
+            invoke the pool with `__system__`).
         """
         from api.services.mcp_tools import create_mcp_tool
+        from api.services.mcp_client import SYSTEM_OAUTH_USER_ID
 
         tools: List[BaseTool] = []
 
         try:
-            # Get all connected MCP servers
+            # CASE on s.oauth_mode collapses system-mode rows to the
+            # shared sentinel; user-mode rows still match the caller.
             sql = """
-                SELECT * FROM mcp_servers
-                WHERE status = 'connected'
-                ORDER BY name
+                SELECT s.*
+                FROM mcp_servers s
+                LEFT JOIN mcp_oauth_tokens t
+                    ON t.server_id = s.id
+                   AND t.user_id   = CASE
+                                         WHEN COALESCE(s.oauth_mode, 'user') = 'system'
+                                             THEN :system_user_id
+                                         ELSE :user_id
+                                     END
+                WHERE s.status = 'connected'
+                  AND (
+                        s.auth_type IS NULL
+                     OR s.auth_type != 'oauth'
+                     OR t.access_token IS NOT NULL
+                  )
+                ORDER BY s.name
             """
-            servers = await repo_query(sql)
+            servers = await repo_query(
+                sql,
+                {"user_id": user_id, "system_user_id": SYSTEM_OAUTH_USER_ID},
+            )
 
             for server in servers:
                 server_id = server["id"]
@@ -133,13 +157,17 @@ class ToolFactory:
                 """
                 tool_rows = await repo_query(tools_sql, {"server_id": server_id})
 
-                # Create MCPTool instances
+                # Create MCPTool instances bound to this user. For
+                # system-mode servers, `create_mcp_tool` will substitute
+                # the user_id with `__system__` internally so the closure
+                # routes to the shared pooled client.
                 for tool_data in tool_rows:
                     try:
                         tool = create_mcp_tool(
                             server_id=server_id,
                             server_config=server_config,
-                            tool_data=dict(tool_data)
+                            tool_data=dict(tool_data),
+                            user_id=user_id,
                         )
                         tools.append(tool)
                     except Exception as exc:
@@ -710,8 +738,14 @@ async def create_tools_for_team(
         tools.extend(registry_tools)
         logger.info(f"No agent tools configured, added all {len(registry_tools)} registry tools")
 
-    # Get MCP tools
-    mcp_tools = await factory._get_mcp_tools()
+    # Get MCP tools — scoped to the team's owner so per-user OAuth tokens
+    # are honored. Falls back to "system" for legacy teams without a created_by.
+    team_owner_rows = await repo_query(
+        "SELECT created_by FROM agent_teams WHERE id = :team_id",
+        {"team_id": team_id},
+    )
+    user_id = (team_owner_rows[0].get("created_by") if team_owner_rows else None) or "system"
+    mcp_tools = await factory._get_mcp_tools(user_id)
     tools.extend(mcp_tools)
 
     # Get source-based tools from agent-configured sources

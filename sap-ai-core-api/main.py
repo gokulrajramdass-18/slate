@@ -110,12 +110,19 @@ async def chat(request: ChatRequest):
     """
     from gen_ai_hub.proxy.native.openai import OpenAI
 
-    default_model = "gpt-5.4"
+    default_model = "gpt-5-mini"
 
     print(f"[Chat] deployment={request.deployment_id} model_requested={request.model_name} -> using {default_model}")
     print(f"[Chat] messages={len(request.messages)} tools={len(request.tools) if request.tools else 0} stream={request.stream}")
 
-    client = OpenAI()
+    # max_retries=0 disables the OpenAI SDK's internal retry-on-5xx
+    # behaviour. The default is 2, which means a single broken
+    # upstream (e.g. a wedged gpt-5.4 deployment) silently turns one
+    # /chat call into ~3 attempts back-to-back, blocking the request
+    # for 30-60s with no visibility. We let the *caller* (slate
+    # backend) decide how to handle 5xx: retry once if it's worth it,
+    # surface to the user otherwise. One layer of retries is enough.
+    client = OpenAI(max_retries=0)
 
     create_kwargs: Dict[str, Any] = {
         "model": default_model,

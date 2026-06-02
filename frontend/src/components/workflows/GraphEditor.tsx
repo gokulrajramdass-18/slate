@@ -46,21 +46,67 @@ export function getCurrentGraphState() {
 }
 
 // ============================================================================
+// Per-type default sizes (used as fallback before xyflow has measured a node)
+// ============================================================================
+
+const NODE_DEFAULT_SIZE: Record<string, { width: number; height: number }> = {
+  input: { width: 220, height: 70 },
+  output: { width: 220, height: 70 },
+  llm: { width: 240, height: 130 },
+  tool: { width: 220, height: 110 },
+  agent: { width: 240, height: 130 },
+  conditional: { width: 140, height: 140 },
+  notebook_generator: { width: 240, height: 130 },
+  microsite_generator: { width: 240, height: 150 },
+  human_approval: { width: 220, height: 150 },
+  workspace: { width: 220, height: 120 },
+  template: { width: 220, height: 120 },
+  delay: { width: 220, height: 110 },
+  webhook: { width: 220, height: 130 },
+  email: { width: 220, height: 130 },
+  api: { width: 220, height: 130 },
+  hana_table: { width: 220, height: 130 },
+  snapshot: { width: 220, height: 130 },
+  compare: { width: 220, height: 130 },
+  foreach: { width: 240, height: 150 },
+  jq: { width: 220, height: 110 },
+  notify: { width: 220, height: 130 },
+};
+const FALLBACK_SIZE = { width: 220, height: 120 };
+
+function getNodeSize(node: Node): { width: number; height: number } {
+  const m = (node as any).measured;
+  if (m?.width && m?.height) return { width: m.width, height: m.height };
+  return NODE_DEFAULT_SIZE[node.type ?? ''] ?? FALLBACK_SIZE;
+}
+
+// ============================================================================
 // Auto Layout Function using Dagre
 // ============================================================================
 
-const getLayoutedElements = (nodes: Node[], edges: Edge[], direction = 'TB') => {
+const getLayoutedElements = (nodes: Node[], edges: Edge[], direction = 'LR') => {
   const dagreGraph = new dagre.graphlib.Graph();
   dagreGraph.setDefaultEdgeLabel(() => ({}));
 
-  const nodeWidth = 250;
-  const nodeHeight = 150;
-
+  // Tighter spacing for LR (reads as a horizontal chain); a touch more breathing
+  // room for TB. Both keep marginx/marginy small so fitView frames the graph well.
   const isHorizontal = direction === 'LR';
-  dagreGraph.setGraph({ rankdir: direction, nodesep: 100, ranksep: 150 });
+  dagreGraph.setGraph({
+    rankdir: direction,
+    nodesep: isHorizontal ? 40 : 80,
+    ranksep: isHorizontal ? 90 : 100,
+    marginx: 20,
+    marginy: 20,
+  });
 
+  // Capture the size used per-node so the post-layout position math uses the same
+  // dimensions Dagre laid out against. Reading getNodeSize twice would be fine
+  // (it's pure), but caching keeps it explicit.
+  const sizes = new Map<string, { width: number; height: number }>();
   nodes.forEach((node) => {
-    dagreGraph.setNode(node.id, { width: nodeWidth, height: nodeHeight });
+    const size = getNodeSize(node);
+    sizes.set(node.id, size);
+    dagreGraph.setNode(node.id, size);
   });
 
   edges.forEach((edge) => {
@@ -71,18 +117,128 @@ const getLayoutedElements = (nodes: Node[], edges: Edge[], direction = 'TB') => 
 
   const layoutedNodes = nodes.map((node) => {
     const nodeWithPosition = dagreGraph.node(node.id);
+    const size = sizes.get(node.id) ?? FALLBACK_SIZE;
 
     return {
       ...node,
       position: {
-        x: nodeWithPosition.x - nodeWidth / 2,
-        y: nodeWithPosition.y - nodeHeight / 2,
+        x: nodeWithPosition.x - size.width / 2,
+        y: nodeWithPosition.y - size.height / 2,
       },
     };
   });
 
   return { nodes: layoutedNodes, edges };
 };
+
+// ============================================================================
+// Layout helpers — single entry point shared by on-load, on-add, and the manual
+// "Auto Layout" button.
+// ============================================================================
+
+function layoutGraph(
+  nodes: Node[],
+  edges: Edge[],
+  opts: { direction?: 'LR' | 'TB' } = {},
+) {
+  return getLayoutedElements(nodes, edges, opts.direction ?? 'LR');
+}
+
+// Heuristic: are these node positions worth keeping, or do they look like the
+// random-cascade fingerprint we want to overwrite on first load?
+function isUntidy(nodes: Node[]): boolean {
+  if (nodes.length === 0) return false;
+
+  // Any node missing a position, or pinned at origin → untidy.
+  for (const n of nodes) {
+    const p = n.position as any;
+    if (!p || (p.x === 0 && p.y === 0)) return true;
+  }
+
+  // All nodes share the same position → degenerate.
+  const first = nodes[0].position;
+  if (nodes.every((n) => n.position.x === first.x && n.position.y === first.y)) {
+    return true;
+  }
+
+  // Random-cascade fingerprint: ≥4 nodes, every position inside the
+  // [100,500]×[100,500] box that the old random placement produced.
+  if (nodes.length >= 4) {
+    const allInRandomBox = nodes.every(
+      (n) =>
+        n.position.x >= 100 &&
+        n.position.x <= 500 &&
+        n.position.y >= 100 &&
+        n.position.y <= 500,
+    );
+    if (allInRandomBox) return true;
+  }
+
+  return false;
+}
+
+// Choose the upstream node a newly-added node should hang off of.
+// Order: explicit selection → unique terminal (no outgoing edges) →
+// most-recently-added (parsed from the `${type}-${Date.now()}` id) → null.
+function pickAnchor(
+  nodes: Node[],
+  edges: Edge[],
+  selectedId: string | null,
+): Node | null {
+  if (nodes.length === 0) return null;
+
+  if (selectedId) {
+    const selected = nodes.find((n) => n.id === selectedId);
+    if (selected) return selected;
+  }
+
+  const sources = new Set(edges.map((e) => e.source));
+  const terminals = nodes.filter((n) => !sources.has(n.id));
+  if (terminals.length === 1) return terminals[0];
+
+  // Fall back to most recent by trailing timestamp in id.
+  let best: Node | null = null;
+  let bestTs = -Infinity;
+  for (const n of nodes) {
+    const m = /-(\d+)$/.exec(n.id);
+    const ts = m ? Number(m[1]) : 0;
+    if (ts > bestTs) {
+      bestTs = ts;
+      best = n;
+    }
+  }
+  return best;
+}
+
+// Build a connecting edge from anchor → newNode, picking the right sourceHandle
+// for branching node types. Returns null when no edge should be created.
+function synthEdge(anchor: Node, newNode: Node): Edge | null {
+  // input nodes are always graph entry points — never wire something upstream of them.
+  if (newNode.type === 'input') return null;
+
+  let sourceHandle: string | undefined;
+  switch (anchor.type) {
+    case 'conditional':
+      sourceHandle = 'true';
+      break;
+    case 'human_approval':
+      sourceHandle = 'approved';
+      break;
+    case 'foreach':
+      sourceHandle = 'each';
+      break;
+    default:
+      sourceHandle = undefined;
+  }
+
+  const edge: Edge = {
+    id: `edge-${anchor.id}-${newNode.id}`,
+    source: anchor.id,
+    target: newNode.id,
+  };
+  if (sourceHandle) (edge as any).sourceHandle = sourceHandle;
+  return edge;
+}
 
 // ============================================================================
 // Graph Editor Component
@@ -152,11 +308,33 @@ export function GraphEditor({
 
     if (storeNodesStr !== currentNodesStr || storeEdgesStr !== currentEdgesStr) {
       console.log('[GraphEditor] Loading nodes/edges from store');
-      setNodesRef.current(storeState.nodes);
-      setEdgesRef.current(storeState.edges);
+
+      // If the loaded positions look like the old random-cascade pattern
+      // (or are otherwise degenerate), tidy them up before painting. We
+      // also push the tidied positions back into the store so the next
+      // save persists the new layout. A user-arranged graph passes through
+      // unchanged because isUntidy() returns false.
+      let nextNodes = storeState.nodes;
+      let nextEdges = storeState.edges;
+      if (isUntidy(storeState.nodes)) {
+        console.log('[GraphEditor] Loaded positions look untidy — running auto-layout');
+        const laid = layoutGraph(storeState.nodes, storeState.edges);
+        nextNodes = laid.nodes;
+        nextEdges = laid.edges;
+        // Mirror the tidied positions back into the store. The store-sync
+        // effect won't re-fire because the id-signature comparator above
+        // only watches IDs and edge endpoints, not positions.
+        requestAnimationFrame(() => {
+          useGraphStore.getState().setNodes(nextNodes);
+          useGraphStore.getState().setEdges(nextEdges);
+        });
+      }
+
+      setNodesRef.current(nextNodes);
+      setEdgesRef.current(nextEdges);
 
       // Fit view after nodes are loaded
-      if (reactFlowInstance && storeState.nodes.length > 0) {
+      if (reactFlowInstance && nextNodes.length > 0) {
         setTimeout(() => {
           reactFlowInstance.fitView({ padding: 0.2, duration: 200 });
         }, 100);
@@ -196,16 +374,26 @@ export function GraphEditor({
     useGraphStore.getState().setSelectedNode(null);
   }, []);
 
-  // Add new node
+  // Add new node — places it downstream of the selected (or last) node, draws
+  // an auto-connecting edge with the right sourceHandle for branching anchors,
+  // then re-runs layout so the canvas stays tidy. The placeholder position
+  // matters only as a safety net; layoutGraph immediately overwrites it.
   const handleAddNode = useCallback(
     (type: NodeData['type']) => {
+      const selectedId = useGraphStore.getState().selectedNodeId;
+      const anchor = pickAnchor(nodes, edges, selectedId);
+
+      const placeholder = anchor
+        ? {
+            x: anchor.position.x + getNodeSize(anchor).width + 80,
+            y: anchor.position.y,
+          }
+        : { x: 100, y: 100 };
+
       const newNode: any = {
         id: `${type}-${Date.now()}`,
         type,
-        position: {
-          x: Math.random() * 400 + 100,
-          y: Math.random() * 400 + 100,
-        },
+        position: placeholder,
         data: {
           label: `New ${type} node`,
           type,
@@ -213,25 +401,37 @@ export function GraphEditor({
         },
       };
 
-      // Update React Flow state
-      setNodes((nds) => {
-        const updatedNodes = [...nds, newNode];
-        // Update Zustand store asynchronously to avoid setState during render
-        requestAnimationFrame(() => {
-          useGraphStore.getState().setNodes(updatedNodes);
-        });
-        return updatedNodes;
+      const maybeEdge = anchor ? synthEdge(anchor, newNode) : null;
+      const nextNodes = [...nodes, newNode];
+      const nextEdges = maybeEdge ? [...edges, maybeEdge] : edges;
+
+      const { nodes: laidNodes, edges: laidEdges } = layoutGraph(nextNodes, nextEdges);
+
+      setNodes(laidNodes);
+      setEdges(laidEdges);
+
+      // Mirror into the store asynchronously so we don't trigger setState during render.
+      requestAnimationFrame(() => {
+        useGraphStore.getState().setNodes(laidNodes);
+        useGraphStore.getState().setEdges(laidEdges);
       });
+
+      // Fit view so the new node is visible.
+      if (reactFlowInstance) {
+        setTimeout(() => {
+          reactFlowInstance.fitView({ padding: 0.2, duration: 200 });
+        }, 50);
+      }
     },
-    [setNodes]
+    [nodes, edges, setNodes, setEdges, reactFlowInstance]
   );
 
   // Auto-layout nodes
   const handleAutoLayout = useCallback(() => {
-    const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(
+    const { nodes: layoutedNodes, edges: layoutedEdges } = layoutGraph(
       nodes,
       edges,
-      'TB' // Top to Bottom layout
+      { direction: 'LR' },
     );
 
     setNodes([...layoutedNodes]);

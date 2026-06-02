@@ -11,6 +11,19 @@ import type {
   ExecutionEvaluations,
 } from "@/lib/types";
 
+// Emitted when an agent has paused mid-run with a clarifying question for the
+// user. The UI shows a popup; the answer is submitted via answerClarification.
+export interface AwaitingInputEvent {
+  execution_id: string;
+  team_id: string;
+  clarification_id: string;
+  question: string;
+  sender_agent_id?: string;
+  sender_name?: string;
+  sender_role?: string;
+  pattern?: string;
+}
+
 export const agentsApi = {
   // ========================================================================
   // TEAMS
@@ -85,7 +98,8 @@ export const agentsApi = {
     onMessage?: (message: AgentMessage) => void,
     onTaskUpdate?: (task: AgentTask) => void,
     onComplete?: (result: TeamExecution) => void,
-    onError?: (error: string) => void
+    onError?: (error: string) => void,
+    onAwaitingInput?: (info: AwaitingInputEvent) => void,
   ): Promise<TeamExecution | void> => {
     if (onStep) {
       // SSE streaming mode - use /execute/stream endpoint
@@ -218,6 +232,10 @@ export const agentsApi = {
                   console.log("[SSE] Execution complete:", data);
                   onComplete?.(data);
                   return data;
+                case "awaiting_user_input":
+                  console.log("[SSE] Execution paused, awaiting user input:", data);
+                  onAwaitingInput?.(data);
+                  break;
                 case "error":
                   console.error("[SSE] Execution error:", data);
                   onError?.(data.error || "Execution failed");
@@ -243,6 +261,93 @@ export const agentsApi = {
       request
     );
     return data;
+  },
+
+  // Submit an answer to a paused clarification and re-attach to the SSE
+  // stream the resume endpoint emits. Same callback shape as executeTeam so
+  // the UI can hand its existing handlers straight to this method.
+  answerClarification: async (
+    teamId: string,
+    executionId: string,
+    clarificationId: string,
+    answer: string,
+    callbacks: {
+      onStep?: (step: any) => void;
+      onMessage?: (m: AgentMessage) => void;
+      onTaskUpdate?: (t: AgentTask) => void;
+      onComplete?: (r: TeamExecution) => void;
+      onError?: (err: string) => void;
+      onAwaitingInput?: (info: AwaitingInputEvent) => void;
+    } = {},
+  ): Promise<void> => {
+    const baseURL = (apiClient.defaults.baseURL || "").replace(/\/$/, "");
+    const url = `${baseURL}/agents/teams/${teamId}/executions/${executionId}/clarifications/${clarificationId}/answer`;
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      Accept: "text/event-stream",
+    };
+    const token = (apiClient.defaults.headers.common as any)?.Authorization;
+    if (token) headers.Authorization = String(token);
+
+    const response = await fetch(url, {
+      method: "POST",
+      credentials: "include",
+      headers,
+      body: JSON.stringify({ answer }),
+    });
+    if (!response.ok || !response.body) {
+      const text = await response.text().catch(() => "");
+      callbacks.onError?.(text || `Resume failed: HTTP ${response.status}`);
+      return;
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let currentEvent = "";
+    let dataBuffer = "";
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith("event:")) {
+          currentEvent = trimmed.slice(6).trim();
+          dataBuffer = "";
+        } else if (trimmed.startsWith("data:")) {
+          dataBuffer += trimmed.slice(5).trim();
+        } else if (trimmed === "" && dataBuffer && currentEvent) {
+          try {
+            const data = JSON.parse(dataBuffer);
+            switch (currentEvent) {
+              case "message":
+                callbacks.onMessage?.(data);
+                break;
+              case "task_update":
+                callbacks.onTaskUpdate?.(data);
+                break;
+              case "awaiting_user_input":
+                callbacks.onAwaitingInput?.(data);
+                break;
+              case "done":
+                callbacks.onComplete?.(data);
+                return;
+              case "error":
+                callbacks.onError?.(data.error || "Resume failed");
+                return;
+            }
+            currentEvent = "";
+            dataBuffer = "";
+          } catch {
+            dataBuffer = "";
+          }
+        }
+      }
+    }
   },
 
   // ========================================================================

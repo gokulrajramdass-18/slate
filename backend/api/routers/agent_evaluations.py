@@ -43,6 +43,8 @@ async def create_evaluation_dataset(dataset: EvaluationDatasetCreate):
             name=dataset.name,
             description=dataset.description,
             agent_id=dataset.agent_id,
+            workflow_id=dataset.workflow_id,
+            target_type=dataset.target_type,
             criteria=dataset.criteria,
             scoring_method=dataset.scoring_method
         )
@@ -63,6 +65,8 @@ async def upload_evaluation_dataset(
     name: str = Form(...),
     description: Optional[str] = Form(None),
     agent_id: Optional[str] = Form(None),
+    workflow_id: Optional[str] = Form(None),
+    target_type: str = Form("agent"),
     criteria: Optional[str] = Form(None),  # JSON array
     scoring_method: str = Form("llm_judge"),
     file: UploadFile = File(...)
@@ -109,6 +113,8 @@ async def upload_evaluation_dataset(
             name=name,
             description=description,
             agent_id=agent_id,
+            workflow_id=workflow_id,
+            target_type=target_type,
             criteria=criteria_list,
             scoring_method=scoring_method
         )
@@ -242,6 +248,8 @@ async def create_evaluation_run(run: EvaluationRunCreate):
         run_id = await service.create_evaluation_run(
             dataset_id=run.dataset_id,
             agent_id=run.agent_id,
+            workflow_id=run.workflow_id,
+            target_type=run.target_type,
             run_name=run.run_name,
             model_override=run.model_override,
             config_override=run.config_override

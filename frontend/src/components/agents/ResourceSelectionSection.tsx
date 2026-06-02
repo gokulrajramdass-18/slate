@@ -16,13 +16,17 @@ interface ResourceItem {
 }
 
 interface ResourceSelectionSectionProps {
-  type: "tools" | "datasources" | "skills";
+  type: "tools" | "datasources" | "skills" | "mcp";
   items: ResourceItem[];
   selectedIds: string[];
   onSelect: (id: string) => void;
   onDeselect: (id: string) => void;
   loading?: boolean;
   error?: Error | null;
+  /** Hide the header row — useful when the surrounding container (e.g. a tab label) already shows the title and count. */
+  hideHeader?: boolean;
+  /** Override the scroll-area height. Defaults to 240px to preserve current behavior. */
+  listHeight?: number;
 }
 
 const TYPE_CONFIG = {
@@ -44,6 +48,12 @@ const TYPE_CONFIG = {
     emptyMessage: "No skills available",
     noResultsMessage: "No skills found",
   },
+  mcp: {
+    title: "MCP Servers",
+    searchPlaceholder: "Search MCP servers...",
+    emptyMessage: "No MCP servers available",
+    noResultsMessage: "No MCP servers found",
+  },
 };
 
 export function ResourceSelectionSection({
@@ -54,6 +64,8 @@ export function ResourceSelectionSection({
   onDeselect,
   loading = false,
   error = null,
+  hideHeader = false,
+  listHeight = 240,
 }: ResourceSelectionSectionProps) {
   const [searchQuery, setSearchQuery] = useState("");
 
@@ -78,15 +90,17 @@ export function ResourceSelectionSection({
 
   return (
     <div className="space-y-3">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <Label className="text-sm font-medium">
-          {config.title}{" "}
-          <span className="text-muted-foreground">
-            ({selectedIds.length} selected)
-          </span>
-        </Label>
-      </div>
+      {/* Header (hidden when caller already renders one) */}
+      {!hideHeader && (
+        <div className="flex items-center justify-between">
+          <Label className="text-sm font-medium">
+            {config.title}{" "}
+            <span className="text-muted-foreground">
+              ({selectedIds.length} selected)
+            </span>
+          </Label>
+        </div>
+      )}
 
       {/* Search */}
       <div className="relative">
@@ -101,7 +115,7 @@ export function ResourceSelectionSection({
 
       {/* List */}
       <div className="border rounded-lg">
-        <ScrollArea className="h-[240px]">
+        <ScrollArea style={{ height: listHeight }}>
           <div className="p-2">
             {loading ? (
               <div className="flex items-center justify-center h-32">

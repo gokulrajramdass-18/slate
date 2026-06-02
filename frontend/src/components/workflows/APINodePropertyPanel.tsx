@@ -271,6 +271,100 @@ export function APINodePropertyPanel({ selectedNode, handleUpdate }: APINodeProp
         </div>
       </div>
 
+      {/* Batching — split a single query param's list value into N parallel
+          requests. Use this to avoid HTTP 414 (URI too long) on bulk-by-id
+          calls like Outreach's filter[customId]=... */}
+      {selectedConnection && (
+        <>
+          <div className="h-px bg-border" />
+
+          <div className="space-y-3">
+            <div className="space-y-1">
+              <Label className="text-sm font-medium">Batching</Label>
+              <p className="text-xs text-muted-foreground">
+                When set, splits the named query param's value into chunks and
+                fans out parallel requests, then concatenates the JSONPath
+                results. Use to avoid HTTP 414 (URI Too Long) on large ID lists.
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <Label className="text-xs">Batch query param</Label>
+              <Input
+                value={selectedNode.data.config.api_batch_param || ""}
+                onChange={(e) =>
+                  handleUpdate("api_batch_param", e.target.value || null)
+                }
+                placeholder="e.g. filter[customId]"
+                className="text-xs h-8 font-mono"
+              />
+              <p className="text-xs text-muted-foreground">
+                Leave empty to disable batching.
+              </p>
+            </div>
+
+            {selectedNode.data.config.api_batch_param && (
+              <div className="space-y-3 pl-6 border-l-2 border-primary/20">
+                <div className="space-y-2">
+                  <Label className="text-xs">Batch size</Label>
+                  <Input
+                    type="number"
+                    min={1}
+                    value={selectedNode.data.config.api_batch_size ?? 50}
+                    onChange={(e) =>
+                      handleUpdate(
+                        "api_batch_size",
+                        Math.max(1, parseInt(e.target.value, 10) || 50),
+                      )
+                    }
+                    placeholder="50"
+                    className="text-xs h-8"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Items per request.
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <Label className="text-xs">Separator</Label>
+                  <Input
+                    value={selectedNode.data.config.api_batch_separator ?? ","}
+                    onChange={(e) =>
+                      handleUpdate("api_batch_separator", e.target.value || ",")
+                    }
+                    placeholder=","
+                    className="text-xs h-8 font-mono"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    How items are joined inside each batch's value.
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <Label className="text-xs">Concurrency</Label>
+                  <Input
+                    type="number"
+                    min={1}
+                    value={selectedNode.data.config.api_batch_concurrency ?? 4}
+                    onChange={(e) =>
+                      handleUpdate(
+                        "api_batch_concurrency",
+                        Math.max(1, parseInt(e.target.value, 10) || 4),
+                      )
+                    }
+                    placeholder="4"
+                    className="text-xs h-8"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Maximum parallel requests during fan-out.
+                  </p>
+                </div>
+              </div>
+            )}
+          </div>
+        </>
+      )}
+
       {/* Help Text */}
       {!selectedConnection && (
         <div className="rounded-lg border border-blue-200 bg-blue-50 dark:border-blue-900 dark:bg-blue-950 p-3">

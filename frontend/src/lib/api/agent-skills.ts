@@ -64,9 +64,14 @@ export const agentSkillsApi = {
     if (category) params.append("category", category);
     if (role) params.append("role", role);
 
-    const response = await apiClient.get(
-      `/agent-skills?${params.toString()}`
-    );
+    // Trailing slash is deliberate: the backend route is mounted at
+    // `/api/agent-skills/`, and without it FastAPI replies 307 →
+    // `/api/agent-skills/`. Behind XSUAA the AppRouter turns that
+    // redirect into a re-auth bounce, surfacing as "Error loading
+    // skills" in the UI. Calling the canonical URL avoids the round-trip.
+    const qs = params.toString();
+    const url = qs ? `/agent-skills/?${qs}` : `/agent-skills/`;
+    const response = await apiClient.get(url);
     // Backend returns {skills: [...]} not just [...]
     return response.data.skills || response.data || [];
   },
@@ -76,6 +81,21 @@ export const agentSkillsApi = {
    */
   async createSkill(skill: Partial<Skill> & { handler_module: string; handler_function: string }): Promise<Skill> {
     const response = await apiClient.post("/agent-skills", skill);
+    return response.data;
+  },
+
+  /**
+   * Update an existing skill.
+   *
+   * The backend rejects edits to `skill_type` and `definition` for
+   * built-in skills (their backing code lives in the in-process
+   * registry, so DB edits to those fields would only create drift).
+   * All other fields — name, description, category, tags, roles,
+   * enabled, input/output schema, metadata — are editable on every
+   * skill, including builtins.
+   */
+  async updateSkill(skillId: string, payload: Partial<Skill>): Promise<Skill> {
+    const response = await apiClient.put(`/agent-skills/${skillId}`, payload);
     return response.data;
   },
 

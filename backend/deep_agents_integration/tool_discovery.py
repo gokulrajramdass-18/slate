@@ -71,8 +71,10 @@ class ToolDiscoveryPipeline:
             all_tools.extend(source_tools)
             logger.info(f"[ToolDiscovery] Discovered {len(source_tools)} source-based tools")
 
-        # 3. Discover from MCP Servers
+        # 3. Discover from MCP Servers (per-user — only servers this user
+        #    has authenticated against will yield tools)
         mcp_tools = await self._discover_mcp_tools(
+            user_id=user_id,
             enabled_tool_ids=enabled_tool_ids,
             disabled_tool_ids=disabled_tool_ids
         )
@@ -157,16 +159,23 @@ class ToolDiscoveryPipeline:
 
     async def _discover_mcp_tools(
         self,
+        user_id: Optional[str] = None,
         enabled_tool_ids: Optional[List[str]] = None,
         disabled_tool_ids: Optional[List[str]] = None
     ) -> List[BaseTool]:
-        """Discover tools from MCP servers"""
+        """Discover tools from MCP servers, scoped to this user's auth state."""
         try:
             if not self._tool_factory:
                 from api.services.tool_factory import get_tool_factory
                 self._tool_factory = get_tool_factory()
 
-            return await self._tool_factory._get_mcp_tools()
+            # Without a user_id we can't load OAuth tokens, so MCP tools are
+            # silently empty. This is the correct behavior for unauthenticated
+            # contexts (e.g. system jobs that don't have a calling user).
+            if not user_id:
+                return []
+
+            return await self._tool_factory._get_mcp_tools(user_id)
 
         except Exception as e:
             logger.warning(f"[ToolDiscovery] Failed to discover MCP tools: {e}")

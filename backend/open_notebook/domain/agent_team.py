@@ -37,6 +37,27 @@ class AgentTeam(ObjectModel):
     error: Optional[str] = None
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
+    created_by: Optional[str] = None
+
+    # Multi-agent collaboration pattern. One of:
+    # orchestrator_worker | sequential | parallel | review_critique | router | group_chat
+    # See backend/open_notebook/agents/patterns/ for executor implementations.
+    orchestration_pattern: Optional[str] = "orchestrator_worker"
+    # JSON-encoded per-pattern config (orchestrator_agent_id, max_rounds, ...).
+    pattern_config: Optional[str] = None
+
+    def get_pattern_config(self) -> Dict[str, Any]:
+        """Parse pattern_config JSON into a dict."""
+        if not self.pattern_config:
+            return {}
+        try:
+            return json.loads(self.pattern_config)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+
+    def set_pattern_config(self, config: Optional[Dict[str, Any]]) -> None:
+        """Set pattern_config from a dict."""
+        self.pattern_config = json.dumps(config) if config else None
 
     def get_config(self) -> Dict[str, Any]:
         """Parse config JSON into a dict."""
@@ -154,10 +175,13 @@ class AgentInstance(ObjectModel):
     name: str
     status: str = "idle"
     model_name: Optional[str] = None
+    model_override: Optional[str] = None
     system_prompt: Optional[str] = None
     config: Optional[str] = None
     result: Optional[str] = None
     error: Optional[str] = None
+    tool_ids: Optional[str] = None
+    last_active: Optional[str] = None
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
 
@@ -165,6 +189,12 @@ class AgentInstance(ObjectModel):
     is_remote: bool = False
     remote_agent_id: Optional[str] = None
     a2a_endpoint_url: Optional[str] = None
+
+    # Reference to the reusable standalone agent this instance was hydrated from
+    # (introduced by migration 119). Nullable for legacy rows.
+    standalone_agent_id: Optional[str] = None
+    # Position in the team — drives sequential pattern hand-off order.
+    order_index: Optional[int] = 0
 
     def get_config(self) -> Dict[str, Any]:
         """Parse config JSON."""

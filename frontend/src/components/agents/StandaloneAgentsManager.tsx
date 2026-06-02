@@ -6,13 +6,16 @@
 
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/query-client";
 import * as standaloneAgentsApi from "@/lib/api/standalone-agents";
 import { toolsApi } from "@/lib/api/tools";
 import { sourcesApi } from "@/lib/api/sources";
+import { mcpServersApi } from "@/lib/api/mcp-servers";
+import { promptsApi } from "@/lib/api/agent-prompts";
 import { agentSkillsApi, type Skill } from "@/lib/api/agent-skills";
+import { evaluationApi, type EvaluationSummary } from "@/lib/api/evaluations";
 import type { StandaloneAgent, StandaloneAgentCreate, AgentRole } from "@/lib/types";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -34,8 +37,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Switch } from "@/components/ui/switch";
+import { Slider } from "@/components/ui/slider";
+import { Separator } from "@/components/ui/separator";
 import { AgentModelSelector } from "@/components/agents/AgentModelSelector";
 import { ResourceSelectionSection } from "@/components/agents/ResourceSelectionSection";
+import { MemoryConfigSection } from "@/components/agents/MemoryConfigSection";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -46,7 +54,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Bot, Plus, Trash2, Loader2, Activity, Brain, Search as SearchIcon, FileText, Zap, Pencil, Users, Database, Play, CheckCircle2, AlertCircle } from "lucide-react";
+import { Bot, Plus, Trash2, Loader2, Activity, Brain, Search as SearchIcon, FileText, Zap, Pencil, Users, Database, Play, CheckCircle2, AlertCircle, BarChart3, TrendingUp } from "lucide-react";
 import { toast } from "sonner";
 import { useRouter } from "@/lib/routing/navigation";
 
@@ -80,18 +88,37 @@ export function StandaloneAgentsManager() {
   const [editingAgentId, setEditingAgentId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState<string>("");
 
+  // Agentic memory configuration. Persisted under config.memory and
+  // round-tripped via the agent create/update payload.
+  const DEFAULT_MEMORY_CONFIG = {
+    short_term_enabled: true,
+    episodic_enabled: true,
+    episodic_retention_days: 90,
+    episodic_max_entries: 500,
+    semantic_enabled: true,
+    semantic_max_facts: 200,
+    procedural_enabled: false,
+    procedural_min_attempts: 3,
+    procedural_min_success_rate: 0.6,
+  };
+
   // Form state
   const [formData, setFormData] = useState({
     name: "",
     description: "",
     role: "planner" as AgentRole | "custom",
+    custom_role_name: "",
     system_prompt: "",
     model_name: "",
     tool_ids: [] as string[],
     mcp_server_ids: [] as string[],
     data_source_ids: [] as string[],
     skill_ids: [] as string[],
+    memory: { ...DEFAULT_MEMORY_CONFIG },
   });
+  // Tracks whether the user has manually edited the system prompt;
+  // we only auto-fill from the role template while it is still untouched.
+  const [systemPromptDirty, setSystemPromptDirty] = useState(false);
 
   // Queries
   const { data: agentsData, isLoading } = useQuery({
@@ -109,6 +136,11 @@ export function StandaloneAgentsManager() {
     queryFn: () => sourcesApi.list(),
   });
 
+  const { data: mcpServersData } = useQuery({
+    queryKey: ["mcp-servers"],
+    queryFn: () => mcpServersApi.list(),
+  });
+
   const { data: skillsData, isLoading: skillsLoading, error: skillsError } = useQuery({
     queryKey: ["agent-skills"],
     queryFn: () => agentSkillsApi.listSkills(),
@@ -117,6 +149,7 @@ export function StandaloneAgentsManager() {
   const agents = agentsData?.agents || [];
   const tools = toolsData || [];
   const sources = sourcesData || [];
+  const mcpServers = mcpServersData || [];
   const skills = Array.isArray(skillsData) ? skillsData : [];
 
   // Filter agents based on search query
@@ -158,6 +191,31 @@ export function StandaloneAgentsManager() {
       );
 
       return counts;
+    },
+    enabled: agents.length > 0,
+  });
+
+  // Get evaluation summary for each agent (pass-rate, run count) for the inline badge.
+  // Fan-out matches the executionCounts pattern above; missing/errored summaries are
+  // silently treated as "no runs yet".
+  const agentEvaluationSummaries = useQuery({
+    queryKey: ["standalone-agents-evaluation-summaries", agents.map(a => a.id)],
+    queryFn: async () => {
+      if (!agents || agents.length === 0) return {};
+
+      const summaries: Record<string, EvaluationSummary> = {};
+
+      await Promise.all(
+        agents.map(async (agent) => {
+          try {
+            summaries[agent.id] = await evaluationApi.getAgentSummary(agent.id);
+          } catch {
+            // Treat as no runs.
+          }
+        })
+      );
+
+      return summaries;
     },
     enabled: agents.length > 0,
   });
@@ -208,15 +266,80 @@ export function StandaloneAgentsManager() {
       name: "",
       description: "",
       role: "planner",
+      custom_role_name: "",
       system_prompt: "",
       model_name: "",
       tool_ids: [],
       mcp_server_ids: [],
       data_source_ids: [],
       skill_ids: [],
+      memory: { ...DEFAULT_MEMORY_CONFIG },
     });
+    setSystemPromptDirty(false);
     setEditingAgentId(null);
   };
+
+  // When the role changes, fetch its prompt template and pre-fill the system
+  // prompt — but only while the user hasn't typed in the prompt field yet.
+  const handleRoleChange = async (value: AgentRole | "custom") => {
+    setFormData((prev) => ({ ...prev, role: value }));
+
+    if (systemPromptDirty) return;
+    if (value === "custom") {
+      setFormData((prev) => ({ ...prev, role: value, system_prompt: "" }));
+      return;
+    }
+
+    try {
+      const template = await promptsApi.getByRole(value);
+      setFormData((prev) => ({
+        ...prev,
+        role: value,
+        system_prompt: template?.template || "",
+      }));
+    } catch {
+      // No template defined for this role — leave the prompt empty.
+      setFormData((prev) => ({ ...prev, role: value, system_prompt: "" }));
+    }
+  };
+
+  // On dialog open in *create* mode, pre-fill the system prompt for the
+  // currently-selected role. Without this, the textarea on first open
+  // shows only the placeholder ("Auto-filled from the role…") because
+  // handleRoleChange only fires on user interaction. We skip when
+  // editing (the edit click handler injects the agent's saved prompt
+  // and sets systemPromptDirty), or when the user has already typed.
+  useEffect(() => {
+    if (!showCreateDialog) return;
+    if (editingAgentId) return;
+    if (systemPromptDirty) return;
+    if (formData.system_prompt) return;
+    if (formData.role === "custom") return;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const template = await promptsApi.getByRole(formData.role);
+        if (cancelled) return;
+        setFormData((prev) =>
+          // Race guard: only fill if no edits arrived while we awaited.
+          prev.system_prompt
+            ? prev
+            : { ...prev, system_prompt: template?.template || "" },
+        );
+      } catch {
+        // No template for this role — leave the placeholder visible.
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+    // We deliberately depend only on the open transition + role + edit
+    // mode, not on `formData.system_prompt`/`systemPromptDirty`, so that
+    // typing into the field doesn't re-trigger the fetch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showCreateDialog, editingAgentId, formData.role]);
 
   const handleCreate = () => {
     if (!formData.name.trim()) {
@@ -224,9 +347,13 @@ export function StandaloneAgentsManager() {
       return;
     }
 
+    if (formData.role === "custom" && !formData.custom_role_name.trim()) {
+      toast.error("Custom role name is required when role is Custom");
+      return;
+    }
+
     const agentData: StandaloneAgentCreate = {
       name: formData.name,
-      description: formData.description || undefined,
       role: formData.role,
       system_prompt: formData.system_prompt || undefined,
       model_name: formData.model_name || undefined,
@@ -234,6 +361,16 @@ export function StandaloneAgentsManager() {
       mcp_server_ids: formData.mcp_server_ids,
       data_source_ids: formData.data_source_ids,
       skill_ids: formData.skill_ids,
+      // Persist the custom role label inside config so the backend's fixed-set
+      // role validation still passes (role stays as "custom" on the column).
+      // Memory config rides under config.memory so the standalone-agent route
+      // doesn't need a dedicated column.
+      config: {
+        ...(formData.role === "custom"
+          ? { custom_role_name: formData.custom_role_name.trim() }
+          : {}),
+        memory: formData.memory,
+      },
     };
 
     if (editingAgentId) {
@@ -246,6 +383,7 @@ export function StandaloneAgentsManager() {
   };
 
   const executionCounts = agentExecutionCounts.data || {};
+  const evaluationSummaries: Record<string, EvaluationSummary> = agentEvaluationSummaries.data || {};
 
   return (
     <div className="space-y-6">
@@ -327,7 +465,24 @@ export function StandaloneAgentsManager() {
           {filteredAgents.map((agent) => {
             const roleConfig = ROLE_CONFIG[agent.role] || ROLE_CONFIG.custom;
             const RoleIcon = roleConfig.icon;
+            const customRoleName =
+              agent.role === "custom"
+                ? ((agent as any).config?.custom_role_name as string | undefined)
+                : undefined;
+            const roleLabel = customRoleName?.trim() || roleConfig.label;
             const execStats = executionCounts[agent.id] || { total: 0, completed: 0, failed: 0, running: 0 };
+            const evalSummary = evaluationSummaries[agent.id];
+            const evalPassPct = evalSummary && evalSummary.total_runs > 0
+              ? Math.round(evalSummary.avg_pass_rate * 100)
+              : null;
+            const evalToneClass =
+              evalPassPct === null
+                ? ""
+                : evalPassPct >= 85
+                  ? "text-green-600 dark:text-green-400"
+                  : evalPassPct >= 60
+                    ? "text-amber-600 dark:text-amber-400"
+                    : "text-red-600 dark:text-red-400";
 
             return (
               <Card
@@ -361,7 +516,7 @@ export function StandaloneAgentsManager() {
 
                     {/* Role Badge */}
                     <Badge className={`${roleConfig.color} shrink-0 text-xs font-medium`}>
-                      {roleConfig.label}
+                      {roleLabel}
                     </Badge>
                   </div>
 
@@ -383,6 +538,19 @@ export function StandaloneAgentsManager() {
                       <Brain className="w-3 h-3" />
                       <span>{agent.skill_ids?.length || 0}</span>
                     </div>
+                    {evalPassPct !== null && (
+                      <div
+                        className={`flex items-center gap-1 px-2 py-1 rounded-md bg-muted/40 font-medium cursor-pointer hover:bg-muted/70 transition-colors ${evalToneClass}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          router.push(`/agents/standalone/${agent.id}/execute?tab=evaluations`);
+                        }}
+                        title={`${evalSummary!.total_runs} eval run${evalSummary!.total_runs === 1 ? '' : 's'} · avg score ${(evalSummary!.avg_score * 10).toFixed(1)}/10`}
+                      >
+                        <TrendingUp className="w-3 h-3" />
+                        <span>{evalPassPct}%</span>
+                      </div>
+                    )}
                   </div>
                 </CardHeader>
 
@@ -450,9 +618,14 @@ export function StandaloneAgentsManager() {
                       size="sm"
                       className="h-8"
                       onClick={() => {
+                        const cfg = (agent as any).config || {};
                         setFormData({
                           name: agent.name,
                           role: agent.role as AgentRole | "custom",
+                          custom_role_name:
+                            typeof cfg.custom_role_name === "string"
+                              ? cfg.custom_role_name
+                              : "",
                           description: agent.description || "",
                           system_prompt: agent.system_prompt || "",
                           model_name: agent.model_name || "",
@@ -460,12 +633,36 @@ export function StandaloneAgentsManager() {
                           data_source_ids: agent.data_source_ids || [],
                           mcp_server_ids: agent.mcp_server_ids || [],
                           skill_ids: agent.skill_ids || [],
+                          memory: {
+                            ...DEFAULT_MEMORY_CONFIG,
+                            ...(cfg.memory || {}),
+                          },
                         });
+                        // Editing an existing agent — keep its prompt as-is.
+                        setSystemPromptDirty(true);
                         setEditingAgentId(agent.id);
                         setShowCreateDialog(true);
                       }}
                     >
                       <Pencil className="w-3.5 h-3.5" />
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-8"
+                      title="Memory inspector"
+                      onClick={() => router.push(`/agents/standalone/${agent.id}/memory`)}
+                    >
+                      <Brain className="w-3.5 h-3.5" />
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-8"
+                      title="Evaluations"
+                      onClick={() => router.push(`/agents/standalone/${agent.id}/execute?tab=evaluations`)}
+                    >
+                      <BarChart3 className="w-3.5 h-3.5" />
                     </Button>
                     <Button
                       variant="outline"
@@ -495,21 +692,22 @@ export function StandaloneAgentsManager() {
 
       {/* Create Dialog */}
       <Dialog open={showCreateDialog} onOpenChange={setShowCreateDialog}>
-        <DialogContent className="max-w-5xl max-h-[90vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle className="text-xl font-semibold">
+        <DialogContent className="w-[min(70vw,1200px)] max-w-[min(70vw,1200px)] sm:max-w-[min(70vw,1200px)] max-h-[88vh] overflow-hidden p-0 flex flex-col">
+          <DialogHeader className="px-6 pt-6 pb-3 border-b shrink-0">
+            <DialogTitle className="text-lg font-semibold">
               {editingAgentId ? "Edit Agent" : "Create Standalone Agent"}
             </DialogTitle>
-            <p className="text-sm text-muted-foreground mt-1">
+            <p className="text-xs text-muted-foreground">
               Configure your agent with tools, data sources, and skills
             </p>
           </DialogHeader>
 
-          <div className="space-y-6">
-            {/* Basic Info - 2 Column Grid */}
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label htmlFor="name" className="text-sm font-medium">
+          {/* Scrollable body */}
+          <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+            {/* Basics — Name + Role on one row */}
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label htmlFor="name" className="text-xs font-medium">
                   Agent Name <span className="text-destructive">*</span>
                 </Label>
                 <Input
@@ -517,14 +715,14 @@ export function StandaloneAgentsManager() {
                   value={formData.name}
                   onChange={(e) => setFormData({ ...formData, name: e.target.value })}
                   placeholder="My Research Agent"
-                  className="h-10"
+                  className="h-9"
                 />
               </div>
 
-              <div className="space-y-2">
-                <Label htmlFor="role" className="text-sm font-medium">Role</Label>
-                <Select value={formData.role} onValueChange={(value: any) => setFormData({ ...formData, role: value })}>
-                  <SelectTrigger className="h-10">
+              <div className="space-y-1.5">
+                <Label htmlFor="role" className="text-xs font-medium">Role</Label>
+                <Select value={formData.role} onValueChange={(value: any) => handleRoleChange(value)}>
+                  <SelectTrigger className="h-9">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent className="bg-white dark:bg-gray-900 border-gray-200 dark:border-gray-800">
@@ -538,112 +736,200 @@ export function StandaloneAgentsManager() {
               </div>
             </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="description" className="text-sm font-medium">Description</Label>
-              <Textarea
-                id="description"
-                value={formData.description}
-                onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                placeholder="What does this agent do?"
-                rows={2}
-                className="resize-none"
+            {/* Custom Role Name — only when role === "custom" */}
+            {formData.role === "custom" && (
+              <div className="space-y-1.5">
+                <Label htmlFor="custom_role_name" className="text-xs font-medium">
+                  Custom Role Name <span className="text-destructive">*</span>
+                </Label>
+                <Input
+                  id="custom_role_name"
+                  value={formData.custom_role_name}
+                  onChange={(e) =>
+                    setFormData({ ...formData, custom_role_name: e.target.value })
+                  }
+                  placeholder="e.g. Compliance Auditor"
+                  className="h-9"
+                />
+              </div>
+            )}
+
+            {/* Configuration: model picker + system prompt */}
+            <div className="space-y-3">
+              <AgentModelSelector
+                selectedModelName={formData.model_name}
+                onSelect={(model) => setFormData({ ...formData, model_name: model.name || "" })}
+                label="Language Model"
+                description="Uses default if not specified."
               />
+
+              <div className="space-y-1.5">
+                <Label htmlFor="system_prompt" className="text-xs font-medium">
+                  System Prompt
+                </Label>
+                <Textarea
+                  id="system_prompt"
+                  value={formData.system_prompt}
+                  onChange={(e) => {
+                    setFormData({ ...formData, system_prompt: e.target.value });
+                    setSystemPromptDirty(true);
+                  }}
+                  placeholder="Auto-filled from the role. Edit to customize."
+                  rows={4}
+                  className="resize-none text-sm"
+                />
+              </div>
             </div>
 
-            {/* Divider */}
-            <div className="border-t" />
+            {/* Resources — tabbed */}
+            <div className="space-y-2 pt-1">
+              <Label className="text-xs font-medium">Resources</Label>
+              <Tabs defaultValue="tools" className="w-full">
+                <TabsList className="grid w-full grid-cols-5 h-9">
+                  <TabsTrigger value="tools" className="text-xs">
+                    Tools
+                    {formData.tool_ids.length > 0 && (
+                      <Badge variant="secondary" className="ml-1.5 h-4 px-1.5 text-[10px]">
+                        {formData.tool_ids.length}
+                      </Badge>
+                    )}
+                  </TabsTrigger>
+                  <TabsTrigger value="mcp" className="text-xs">
+                    MCP
+                    {formData.mcp_server_ids.length > 0 && (
+                      <Badge variant="secondary" className="ml-1.5 h-4 px-1.5 text-[10px]">
+                        {formData.mcp_server_ids.length}
+                      </Badge>
+                    )}
+                  </TabsTrigger>
+                  <TabsTrigger value="sources" className="text-xs">
+                    Sources
+                    {formData.data_source_ids.length > 0 && (
+                      <Badge variant="secondary" className="ml-1.5 h-4 px-1.5 text-[10px]">
+                        {formData.data_source_ids.length}
+                      </Badge>
+                    )}
+                  </TabsTrigger>
+                  <TabsTrigger value="skills" className="text-xs">
+                    Skills
+                    {formData.skill_ids.length > 0 && (
+                      <Badge variant="secondary" className="ml-1.5 h-4 px-1.5 text-[10px]">
+                        {formData.skill_ids.length}
+                      </Badge>
+                    )}
+                  </TabsTrigger>
+                  <TabsTrigger value="memory" className="text-xs">
+                    <Brain className="w-3 h-3 mr-1" />
+                    Memory
+                    <Badge variant="secondary" className="ml-1.5 h-4 px-1.5 text-[10px]">
+                      {[
+                        formData.memory.short_term_enabled,
+                        formData.memory.episodic_enabled,
+                        formData.memory.semantic_enabled,
+                        formData.memory.procedural_enabled,
+                      ].filter(Boolean).length}
+                      /4
+                    </Badge>
+                  </TabsTrigger>
+                </TabsList>
 
-            {/* Advanced Config Section */}
-            <div className="space-y-4">
-              <div>
-                <h3 className="text-sm font-semibold mb-3">Configuration</h3>
-                <div className="space-y-4">
-                  <AgentModelSelector
-                    selectedModelName={formData.model_name}
-                    onSelect={(model) => setFormData({ ...formData, model_name: model.name || "" })}
-                    label="Language Model"
-                    description="Select the AI model for this agent. Uses default if not specified."
+                <TabsContent value="tools" className="mt-3">
+                  <ResourceSelectionSection
+                    type="tools"
+                    hideHeader
+                    listHeight={260}
+                    items={tools.map((t: any) => ({
+                      id: t.id,
+                      name: t.name,
+                      description: t.description,
+                      badge: t.category,
+                    }))}
+                    selectedIds={formData.tool_ids}
+                    onSelect={(id) => setFormData({ ...formData, tool_ids: [...formData.tool_ids, id] })}
+                    onDeselect={(id) => setFormData({ ...formData, tool_ids: formData.tool_ids.filter((x) => x !== id) })}
+                    loading={false}
                   />
+                </TabsContent>
 
-                  <div className="space-y-2">
-                    <Label htmlFor="system_prompt" className="text-sm font-medium">
-                      System Prompt (Optional)
-                    </Label>
-                    <Textarea
-                      id="system_prompt"
-                      value={formData.system_prompt}
-                      onChange={(e) => setFormData({ ...formData, system_prompt: e.target.value })}
-                      placeholder="Custom instructions for this agent..."
-                      rows={3}
-                      className="resize-none"
-                    />
-                  </div>
-                </div>
-              </div>
-            </div>
+                <TabsContent value="mcp" className="mt-3">
+                  <ResourceSelectionSection
+                    type="mcp"
+                    hideHeader
+                    listHeight={260}
+                    items={mcpServers.map((m: any) => ({
+                      id: m.id,
+                      name: m.name,
+                      description: m.description,
+                      badge: m.protocol,
+                    }))}
+                    selectedIds={formData.mcp_server_ids}
+                    onSelect={(id) =>
+                      setFormData({ ...formData, mcp_server_ids: [...formData.mcp_server_ids, id] })
+                    }
+                    onDeselect={(id) =>
+                      setFormData({
+                        ...formData,
+                        mcp_server_ids: formData.mcp_server_ids.filter((x) => x !== id),
+                      })
+                    }
+                    loading={false}
+                  />
+                </TabsContent>
 
-            {/* Divider */}
-            <div className="border-t" />
+                <TabsContent value="sources" className="mt-3">
+                  <ResourceSelectionSection
+                    type="datasources"
+                    hideHeader
+                    listHeight={260}
+                    items={sources.map((s: any) => ({
+                      id: s.id,
+                      name: s.title,
+                      description: s.description,
+                      badge: s.source_type,
+                    }))}
+                    selectedIds={formData.data_source_ids}
+                    onSelect={(id) => setFormData({ ...formData, data_source_ids: [...formData.data_source_ids, id] })}
+                    onDeselect={(id) =>
+                      setFormData({ ...formData, data_source_ids: formData.data_source_ids.filter((x) => x !== id) })
+                    }
+                    loading={false}
+                  />
+                </TabsContent>
 
-            {/* Resources Section */}
-            <div className="space-y-5">
-              <div>
-                <h3 className="text-sm font-semibold mb-1">Resources</h3>
-                <p className="text-xs text-muted-foreground">
-                  Select tools, data sources, and skills for your agent
-                </p>
-              </div>
+                <TabsContent value="skills" className="mt-3">
+                  <ResourceSelectionSection
+                    type="skills"
+                    hideHeader
+                    listHeight={260}
+                    items={skills.map((s: Skill) => ({
+                      id: s.id,
+                      name: s.name,
+                      description: s.description || "",
+                      badge: s.category,
+                    }))}
+                    selectedIds={formData.skill_ids}
+                    onSelect={(id) => setFormData({ ...formData, skill_ids: [...formData.skill_ids, id] })}
+                    onDeselect={(id) => setFormData({ ...formData, skill_ids: formData.skill_ids.filter((x) => x !== id) })}
+                    loading={skillsLoading}
+                    error={skillsError as Error | null}
+                  />
+                </TabsContent>
 
-              <ResourceSelectionSection
-                type="tools"
-                items={tools.map((t: any) => ({
-                  id: t.id,
-                  name: t.name,
-                  description: t.description,
-                  badge: t.category,
-                }))}
-                selectedIds={formData.tool_ids}
-                onSelect={(id) => setFormData({ ...formData, tool_ids: [...formData.tool_ids, id] })}
-                onDeselect={(id) => setFormData({ ...formData, tool_ids: formData.tool_ids.filter((x) => x !== id) })}
-                loading={false}
-              />
-
-              <ResourceSelectionSection
-                type="datasources"
-                items={sources.map((s: any) => ({
-                  id: s.id,
-                  name: s.title,
-                  description: s.description,
-                  badge: s.source_type,
-                }))}
-                selectedIds={formData.data_source_ids}
-                onSelect={(id) => setFormData({ ...formData, data_source_ids: [...formData.data_source_ids, id] })}
-                onDeselect={(id) =>
-                  setFormData({ ...formData, data_source_ids: formData.data_source_ids.filter((x) => x !== id) })
-                }
-                loading={false}
-              />
-
-              <ResourceSelectionSection
-                type="skills"
-                items={skills.map((s: Skill) => ({
-                  id: s.id,
-                  name: s.name,
-                  description: s.description || "",
-                  badge: s.category,
-                }))}
-                selectedIds={formData.skill_ids}
-                onSelect={(id) => setFormData({ ...formData, skill_ids: [...formData.skill_ids, id] })}
-                onDeselect={(id) => setFormData({ ...formData, skill_ids: formData.skill_ids.filter((x) => x !== id) })}
-                loading={skillsLoading}
-                error={skillsError as Error | null}
-              />
+                <TabsContent value="memory" className="mt-3">
+                  <MemoryConfigSection
+                    value={formData.memory}
+                    onChange={(memory) => setFormData((prev) => ({ ...prev, memory }))}
+                    agentId={editingAgentId}
+                  />
+                </TabsContent>
+              </Tabs>
             </div>
           </div>
 
-          <DialogFooter className="gap-2 mt-6">
+          <DialogFooter className="px-6 py-3 border-t shrink-0 gap-2">
             <Button
               variant="outline"
+              size="sm"
               onClick={() => {
                 setShowCreateDialog(false);
                 resetForm();
@@ -651,7 +937,7 @@ export function StandaloneAgentsManager() {
             >
               Cancel
             </Button>
-            <Button onClick={handleCreate} disabled={createMutation.isPending || updateMutation.isPending}>
+            <Button size="sm" onClick={handleCreate} disabled={createMutation.isPending || updateMutation.isPending}>
               {(createMutation.isPending || updateMutation.isPending) && (
                 <Loader2 className="w-4 h-4 mr-2 animate-spin" />
               )}

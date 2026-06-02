@@ -62,6 +62,7 @@ class DataQueryAgent:
         credential: Optional[Dict] = None,
         task_description: Optional[str] = None,
         enable_tool_filtering: bool = False,
+        agent_id: Optional[str] = None,
     ):
         """
         Initialize agent
@@ -94,6 +95,17 @@ class DataQueryAgent:
         self.task_description = task_description or "General data query task"
         self.enable_tool_filtering = enable_tool_filtering
         self.all_tools = tools  # Store all tools before filtering
+
+        # Optional StandaloneAgent id; when set, the agent will recall memory
+        # before its first turn and capture episodic + procedural memory after
+        # invoke()/stream_response() finishes.
+        self.agent_id = agent_id
+        # Names of tools the LLM ended up calling, in order — captured here
+        # for the procedural memory record after the run.
+        self._tool_call_sequence: List[str] = []
+        # Whether memory recall has already been folded into self.system_message
+        # for this run (we only do it once per invoke/stream).
+        self._memory_recalled: bool = False
 
         # Tool filtering will be applied in an async method
         # For now, use all tools (filtering happens in _apply_tool_filtering if enabled)
@@ -715,6 +727,9 @@ class DataQueryAgent:
             for tool_call in response.tool_calls:
                 tool_name = tool_call.get("name", "unknown")
                 tool_args = tool_call.get("args", {})
+                # Track ordered sequence for procedural memory.
+                if self.agent_id:
+                    self._tool_call_sequence.append(tool_name)
                 self._record_step(
                     step_type="tool_call",
                     content=f"Executing: {tool_name}",
@@ -768,6 +783,11 @@ class DataQueryAgent:
 
         # Reset captured results for this invocation
         self.tool_results = []
+        self._tool_call_sequence = []
+
+        # Agentic memory: recall before generation. No-op when agent_id is unset
+        # or all four layers are disabled in the agent's config.
+        await self._maybe_recall_memory(user_message)
 
         # Build messages
         messages = self._format_messages(chat_history or [], user_message)
@@ -792,9 +812,14 @@ class DataQueryAgent:
         last_message = final_messages[-1]
 
         if isinstance(last_message, AIMessage):
-            return last_message.content
+            response_text = last_message.content
         else:
-            return str(last_message.content)
+            response_text = str(last_message.content)
+
+        # Agentic memory capture (after a successful run).
+        await self._maybe_capture_memory(user_message, response_text, success=True)
+
+        return response_text
 
     async def stream_response(self, user_message: str, chat_history: Optional[List[Dict]] = None):
         """
@@ -812,6 +837,10 @@ class DataQueryAgent:
 
         # Reset captured results for this invocation
         self.tool_results = []
+        self._tool_call_sequence = []
+
+        # Agentic memory: recall before generation. No-op when agent_id unset.
+        await self._maybe_recall_memory(user_message)
 
         # Build messages
         messages = self._format_messages(chat_history or [], user_message)
@@ -953,6 +982,67 @@ class DataQueryAgent:
     def get_tool_names(self) -> List[str]:
         """Get list of available tool names"""
         return [tool.name for tool in self.tools]
+
+    # ------------------------------------------------------------------
+    # Agentic memory hooks
+    # ------------------------------------------------------------------
+    # The two methods below are no-ops when ``agent_id`` was not supplied at
+    # construction time, so this agent can be reused outside the standalone
+    # agent flow (orchestrator, tests, etc.) without dragging in memory
+    # state.
+
+    async def _maybe_recall_memory(self, user_message: str) -> None:
+        if not self.agent_id or self._memory_recalled:
+            return
+        try:
+            from api.services.memory_service import get_memory_manager
+
+            mgr = get_memory_manager()
+            bundle = await mgr.recall_for_agent(
+                self.agent_id,
+                user_message,
+                state={"notebook_id": self.notebook_id, "session_id": self.session_id, "task": user_message},
+            )
+            block = mgr.format_for_prompt(bundle)
+            if block:
+                # Prepend recalled memory to the system message so the LLM sees
+                # it on the first turn alongside the original instruction.
+                if self.system_message:
+                    self.system_message = f"{block}\n{self.system_message}"
+                else:
+                    self.system_message = block
+            self._memory_recalled = True
+        except Exception as exc:  # pragma: no cover - defensive
+            print(f"⚠️  DataQueryAgent memory recall failed: {exc}")
+
+    async def _maybe_capture_memory(
+        self, user_message: str, response_text: str, *, success: bool
+    ) -> None:
+        if not self.agent_id:
+            return
+        try:
+            from api.services.memory_service import derive_task_pattern, get_memory_manager
+
+            mgr = get_memory_manager()
+            summary = (response_text or "").strip().splitlines()[0:2]
+            episode = f"Q: {user_message}\nA: {' '.join(summary)[:500] or '(empty)'}"
+            await mgr.record_episode(
+                self.agent_id,
+                self.notebook_id or "",
+                episode,
+                metadata={"session_id": self.session_id},
+                importance=0.6 if self._tool_call_sequence else 0.4,
+            )
+            if self._tool_call_sequence:
+                await mgr.record_tool_outcome(
+                    self.agent_id,
+                    derive_task_pattern(user_message),
+                    list(self._tool_call_sequence),
+                    success=success,
+                    example_input=user_message[:200],
+                )
+        except Exception as exc:  # pragma: no cover - defensive
+            print(f"⚠️  DataQueryAgent memory capture failed: {exc}")
 
     def get_captured_tool_results(self) -> List[Dict[str, Any]]:
         """Return captured tool results from the last invocation, ensuring JSON serializability."""

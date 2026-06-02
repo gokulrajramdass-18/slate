@@ -39,6 +39,10 @@ export default function ChatSessionPage() {
   const [streamingUIComponents, setStreamingUIComponents] = useState<any[]>([]);
   const [streamingToolResults, setStreamingToolResults] = useState<any[]>([]);
   const [streamingAgentSteps, setStreamingAgentSteps] = useState<AgentStep[]>([]);
+  // Stream-level error message (e.g. upstream LLM 5xx mid-stream). Held
+  // separately from the toast so the failure stays visible inline until
+  // the next send instead of vanishing with the toast.
+  const [streamErrorMessage, setStreamErrorMessage] = useState<string | null>(null);
   const [deepResearchJobId, setDeepResearchJobId] = useState<string | null>(null);
   const [deepResearchStatus, setDeepResearchStatus] = useState<string | null>(null);
   const [isSending, setIsSending] = useState(false);
@@ -101,6 +105,9 @@ export default function ChatSessionPage() {
     setStreamingUIComponents([]);
     setStreamingToolResults([]);
     setStreamingAgentSteps([]);
+    // Clear any prior stream-error banner so it doesn't linger over a
+    // fresh, successful run.
+    setStreamErrorMessage(null);
 
     // Notify streaming manager that a new stream is starting
     window.dispatchEvent(new CustomEvent('streaming:start', {
@@ -155,13 +162,31 @@ export default function ChatSessionPage() {
       setStreamingAgentSteps([]);
       setOptimisticUserMessage(null);
     } catch (error: any) {
-      toast.error(error.message || "Failed to send message");
+      // Stream failed mid-flight (commonly: upstream LLM 5xx, see
+      // _stream_agent_response in backend/api/routers/chat.py). The
+      // backend persists the *user* message before opening the stream
+      // (chat.py:884), so refetching here brings it back into the list.
+      // Without this refetch, the optimistic user bubble was being
+      // cleared and the message looked like it had never been sent.
+      // The toast remains for transient feedback; assistant-side
+      // failure is surfaced as an inline error bubble below.
+      const errorMessage = error?.message || "Failed to send message";
+      toast.error(errorMessage);
+      try {
+        await refetch();
+      } catch {
+        // Refetch failure is non-fatal here — the toast already informed
+        // the user.
+      }
       setStreamingMessage("");
       setStreamingSources([]);
       setStreamingUIComponents([]);
       setStreamingToolResults([]);
       setStreamingAgentSteps([]);
       setOptimisticUserMessage(null);
+      // Surface the assistant-side failure as a sticky inline message so
+      // it doesn't disappear with the toast. Cleared on the next send.
+      setStreamErrorMessage(errorMessage);
     } finally {
       setIsSending(false);
     }
@@ -290,6 +315,18 @@ export default function ChatSessionPage() {
           messages={[
             ...session.messages,
             ...(optimisticUserMessage ? [{ id: "optimistic-user", session_id: sessionId, role: "user" as const, content: optimisticUserMessage, created: new Date().toISOString() }] : []),
+            // Sticky inline error bubble for the most recent stream
+            // failure (cleared on the next send). Without this, mid-stream
+            // failures from the upstream LLM left the chat looking like
+            // the user's message had vanished — only the toast was shown,
+            // and it auto-dismissed.
+            ...(streamErrorMessage ? [{
+              id: "stream-error",
+              session_id: sessionId,
+              role: "assistant" as const,
+              content: `⚠️ The model couldn't finish this response: ${streamErrorMessage}\n\nTry sending the message again.`,
+              created: new Date().toISOString(),
+            }] : []),
           ]}
           onSendMessage={handleSendMessage}
           isLoading={isSending}

@@ -24,6 +24,13 @@
       "csrfProtection": false
     },
     {
+      "source": "^/api/mcp-servers/([^/]+)/oauth/callback(.*)$",
+      "target": "/api/mcp-servers/$1/oauth/callback$2",
+      "destination": "backend",
+      "authenticationType": "none",
+      "csrfProtection": false
+    },
+    {
       "source": "^/api/(.*)$",
       "target": "/api/$1",
       "destination": "backend",

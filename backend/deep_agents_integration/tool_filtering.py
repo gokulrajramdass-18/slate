@@ -273,15 +273,25 @@ class PlanModeToolFilter:
         """
         Phase 2: LLM-based tool selection.
 
-        Uses a lightweight model (Haiku) to semantically understand query
-        and select minimal tool set.
+        Uses the same language model the rest of the app is configured to
+        use (resolved via api.services.llm_client.resolve_llm_credential)
+        to semantically narrow the available tools to the minimal set
+        needed for this query. We deliberately do NOT hardcode a provider
+        here — historically this called ChatAnthropic with an env-var
+        API key, which broke as soon as that key rotated. Routing through
+        build_langchain_chat_model() means tool filtering benefits from
+        the same SAP AI Core / OpenAI / LiteLLM credentials chat already
+        uses, with no separate key to keep alive.
 
         Returns:
             ToolFilterResult with selected tools
         """
         try:
-            from langchain_anthropic import ChatAnthropic
             import json
+            from api.services.llm_client import (
+                build_langchain_chat_model,
+                resolve_llm_credential,
+            )
 
             # Build tool list summary
             tool_summary = self._build_tool_summary(available_tools)
@@ -318,10 +328,22 @@ Guidelines:
 - Aim for 5-10 tools maximum
 - Always include at least: Read, Glob, Grep, Agent"""
 
-            # Call LLM
-            model = ChatAnthropic(model=self._filter_model, temperature=0)
+            # Resolve the configured language model and build a LangChain
+            # chat model around it. Temperature 0 keeps the JSON output
+            # deterministic. resolve_llm_credential raises RuntimeError
+            # when nothing is configured — we catch broadly below and
+            # fall back to the heuristic filter.
+            credential = await resolve_llm_credential()
+            model = build_langchain_chat_model(credential, temperature=0)
             response = await model.ainvoke(prompt)
             content = response.content
+            # ainvoke can return a list of content blocks (e.g. Anthropic
+            # tool-use blocks). Coalesce to a string before regex/json.
+            if isinstance(content, list):
+                content = "".join(
+                    part.get("text", "") if isinstance(part, dict) else str(part)
+                    for part in content
+                )
 
             # Parse JSON response
             # Remove markdown code blocks if present
